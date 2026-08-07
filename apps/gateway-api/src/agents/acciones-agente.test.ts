@@ -648,7 +648,10 @@ const REPUTACION_LIMPIA: ReputacionLeida = {
   spf: { estado: "ok", detalle: "SPF con -all" },
   dkim: { estado: "ok", detalle: "DKIM válido en s2026a" },
   dmarc: { estado: "ok", detalle: "DMARC p=quarantine" },
-  ptr: { estado: "ok", detalle: "PTR mail.listo.com confirmado" }
+  ptr: { estado: "ok", detalle: "PTR mail.listo.com confirmado" },
+  // El certificado del 587: la quinta señal, que hasta hoy no miraba nadie. filing-ops.com se
+  // quedó sin cert y las otras cuatro siguieron en verde.
+  tls: { estado: "ok", detalle: "certificado vigente 60 día(s) (mail.listo.com)" }
 };
 
 function ctxReputacion(over: Partial<ContextoAcciones> = {}): ContextoAcciones {
@@ -793,6 +796,7 @@ test("reputación: la auth rota se nombra con su detalle, no con un color", asyn
   );
   assert.match(r[0]!.detalle, /DKIM MAL \(DKIM presente pero REVOCADO/);
   assert.match(r[0]!.detalle, /PTR no sé \(no pude consultar el PTR: ESERVFAIL\)/);
+  assert.match(r[0]!.detalle, /TLS ok/, "la quinta señal viaja en la misma frase, no en un renglón aparte");
   assert.match(r[0]!.detalle, /receptor: healthy, nadie se lo bloquea \(27 entregados \/ 0 rechazados\)/);
 });
 
@@ -837,7 +841,7 @@ test("reputación: la mano REAL encaja en la acción, no una forma que inventé 
     })
   );
   assert.equal(r[0]!.ejecutada, true);
-  assert.match(r[0]!.detalle, /listo\.com \(80\.190\.75\.10\): listas negras sin detecciones · auth SPF ok, DKIM ok, DMARC ok, PTR ok · receptor: CERRADO en Gmail/);
+  assert.match(r[0]!.detalle, /listo\.com \(80\.190\.75\.10\): listas negras sin detecciones · auth SPF ok, DKIM ok, DMARC ok, PTR ok, TLS no sé \(no tengo con qué mirar el certificado en este entorno\) · receptor: CERRADO en Gmail/);
 });
 
 test("el dominio pegado al nombre de la acción se tolera, no se le pasa el problema al jefe", () => {

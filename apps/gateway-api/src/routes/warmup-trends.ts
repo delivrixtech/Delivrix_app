@@ -22,14 +22,32 @@ export interface WarmupTrendsDeps {
   env?: NodeJS.ProcessEnv;
 }
 
-/** Tendencia degradada (Postgres o tablas ausentes): nunca 500, el panel siempre puede pintar algo. */
-function degradedTrends(now: Date, note: string): WarmupTrends & { note: string } {
+/**
+ * Tendencia degradada (Postgres o tablas ausentes): nunca 500, el panel siempre puede pintar algo.
+ *
+ * `signals: null` Y NO `{bounces: 0, complaints: 0}`, que es la línea entera de este cambio.
+ *
+ * Un cero acá es una MENTIRA con forma de medición: el panel pintaba "0 rebotes, 0 quejas" sobre
+ * datos que nadie leyó. Es literalmente la confusión más cara de la historia de este sistema — el
+ * 2026-07-25 había 38 nodos cerrados en Gmail con CERO detecciones de blacklist, y alguien leyó ese
+ * cero como "está limpio". El banner de degradado ya existía y ayuda, pero el número es lo que se
+ * lee, y el número decía cero.
+ *
+ * Las listas vacías se quedan y no es incoherencia: una serie vacía se RENDERIZA como vacía y nadie
+ * la lee como "medimos y no hubo nada". Un `0` sí.
+ *
+ * VERIFICADO que `null` es seguro en el render: `Warmup.tsx:781-786` ya pinta "sin señales medidas"
+ * hardcodeado e IGNORA el prop. Queda una mentira de tipos en `Warmup.tsx:125`
+ * (`signals: { bounces: number; complaints: number }`) que hay que aflojar a `| null` — va como
+ * hallazgo para el operador, porque el panel está fuera de esta corrida.
+ */
+function degradedTrends(now: Date, note: string): Omit<WarmupTrends, "signals"> & { signals: null; note: string } {
   return {
     generatedAt: now.toISOString(),
     placementSeries: [],
     perProvider: [],
     ramp: [],
-    signals: { bounces: 0, complaints: 0 },
+    signals: null,
     note
   };
 }

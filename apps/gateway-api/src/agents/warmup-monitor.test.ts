@@ -568,11 +568,31 @@ test("EL CONTRATO: ningún marcador que VOZ le pide al modelo se publica crudo",
     const r = await responder({ contexto: { hilo: [], snapshot: null, loQueHiciste: [] }, baseUrl: "http://x/v1", modelo: "m", fetchImpl });
     if (!new RegExp(`^${marcador}:`, "im").test(r.texto ?? "")) continue; // el módulo ya lo consumió
 
+    // Se acepta `limpiarParaSlack` además de `limpiarMaquinaria`: la primera LLAMA a la segunda y
+    // encima saca el markdown que el modelo mete solo (asteriscos, viñetas, títulos). O sea que es
+    // un saneador estrictamente más fuerte, y exigir el nombre exacto de la función interna habría
+    // hecho fallar el gate por usar la versión mejor. El invariante que se protege no es qué
+    // función se llama: es que NINGÚN marcador del prompt llegue crudo a Slack.
     assert.ok(
-      /\blimpiarMaquinaria\s*\(/.test(orquestador) || new RegExp(`\\^${marcador}:`).test(orquestador),
+      /\blimpiar(Maquinaria|ParaSlack)\s*\(/.test(orquestador) || new RegExp(`\\^${marcador}:`).test(orquestador),
       `VOZ le pide al modelo la línea "${marcador}:", esa línea sobrevive en RespuestaChat.texto y ` +
         `scripts/ops/warmup-monitor.ts publica ese texto sin sacarla: el jefe va a ver el andamiaje. ` +
         `O el orquestador llama a limpiarMaquinaria, o el marcador se consume en el módulo, o se saca del prompt.`
     );
   }
+});
+
+test("el prompt de la guardia ya no le ENSEÑA a arrancar cada frase con el nombre del jefe", () => {
+  // El ejemplo de la VOZ decía textual: "sin rodeos: 'Juanes, esto no lo puedo destrabar yo, mirá
+  // X'". O sea que el prompt le mostraba el tic, y el modelo aprendió: 71 de las 192 líneas VOZ del
+  // log de producción arrancan con "Juanes,". Mientras tanto slack.ts declara el invariante
+  // contrario y nadie lo aplicaba en ningún lado.
+  //
+  // Los dos hablan por el mismo canal privado: repetirle el nombre en cada frase no es cercanía, es
+  // plantilla. Se assertea sobre la constante SISTEMA y no sobre el archivo, así que un comentario
+  // que CITE el ejemplo viejo —como el que explica este cambio— no da falso verde.
+  assert.ok(!SISTEMA.includes("Juanes,"), "el prompt no puede traer el vocativo ni siquiera como ejemplo");
+  assert.match(SISTEMA.replace(/\s+/g, " "), /sin rodeos y sin arrancar con su nombre/);
+  // Y la regla que se está cuidando sigue viva: el ejemplo tiene que seguir mostrando CUÁNDO pedir.
+  assert.match(SISTEMA.replace(/\s+/g, " "), /esto no lo puedo destrabar yo, mirá X/);
 });

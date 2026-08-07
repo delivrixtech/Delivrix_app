@@ -62,6 +62,15 @@ export interface EntradaReputacion {
   resolve4: (host: string) => Promise<string[]>;
   /** La única llamada que cuesta cuota. Se invoca 0 o 1 vez por invocación, nunca más. */
   blacklist: (ip: string) => Promise<{ estado: "clean" | "warning" | "listed" | "error"; listas: string[] }>;
+  /**
+   * El certificado del propio nodo por el 587 (STARTTLS). Sin cuota y sin terceros: es nuestra
+   * máquina. Devuelve el CN/nombre presentado y cuándo vence; `null` = handshake sin certificado.
+   *
+   * Opcional para no romper a los llamadores existentes, y su ausencia sale como "no sé" — jamás
+   * como un cert vigente. filing-ops.com se quedó sin cert y ninguna de las otras cuatro señales
+   * lo mostró.
+   */
+  tls?: (host: string) => Promise<{ vence: string | null; nombre: string | null } | null>;
   timeoutMs?: number;
   now?: () => Date;
 }
@@ -97,14 +106,15 @@ export async function revisarReputacionDe(input: EntradaReputacion): Promise<Rep
   };
 
   try {
-    const [spf, dkim, dmarc, ptr, blacklist] = await Promise.all([
+    const [spf, dkim, dmarc, ptr, blacklist, tls] = await Promise.all([
       chequearSpf(input, intentar),
       chequearDkim(input, intentar),
       chequearDmarc(input, intentar),
       chequearPtr(input, intentar),
-      chequearBlacklist(input, intentar)
+      chequearBlacklist(input, intentar),
+      chequearTls(input, intentar)
     ]);
-    return { dominio: input.dominio, ip: input.ip, blacklist, spf, dkim, dmarc, ptr };
+    return { dominio: input.dominio, ip: input.ip, blacklist, spf, dkim, dmarc, ptr, tls };
   } finally {
     // Sin esto el proceso se queda con el timer colgado hasta que venza, y un tick cada 10 minutos
     // acumula timers vivos toda la noche.
@@ -208,6 +218,24 @@ async function chequearPtr(input: EntradaReputacion, intentar: Intentar): Promis
 
 const SIN_IP = "no sé de qué IP hablamos: el dominio no tiene nodo asignado en el inventario";
 
+/** Un cert que vence dentro de esta ventana ya es un problema: hay que renovarlo antes. */
+export const TLS_POR_VENCER_DIAS = 14;
+
+async function chequearTls(input: EntradaReputacion, intentar: Intentar): Promise<ChequeoReputacion> {
+  // Sin sonda inyectada NO se inventa un veredicto. Es la regla 1 del encabezado: el cuarto estado
+  // implícito ("no lo chequeé, debe estar bien") es el que fabrica las mentiras caras.
+  if (!input.tls) return { estado: "no-se", detalle: "no tengo con qué mirar el certificado en este entorno" };
+  const r = await intentar(() => input.tls!(`mail.${input.dominio}`));
+  if (!r.ok) return { estado: "no-se", detalle: `no pude mirar el certificado del 587: ${r.motivo}` };
+  if (!r.valor) return { estado: "mal", detalle: "el 587 responde pero no presenta certificado: STARTTLS no está sirviendo" };
+  const vence = Date.parse(r.valor.vence ?? "");
+  if (!Number.isFinite(vence)) return { estado: "no-se", detalle: "el certificado no dice cuándo vence" };
+  const dias = Math.floor((vence - (input.now?.() ?? new Date()).getTime()) / 86_400_000);
+  if (dias < 0) return { estado: "mal", detalle: `el certificado venció hace ${-dias} día(s)` };
+  if (dias <= TLS_POR_VENCER_DIAS) return { estado: "mal", detalle: `el certificado vence en ${dias} día(s)` };
+  return { estado: "ok", detalle: `certificado vigente ${dias} día(s) más${r.valor.nombre ? ` (${r.valor.nombre})` : ""}` };
+}
+
 async function chequearBlacklist(input: EntradaReputacion, intentar: Intentar): Promise<ChequeoReputacion> {
   const ip = input.ip;
   // Sin IP NO se llama a la API. No es una optimización: es no gastar cuota en una pregunta que no
@@ -228,4 +256,164 @@ async function chequearBlacklist(input: EntradaReputacion, intentar: Intentar): 
     default:
       return { estado: "no-se", detalle: "la API de listas negras respondió con error" };
   }
+}
+
+// ── EL BARRIDO DIARIO ───────────────────────────────────────────────────────────────────────────
+//
+// El instrumento estaba comprado y apagado: `grep -c daily_scan runtime/logs/gateway.log` en
+// producción da 0, con la llave de MXToolbox en gateway.env desde junio. Y peor que apagado —
+// arbitrario: `revisar_reputacion` la pulsa el MODELO cuando se le ocurre, dos veces en un día y
+// contra dominios al azar. El 2026-08-07T09:23Z corrió sobre annualfiling-infra.com, devolvió "no
+// pude consultar las listas negras… No sé si está listado", y ese resultado no llegó a Slack ni
+// quedó en ningún archivo: `ls runtime/openclaw-workspace/inventory/` no tiene un reputacion.json.
+// Un instrumento cuyo resultado no se guarda no vigila nada, porque no se puede diffear ni hoy ni
+// mañana.
+//
+// Esto es lo contrario: recorre la flota entera, siempre, en un orden fijo, y deja el archivo.
+// READ-ONLY por construcción — la única forma de tocar algo desde acá sería que `revisar` mandara
+// correo, y `revisar` es `revisarReputacionDe`, que sólo consulta DNS y una API de lectura.
+
+/** Dónde queda la última foto de reputación de la flota. Lo lee `elegirPool` y lo diffea el canal. */
+export const REPUTACION_FILE = "warmup-reputacion.json";
+
+/**
+ * Cuántas consultas de listas negras gasta UN barrido. EN CÓDIGO, no en env, y esto no es un
+ * detalle: un tope que se sube con una variable de entorno a las 3 de la mañana dejó de ser un
+ * tope. La cuota de MXToolbox se comparte con la pestaña Reputación del panel, así que un barrido
+ * glotón deja al operador sin poder consultar justo el día que hace falta.
+ *
+ * 25 sobre 58 nodos: alcanza de sobra para los ~6 que hoy calientan más los que están cerca del
+ * umbral, que son los dos grupos donde la respuesta cambia una decisión. El resto sale medido en
+ * todo lo que es gratis (DNS y TLS) y con las listas en "no-se", que es la verdad.
+ */
+export const PRESUPUESTO_LISTAS_POR_BARRIDO = 25;
+
+/** Una fila del archivo. `listas: "no-se"` es un estado de primera clase, no un array vacío. */
+export interface FilaReputacion {
+  dominio: string;
+  ip: string | null;
+  /** Las listas que lo detectaron. `[]` = consultado y limpio. `"no-se"` = NO consultado o falló. */
+  listas: string[] | "no-se";
+  /**
+   * `true` cuando el "no sé" es PORQUE NOSOTROS NO PREGUNTAMOS: se acabó el presupuesto del barrido.
+   *
+   * Los dos "no sé" son distintos y el archivo tiene que poder distinguirlos. Con 25 consultas sobre
+   * 58 dominios, 33 filas salen en "no-se" TODOS LOS DÍAS por diseño; la regla del canal que avisa
+   * "no pude consultar las listas negras" las contaba a todas y quedaba permanentemente verdadera,
+   * o sea ~4 mensajes diarios para siempre sobre una ceguera que elegimos nosotros. El archivo sigue
+   * sin mentir —ninguno de los dos estados es "limpio"—, pero sólo el que es una ceguera de verdad
+   * interrumpe al jefe.
+   */
+  porPresupuesto?: true;
+  spf: ChequeoReputacion;
+  dkim: ChequeoReputacion;
+  dmarc: ChequeoReputacion;
+  ptr: ChequeoReputacion;
+  tls: ChequeoReputacion;
+  medidoEn: string;
+}
+
+export interface ArchivoReputacion {
+  medidoEn: string;
+  /** Cuántas consultas de listas se gastaron, y cuántos dominios quedaron sin ellas por el tope. */
+  cuota: { gastadas: number; presupuesto: number; sinConsultar: number };
+  dominios: FilaReputacion[];
+}
+
+/**
+ * EL ORDEN, que es la mitad del valor. Primero los que HOY calientan (ahí una lista negra cambia lo
+ * que sale esta tarde), después los que están cerca del umbral permanente (ahí cambia algo
+ * irreversible), y al final el resto. Con la cuota agotada, los últimos quedan con las listas en
+ * "no-se" — nunca en "limpio", que es la confusión que costó el mes de julio.
+ *
+ * Pura y exportada porque el orden es una regla de negocio, no un detalle del loop.
+ */
+export function ordenDelBarrido(input: {
+  todos: readonly string[];
+  calientanHoy: readonly string[];
+  cerca: readonly string[];
+}): string[] {
+  const prioridad = (d: string): number => {
+    const bajo = d.toLowerCase();
+    if (input.calientanHoy.some((x) => x.toLowerCase() === bajo)) return 0;
+    if (input.cerca.some((x) => x.toLowerCase() === bajo)) return 1;
+    return 2;
+  };
+  // Estable dentro de cada grupo: un orden que cambia entre corridas hace que el diff del canal
+  // grite por cosas que no se movieron.
+  return [...input.todos].sort((a, b) => prioridad(a) - prioridad(b) || a.localeCompare(b));
+}
+
+/**
+ * El barrido. Todo el IO entra inyectado (una sola función: `revisar`), así que se corre entero sin
+ * red y sin disco. NO escribe el archivo: devuelve su contenido y el llamador lo persiste con
+ * `updateInventoryJson`. Esa separación es la que hace que "read-only" sea verificable en test en
+ * vez de prometido en un comentario.
+ */
+export async function barridoDeReputacion(input: {
+  orden: readonly string[];
+  /** `revisarReputacionDe` cableado con sus adapters. `conListas:false` ⇒ no gasta cuota. */
+  revisar: (dominio: string, conListas: boolean) => Promise<ReputacionLeida>;
+  presupuesto?: number;
+  now?: () => Date;
+  log?: (linea: string) => void;
+}): Promise<ArchivoReputacion> {
+  const presupuesto = input.presupuesto ?? PRESUPUESTO_LISTAS_POR_BARRIDO;
+  const ahora = (input.now ?? (() => new Date()))();
+  const dominios: FilaReputacion[] = [];
+  let gastadas = 0;
+  let sinConsultar = 0;
+
+  for (const dominio of input.orden) {
+    const conListas = gastadas < presupuesto;
+    if (!conListas) sinConsultar += 1;
+    let r: ReputacionLeida;
+    try {
+      r = await input.revisar(dominio, conListas);
+    } catch (e) {
+      // UN NODO NO PUEDE COLGAR EL BARRIDO NI VACIARLO. `revisarReputacionDe` ya trae su propio
+      // TIMEOUT_REPUTACION_MS por dominio; esto ataja lo que ni siquiera llegó a él (un adapter que
+      // lanza al construirse). Sale como "no sé" en las cinco señales, que es exactamente lo que
+      // es. Es la lección del probe con `head -c` del 2026-07-29: un chequeo que se cuelga devuelve
+      // "no sé", nunca un veredicto.
+      const noSe: ChequeoReputacion = { estado: "no-se", detalle: e instanceof Error ? e.message : String(e) };
+      dominios.push({
+        dominio, ip: null, listas: "no-se",
+        spf: noSe, dkim: noSe, dmarc: noSe, ptr: noSe, tls: noSe,
+        medidoEn: ahora.toISOString()
+      });
+      input.log?.(`barrido-reputacion ${dominio}: no pude medirlo — ${noSe.detalle}`);
+      continue;
+    }
+    if (conListas) gastadas += 1;
+    dominios.push({
+      dominio,
+      ip: r.ip,
+      listas: listasDe(r.blacklist, conListas),
+      // La marca va sólo cuando el "no sé" lo decidimos nosotros. Si se consultó y falló, la fila
+      // sale sin marca y ESA sí es una ceguera que interrumpe.
+      ...(conListas ? {} : { porPresupuesto: true as const }),
+      spf: r.spf, dkim: r.dkim, dmarc: r.dmarc, ptr: r.ptr, tls: r.tls,
+      medidoEn: ahora.toISOString()
+    });
+  }
+
+  input.log?.(
+    `barrido-reputacion: ${dominios.length} dominios · ${gastadas}/${presupuesto} consultas de listas` +
+      (sinConsultar > 0 ? ` · ${sinConsultar} sin consultar por el tope (quedan en "no sé")` : "")
+  );
+  return { medidoEn: ahora.toISOString(), cuota: { gastadas, presupuesto, sinConsultar }, dominios };
+}
+
+/**
+ * De la señal al dato del archivo. Es la línea donde se decide si un "no medido" se disfraza de
+ * "limpio", y por eso está sola y con nombre: `ok` es la ÚNICA entrada que produce un array vacío,
+ * y sólo cuando de verdad se consultó.
+ */
+function listasDe(c: ChequeoReputacion, conListas: boolean): string[] | "no-se" {
+  if (!conListas || c.estado === "no-se") return "no-se";
+  if (c.estado === "ok") return [];
+  // "listado en 3: spamhaus, sorbs" / "con avisos: x" → los nombres, sin el prefijo.
+  const nombres = c.detalle.split(":").slice(1).join(":").split(",").map((s) => s.trim()).filter(Boolean);
+  return nombres.length > 0 ? nombres : [c.detalle];
 }

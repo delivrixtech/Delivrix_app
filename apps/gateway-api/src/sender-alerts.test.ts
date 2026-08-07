@@ -9,10 +9,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
-import { TECHO_ABSOLUTO, type CuotaBandeja } from "./sender-quota.ts";
+import { type CuotaBandeja } from "./sender-quota.ts";
+import { TECHO_DURO_POR_DOMINIO } from "../../warmup-engine/src/domain/decision-diaria.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "./sender-measurement.ts";
 import { alertasDeBandeja, alertasDeCap, armarAlertasFlota } from "./sender-alerts.ts";
-import { CAP_MEASUREMENT_FILE, type CapFlota, type CapNodo } from "./node-daily-cap.ts";
+import { buildDailyCapInstallPlan, CAP_MEASUREMENT_FILE, type CapFlota, type CapNodo } from "./node-daily-cap.ts";
 
 const ahora = new Date("2026-07-31T12:00:00.000Z");
 
@@ -150,9 +151,9 @@ test("cableado pero con el cap ILEGIBLE alerta alto: difiere el 100% y nadie se 
 
 test("un cap ARRIBA DEL TECHO es crítico: lo escribió algo de afuera", () => {
   // INCIDENTE QUE FIJA (2026-08-06, sender-cap.json de producción, medidoEn 14:56:59.863Z, 58 nodos):
-  // 10 nodos con cap 15000 y `cableado: true`, contra un TECHO_ABSOLUTO de 4000 que el propio código
-  // se NIEGA a instalar (`node-daily-cap.ts` tira error si le piden más). `grep -rn "15000"` sobre
-  // apps/ scripts/ packages/ no encuentra un solo lugar donde este sistema escriba ese número.
+  // 10 nodos con cap 15000 y `cableado: true`, contra un techo que el propio código se NIEGA a
+  // instalar (`node-daily-cap.ts` tira error si le piden más). `grep -rn "15000"` sobre apps/
+  // scripts/ packages/ no encuentra un solo lugar donde este sistema escriba ese número.
   //
   // De esos 10, ocho ya están clasificados como bulk sender PERMANENTE por Google; el noveno,
   // `infranationalreport.com`, está a 0,93 del umbral con la puerta de Gmail todavía abierta — a un
@@ -164,16 +165,36 @@ test("un cap ARRIBA DEL TECHO es crítico: lo escribió algo de afuera", () => {
   assert.equal(a[0]?.severity, "critical", "critical se reserva para lo irreversible, y esto lo habilita");
   assert.equal(a[0]?.kind, "cap_ilegal");
   assert.match(a[0]?.detail ?? "", /15000/);
-  assert.match(a[0]?.detail ?? "", /4000/);
+  assert.match(a[0]?.detail ?? "", new RegExp(String(TECHO_DURO_POR_DOMINIO)));
+});
+
+test("EL TECHO ES UNO SOLO: lo que no se puede instalar tampoco puede pasar callado", () => {
+  // EL DEFECTO QUE ESTE TEST IMPIDE, y ya se había shipeado. `buildDailyCapInstallPlan` se movió de
+  // TECHO_ABSOLUTO (4000) a TECHO_DURO_POR_DOMINIO (2000) —bien, porque un techo duplicado deja de
+  // ser un techo el día que alguien sube uno solo— y este archivo se quedó con el viejo. Quedó una
+  // franja 2001-4000 donde el cap está por encima de lo que este sistema acepta instalar, el
+  // alertador CALLA y el nodo se lee legal. De tres copias del techo se movió una.
+  //
+  // El invariante, y no el número: si el instalador lo rechaza, el alertador tiene que verlo.
+  for (const cap of [TECHO_DURO_POR_DOMINIO + 1, 2500, 3000, 3999, 4000, 4001, 15000]) {
+    let instala = true;
+    try {
+      buildDailyCapInstallPlan({ cap });
+    } catch {
+      instala = false;
+    }
+    const alerta = alertasDeCap(capNodo({ cap, consumidoHoy: 0 })).some((x) => x.kind === "cap_ilegal");
+    assert.equal(alerta, !instala, `cap ${cap}: el instalador ${instala ? "lo acepta" : "lo rechaza"} y el alertador ${alerta ? "alerta" : "calla"}`);
+  }
 });
 
 test("el borde EXACTO del techo es legal, y el cap ilegal no caduca con el día", () => {
-  // Mismo borde que ya fija node-daily-cap.test.ts: `> TECHO_ABSOLUTO`, no `>=`. 4000 se instala.
+  // Mismo borde que ya fija node-daily-cap.test.ts: `> TECHO_DURO_POR_DOMINIO`, no `>=`. 2000 se instala.
   assert.deepEqual(
-    alertasDeCap(capNodo({ cap: TECHO_ABSOLUTO, consumidoHoy: 0 })).filter((x) => x.kind === "cap_ilegal"),
+    alertasDeCap(capNodo({ cap: TECHO_DURO_POR_DOMINIO, consumidoHoy: 0 })).filter((x) => x.kind === "cap_ilegal"),
     []
   );
-  assert.equal(alertasDeCap(capNodo({ cap: TECHO_ABSOLUTO + 1, consumidoHoy: 0 }))[0]?.kind, "cap_ilegal");
+  assert.equal(alertasDeCap(capNodo({ cap: TECHO_DURO_POR_DOMINIO + 1, consumidoHoy: 0 }))[0]?.kind, "cap_ilegal");
   // El contador se reinicia a medianoche UTC; el CAP no. Una lectura de ayer no puede afirmar
   // consumo, pero la puerta de 15.000 sigue abierta hoy — igual que `sin_limite_fisico`.
   assert.equal(

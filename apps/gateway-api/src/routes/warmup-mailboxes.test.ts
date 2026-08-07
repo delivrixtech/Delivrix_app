@@ -436,6 +436,26 @@ test("events: devuelve historial merge (send + signal)", async () => {
   assert.equal(payload.events[0].kind, "send");
 });
 
+test("health degradada: los contadores van en null, no en cero", async () => {
+  // EL MISMO INCIDENTE DEL 2026-07-25 CON OTRA ROPA: un contador en 0 sobre un camino degradado se
+  // lee como una medición ("38 nodos cerrados en Gmail con CERO detecciones de blacklist" ⇒ "está
+  // limpio"). Sin Postgres no sabemos cuántas bandejas hay ni cuántos envíos están en cola, y "no
+  // sé" y "cero" no son lo mismo — es el criterio que ya se aplicó en /v1/warmup/trends y que
+  // faltaba barrer en las rutas hermanas.
+  const response = captureResponse();
+  await handleWarmupMailboxesHealth(
+    getRequest("/v1/warmup/mailboxes-health", { "x-warmup-api-key": API_KEY }),
+    response as unknown as ServerResponse,
+    baseDeps({ pgClient: null })
+  );
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.equal(payload.note, "warmup_db_unavailable");
+  assert.equal(payload.totals.nodes, null);
+  assert.equal(payload.totals.queuedSends, null);
+  assert.equal(payload.totals.failedSends, null);
+});
+
 test("health: conteos del store", async () => {
   const response = captureResponse();
   const pg = fakePgClient([

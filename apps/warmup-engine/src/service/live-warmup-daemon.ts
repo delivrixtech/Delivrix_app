@@ -29,8 +29,10 @@ import {
   boxesSinCupoHoy,
   elegirPool,
   enviosDeHoy,
+  enviosDelDia,
   historialDeEnvios,
   leerCuposFisicos,
+  leerReputacion,
   primerEnvioPorDominio,
   rutaInventario,
   leerSalud,
@@ -51,6 +53,7 @@ import {
   runLiveCycle,
   classifyPlacement,
   type Placement,
+  type SentMail,
   type WarmupMailer,
   type GmailOps,
   type ActivityRecorder,
@@ -93,6 +96,9 @@ export interface LiveDaemonConfig {
   capFile: string;
   /** Medición de salud de la flota: saca del pool lo que no se puede calentar. */
   saludFile: string;
+  /** Foto de autenticación de la flota (la escribe el barrido diario). Saca del pool lo que tiene
+   *  DKIM/PTR/cert rotos: calentar así construye la reputación al revés. */
+  reputacionFile: string;
   pollAttempts: number;
   pollDelayMs: number;
   /**
@@ -152,6 +158,7 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     killFile: (env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim(),
     capFile: (env.WARMUP_CAP_FILE ?? rutaInventario("sender-cap.json")).trim(),
     saludFile: (env.WARMUP_SALUD_FILE ?? rutaInventario("sender-measurement.json")).trim(),
+    reputacionFile: (env.WARMUP_REPUTACION_FILE ?? rutaInventario("warmup-reputacion.json")).trim(),
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
     pollAttempts: intEnv(env.WARMUP_LIVE_POLL_ATTEMPTS, 30, 1),
@@ -561,6 +568,70 @@ async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: strin
 }
 
 /**
+ * MIDE DÓNDE CAYÓ UN TURNO DE CONTINUACIÓN, con el lector que ya está abierto.
+ *
+ * El agujero que cierra, medido el 2026-08-06: de 18 envíos de la vuelta, 7 eran continuaciones y
+ * NINGUNA producía una fila `measured`. O sea que el 45% del correo de corpfiling-infra.com gastaba
+ * cupo del día y no aportaba una sola muestra de la evidencia que gobierna su propia rampa. La
+ * consecuencia fue un parche encima del agujero: `puedeMandarTurno` tuvo que prohibirle el "Re:" a
+ * todo dominio que todavía no juntó muestra, porque el turno le comía la oportunidad de medir.
+ * Con esto el turno mide igual que el ciclo principal y esa prohibición pasa a ser conservadora en
+ * vez de necesaria.
+ *
+ * Réplica exacta de la etapa ② de `runLiveCycle`, incluido el `MISSING`: un correo que el proveedor
+ * aceptó y que no aparece en ninguna carpeta es una MEDICIÓN (la peor de todas), no un error.
+ * Grabarlo como `error` lo dejaría fuera de las ventanas de placement, que filtran `kind='measured'`
+ * — el único camino del sistema hacia más volumen sobre evidencia falsa, ya cerrado una vez.
+ *
+ * Nunca lanza: el correo YA salió y ya quedó grabado como `sent`. Un fallo de medición no puede
+ * tumbar la vuelta ni desaparecer el envío del contador del día.
+ */
+export async function medirTurnoDeHilo(input: {
+  ops: GmailOps | null;
+  enviado: SentMail;
+  subject: string;
+  recorder: ActivityRecorder;
+  base: { cycleId: string; boxDomain: string; seedInbox: string };
+  testId: string;
+  pollAttempts: number;
+  pollDelayMs: number;
+  sleep: (ms: number) => Promise<void>;
+  log: (m: string) => void;
+}): Promise<void> {
+  // Sin lector no se inventa un veredicto: no medido y "no llegó" no son lo mismo, y MISSING es una
+  // afirmación fuerte sobre la reputación del dominio.
+  if (!input.ops) {
+    input.log("el turno salió pero esta semilla no tiene con qué medir dónde cayó");
+    return;
+  }
+  const rfc822 = input.enviado.messageId.replace(/[<>]/g, "");
+  let encontrado: Awaited<ReturnType<GmailOps["findMessage"]>> = null;
+  try {
+    for (let i = 0; i < input.pollAttempts && !encontrado; i += 1) {
+      await input.sleep(input.pollDelayMs);
+      encontrado = await input.ops.findMessage({ rfc822MessageId: rfc822, subject: input.subject });
+    }
+  } catch (err) {
+    // Un IMAP que corta a mitad del polling es "no sé", no "no llegó". Se registra como error de la
+    // ETAPA de medición, que es lo que fue, y no como un MISSING que castigaría al dominio.
+    await input.recorder.record({
+      ...input.base, kind: "error", subject: input.subject, testId: input.testId,
+      detail: { stage: "measured", note: err instanceof Error ? err.message : String(err), origen: "continuación de hilo" }
+    });
+    input.log(`no pude medir el turno — ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const placement = encontrado ? classifyPlacement(encontrado.labelIds) : "MISSING";
+  await input.recorder.record({
+    ...input.base, kind: "measured", placement, subject: input.subject, testId: input.testId,
+    detail: encontrado
+      ? { labels: encontrado.labelIds, origen: "continuación de hilo" }
+      : { note: "no_indexado_en_ventana: el proveedor lo aceptó y no apareció en ninguna carpeta", origen: "continuación de hilo" }
+  });
+  input.log(`el turno cayó en ${placement}`);
+}
+
+/**
  * Cuántas vueltas ENVIARON hoy (UTC).
  *
  * Cuenta solo los ciclos con un evento `sent`, no todos los ciclos. El tope diario existe para
@@ -600,9 +671,21 @@ export async function recentPlacements(pg: PgClient, window: number): Promise<Pl
   // el error de fondo: con 58 dominios, "las últimas 6 filas" no es una ventana, es una lotería —
   // un solo dominio que mide cinco veces la llena entera. El corte real es TEMPORAL (los mismos 10
   // días del resto del sistema); el límite de filas queda solo como tope de memoria.
+  // LA MISMA CLÁUSULA QUE `placementsDeDominio`, Y POR LA MISMA RAZÓN — pero acá pesa más, porque
+  // lo que alimenta este lector es `placement-pause`, el ÚNICO corte que apaga los 58 nodos de
+  // golpe. Desde que `medirTurnoDeHilo` graba `kind:'measured'` para las continuaciones, un "Re:"
+  // dentro de un hilo ya establecido (que entrega mucho mejor que el arranque en frío) entraba en
+  // la ventana GLOBAL y sesgaba la tasa hacia ARRIBA: medido con `decideDaemonAction` real y el
+  // piso por defecto (0,5), 3 dominios × 4 mediciones frías al 25% dan `placement-pause`; sumando
+  // 3 continuaciones en INBOX por dominio la misma llamada devuelve `send` ("inbox 57%"). O sea:
+  // el freno de catástrofe se abría solo. La regla vivía duplicada en dos SQL y sólo una la cumplía.
+  //
+  // `IS DISTINCT FROM` y no `<>`: las filas del ciclo principal no tienen `origen`, y `NULL <> 'x'`
+  // es NULL — descartaría TODAS y dejaría al gate global sin evidencia. Ver plan-diario.ts.
   const { rows } = await pg.query<{ node_domain: string; placement: string | null }>(
     `SELECT node_domain, placement FROM warmup_activity
       WHERE kind = 'measured' AND placement IS NOT NULL
+        AND (detail->>'origen') IS DISTINCT FROM 'continuación de hilo'
         AND occurred_at > now() - interval '${VENTANA_PLACEMENT_DIAS} days'
       ORDER BY occurred_at DESC LIMIT $1`,
     [Math.max(window, 200)]
@@ -958,7 +1041,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       // La salud saca del pool lo que no se puede calentar: cruzado el umbral, cerrado por el
       // receptor, o con la cola atascada. Tener cupo no es lo mismo que valer la pena.
       const saludFlota = await leerSalud(cfg.saludFile);
-      const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota);
+      // Y la AUTENTICACIÓN, que es la exclusión que faltaba: hasta hoy el warmup mandaba sin
+      // verificar que DKIM/PTR/cert siguieran vivos. Lo escribe el barrido diario de reputación;
+      // si el archivo no está, no excluye a nadie y el pool sale igual que antes.
+      const authFlota = await leerReputacion(cfg.reputacionFile);
+      const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota, authFlota);
       if (poolElegido.boxes.join(",") !== poolAnterior) {
         poolAnterior = poolElegido.boxes.join(",");
         // El pool cambió ⇒ hay medición nueva del cupo o de la salud, así que la foto de agotados
@@ -1012,17 +1099,29 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // o un cambio de esquema que rompe una sola query. Ese último es silencioso y permanente.
         let frenados: ReadonlySet<string>;
         let enviadosPorDominio: Map<string, number>;
+        // LA ENTRADA DEL CLAMP 3×/48h, que nunca tuvo llamador vivo. `dailyQuota` lo implementa
+        // desde el diseño v1 (§10) y `decidirCupoDeHoy` se lo pasaba siempre en `undefined`, así
+        // que no clampeaba nada. Medido corriendo el código: el día que un dominio junta su cuarta
+        // medición el cupo salta de 2 a 8/10/12/14/16 — ×4 a ×8 en 24 h, la firma exacta que el
+        // clamp existe para evitar.
+        //
+        // Va en el MISMO Promise.all que las otras cuatro, pero por la razón opuesta: las otras
+        // abortan la vuelta porque su fallo es fail-OPEN sobre el volumen. Ésta sólo puede BAJAR el
+        // cupo, así que su fallo no abre ninguna puerta — igual aborta, porque decidir volumen con
+        // media foto es cómo se cuelan estos bugs.
+        let mandadoHace2Dias: Map<string, number>;
         let historial: UsoPrevio[];
         // El día de rampa sale del PRIMER ENVÍO REAL, no del historial recortado a 400 filas: ese
         // recorte hace que el día dependa del volumen de TODA la flota, y que RETROCEDA cuando
         // otros dominios mandan más.
         let primerEnvio: Map<string, string>;
         try {
-          [frenados, enviadosPorDominio, historial, primerEnvio] = await Promise.all([
+          [frenados, enviadosPorDominio, historial, primerEnvio, mandadoHace2Dias] = await Promise.all([
             boxesSinCupoHoy(pg),
             enviosDeHoy(pg),
             historialDeEnvios(pg),
-            primerEnvioPorDominio(pg)
+            primerEnvioPorDominio(pg),
+            enviosDelDia(pg, 2)
           ]);
         } catch (err) {
           log(`no pude leer el estado del día (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
@@ -1075,6 +1174,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               )?.diasCorridos ?? 0,
             placements: await placementsDeDominio(pg, box, cfg.placementWindow),
             cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
+            ...(mandadoHace2Dias.has(box) ? { cupoHace2Dias: mandadoHace2Dias.get(box)! } : {}),
             isoWeekday,
             limiteDiario: cfg.limiteDiario,
             pasoPorDia: cfg.pasoPorDia
@@ -1237,6 +1337,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                     )?.diasCorridos ?? 0,
                   placements: propias,
                   cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(hiloPrevio.nodeDomain) ?? null,
+                  ...(mandadoHace2Dias.has(hiloPrevio.nodeDomain)
+                    ? { cupoHace2Dias: mandadoHace2Dias.get(hiloPrevio.nodeDomain)! }
+                    : {}),
                   isoWeekday,
                   limiteDiario: cfg.limiteDiario,
                   pasoPorDia: cfg.pasoPorDia
@@ -1312,8 +1415,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               // externo como un WARN genérico y NUNCA se grababa la fila `kind:'error'` que
               // `boxesSinCupoHoy` necesita para saltear ese nodo el resto del día. El nodo seguía
               // recibiendo intentos que ya sabíamos que iban a rebotar.
+              // Se IZA fuera del try: la medición de abajo necesita su Message-ID, y adentro
+              // del bloque el `const` moría antes de llegar.
+              let enviado: SentMail;
               try {
-              const enviado = await mailerHilo.send({
+              enviado = await mailerHilo.send({
                 from: `mailer@${hiloPrevio.nodeDomain}`,
                 inReplyTo: ultimoId,
                 references: idsDelHilo.join(" "),
@@ -1361,6 +1467,33 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 break;
               }
               log(`hilo ${marca}: turno ${turnos.length + 1} enviado — "${turno.texto.slice(0, 60)}…"`);
+              // ── Y SE MIDE, con el mismo lector que ya está abierto tres líneas más arriba ─────
+              //
+              // Hasta acá la continuación GASTABA cupo y no aportaba una sola fila `measured`: el
+              // 45% de los envíos de corpfiling-infra.com no producía nada de la evidencia que
+              // gobierna su propia rampa. Por eso `puedeMandarTurno` tuvo que prohibirle el turno a
+              // todo dominio sin muestra — un parche sobre el agujero, no el agujero.
+              //
+              // La conexión IMAP es la misma de esta vuelta (`opsMedicion`), así que medir no
+              // cuesta una conexión más: cuesta el polling, que es tiempo de espera del daemon y no
+              // recurso de nadie.
+              //
+              // FALLA SUAVE, y a propósito: el correo YA salió y ya está grabado como `sent`. Si la
+              // medición no llega, se graba MISSING igual que en el ciclo principal — el proveedor
+              // lo aceptó y no apareció, que es un dato, no un error. Lo que no puede pasar es que
+              // el turno se pierda del contador porque la medición falló.
+              await medirTurnoDeHilo({
+                ops: opsMedicion,
+                enviado,
+                subject: asuntoRe,
+                recorder,
+                base: { cycleId, boxDomain: hiloPrevio.nodeDomain, seedInbox: semilla.address },
+                testId: hiloPrevio.testId,
+                pollAttempts: cfg.pollAttempts,
+                pollDelayMs: cfg.pollDelayMs,
+                sleep,
+                log: (m) => log(`hilo ${marca}: ${m}`)
+              });
               // Un turno por vuelta. Mandar varios de golpe sería la ráfaga que el daemon evita.
               break;
             }

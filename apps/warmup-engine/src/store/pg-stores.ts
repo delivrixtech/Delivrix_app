@@ -272,10 +272,30 @@ function createSignalStore(client: PgClient): SignalStore {
 
     async countRecent(since: Date): Promise<{ bounces: number; complaints: number }> {
       // Un solo scan de la ventana [since, now): cuenta cada kind con FILTER en vez de N queries.
+      //
+      // EL JOIN NO ES COSMÉTICO: era la única lectura de esta familia sin el filtro anti-fixture que
+      // ya usan sus hermanas (`listByState`, pg-stores.ts:153). Sin él, /v1/warmup/trends venía
+      // devolviendo `bounces: 2 / complaints: 1` FABRICADOS — las filas del backfill de prueba,
+      // cuyos nodos usan `hello@` mientras la flota real usa `mailer@`. Es exactamente lo que el
+      // operador pidió que no pase: "lo que se está imprimiendo en datos reales en la web y en la
+      // base de datos, SEAN REALES y no mocks".
+      //
+      // MEDIDO en la Postgres de producción el 2026-08-07: `warmup_signals` tiene TRES filas en
+      // total, las tres del 2026-07-10 y las tres de `hello@annualfilings-infra.com` (2 bounce +
+      // 1 complaint). O sea que el 100% de lo que el panel mostraba era fixture. La query que las
+      // identifica, para el owner:
+      //
+      //   select n.mailbox, s.kind, count(*), min(s.occurred_at)::date
+      //     from delivrix.warmup_signals s join delivrix.warmup_nodes n on n.id = s.node_id
+      //    where n.mailbox like 'hello@%' group by 1,2;
+      //
+      // NO se borran de producción: eso es decisión del owner y producción es sólo lectura acá. Se
+      // dejan de contar, que es lo que estaba en nuestras manos.
       const { rows } = await client.query<{ bounces: unknown; complaints: unknown }>(
-        "SELECT COUNT(*) FILTER (WHERE kind = 'bounce') AS bounces, " +
-          "COUNT(*) FILTER (WHERE kind = 'complaint') AS complaints " +
-          "FROM warmup_signals WHERE occurred_at >= $1",
+        "SELECT COUNT(*) FILTER (WHERE s.kind = 'bounce') AS bounces, " +
+          "COUNT(*) FILTER (WHERE s.kind = 'complaint') AS complaints " +
+          "FROM warmup_signals s JOIN warmup_nodes n ON n.id = s.node_id " +
+          "WHERE s.occurred_at >= $1 AND n.mailbox NOT LIKE 'hello@%'",
         [since]
       );
       const row = rows[0];

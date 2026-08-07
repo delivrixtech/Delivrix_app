@@ -443,11 +443,22 @@ test("countRecent: FILTER por kind sobre occurred_at>=since; mapea bounces/compl
   const stores = createPgWarmupStores(client);
   const counts = await stores.signals.countRecent(since);
   const q = sql(calls[0].text);
-  assert.match(q, /COUNT\(\*\) FILTER \(WHERE kind = 'bounce'\) AS bounces/);
-  assert.match(q, /COUNT\(\*\) FILTER \(WHERE kind = 'complaint'\) AS complaints/);
-  assert.match(q, /FROM warmup_signals WHERE occurred_at >= \$1/);
+  assert.match(q, /COUNT\(\*\) FILTER \(WHERE s\.kind = 'bounce'\) AS bounces/);
+  assert.match(q, /COUNT\(\*\) FILTER \(WHERE s\.kind = 'complaint'\) AS complaints/);
+  assert.match(q, /FROM warmup_signals s JOIN warmup_nodes n ON n\.id = s\.node_id/);
   assert.deepEqual(calls[0].params, [since]);
   assert.deepEqual(counts, { bounces: 3, complaints: 1 });
+});
+
+test("countRecent NO cuenta las filas fixture: era la única lectura de la familia sin el filtro", async () => {
+  // Las tres filas de `hello@annualfilings-infra.com` que quedaron en la Postgres de producción
+  // hacían que /v1/warmup/trends devolviera bounces 2 / complaints 1 FABRICADOS. Sus hermanas ya
+  // filtraban por `mailbox NOT LIKE 'hello@%'` (la flota real usa `mailer@`); ésta no.
+  // El pedido textual del operador: "lo que se está imprimiendo o enseñando en datos reales en la
+  // web y en la base de datos, SEAN REALES y no mocks".
+  const { client, calls } = fakeClient([{ rows: [{ bounces: "0", complaints: "0" }], rowCount: 1 }]);
+  await createPgWarmupStores(client).signals.countRecent(new Date("2026-08-01T00:00:00Z"));
+  assert.match(sql(calls[0].text), /n\.mailbox NOT LIKE 'hello@%'/);
 });
 
 test("countRecent: sin filas ⇒ ceros (no rompe)", async () => {

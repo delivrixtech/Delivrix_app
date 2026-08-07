@@ -21,6 +21,7 @@
 // Bajarle el volumen a un dominio por un solo correo en spam es ruido, no criterio.
 
 import { dailyQuota, type IsoWeekday } from "./ramp.ts";
+import { wilsonLowerBound } from "./placement.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
 
 /** Qué se decidió hacer hoy con este dominio. */
@@ -51,10 +52,88 @@ export function esInbox(p: Placement): boolean {
   return p === "INBOX" || p === "PROMOTIONS";
 }
 
+/**
+ * LA MEDICIÓN, separada de la decisión: cuántas filas hablan, cuántas aterrizaron, y cuántas se
+ * las tragaron.
+ *
+ * MISSING SALE DEL DENOMINADOR, y ésta es la mitad delicada del cambio. "No apareció en ninguna
+ * carpeta dentro de la ventana" no es "cayó en spam": es que no lo pudimos medir. Contarlo como
+ * fallo, que es lo que hacía `placements.filter(esInbox).length / placements.length`, viola el §9
+ * del propio README (donde `missing` es su bucket propio, ni inbox ni spam) y con la muestra de
+ * hoy —4— UNA sola fila movía la tasa 25 puntos y con ella la decisión del día entero.
+ *
+ * LO QUE MISSING **NO** PIERDE, porque acá hay un incidente cerrado que no se puede reabrir. El
+ * comentario de warmup-live-cycle.ts describe el desastre exacto: "un dominio en día 20 manda 40,
+ * Gmail se traga 36 y 4 llegan a INBOX" — con MISSING fuera del denominador eso da 4 de 4, tasa
+ * 100%, y sería el único camino del sistema hacia MÁS volumen sobre la peor señal que existe.
+ *
+ * POR ESO SALEN DOS TASAS Y NO UNA, y cuál usa cada rama es la mitad delicada del archivo:
+ *   · `tasa`      — depurada (MISSING afuera). Gobierna lo que SUBE: para arriesgar más volumen
+ *                   hace falta evidencia de dónde cayó el correo, y un tragado no es evidencia.
+ *   · `tasaCruda` — sobre TODAS las filas (MISSING adentro). Gobierna lo que BAJA y lo que FRENA.
+ *
+ * La asimetría no es estética, la pagó una medición: con la tasa depurada en las dos ramas que
+ * paran, UN SOLO MISSING en la ventana de 6 de producción levantaba a un dominio de FRENADO (cupo
+ * 0) a 20 correos/día — [MISSING,SPAM,SPAM,SPAM,INBOX,INBOX] daba 33% crudo (debajo de
+ * PISO_CRITICO) y 40% depurado (rama `bajar`). El A/B sobre 8.820 combinaciones encontró 2.626
+ * donde la decisión nueva mandaba MÁS que la vieja, y en las 2.626 había un MISSING: el 100% del
+ * aumento salía de esa línea, apuntando justo al receptor que nos manda a spam.
+ */
+export function medirPlacement(placements: readonly Placement[]): {
+  /** Filas que de verdad dicen dónde cayó. MISSING no está acá. */
+  muestra: number;
+  inbox: number;
+  /** Correos que el receptor aceptó y nadie volvió a ver. Señal propia, no fallo de placement. */
+  tragados: number;
+  /** Inbox sobre `muestra`. `null` = nadie midió nada, que NO es 0%. */
+  tasa: number | null;
+  /** Inbox sobre TODAS las filas, tragados incluidos. La que usan las ramas que bajan y frenan. */
+  tasaCruda: number | null;
+} {
+  const tragados = placements.filter((p) => p === "MISSING").length;
+  const medidos = placements.filter((p) => p !== "MISSING");
+  const inbox = medidos.filter(esInbox).length;
+  return {
+    muestra: medidos.length,
+    inbox,
+    tragados,
+    tasa: medidos.length > 0 ? inbox / medidos.length : null,
+    tasaCruda: placements.length > 0 ? inbox / placements.length : null
+  };
+}
+
 /** Debajo de esto el dominio está en problemas y hay que bajar el volumen. */
 export const PISO_SANO = 0.7;
+// ACÁ VIVÍA `PISO_TRAGADOS` (0,5), la regla que bajaba el volumen cuando la mitad de los correos se
+// los tragaban. Se BORRÓ, y no por gusto: era INALCANZABLE con la ventana de producción y quedó
+// subsumida por la tasa cruda.
+//
+//   · Inalcanzable: exigía `muestra >= MUESTRA_MINIMA` (4 filas MEDIDAS) y encima
+//     `tragados/total >= 0,5`. Con `WARMUP_LIVE_PLACEMENT_WINDOW=6` (verificado en el gateway.env de
+//     la Studio) eso pide 3 tragados y 4 medidos sobre 6 filas: imposible. Su test la probaba con
+//     40 filas, una ventana que `placementsDeDominio` (LIMIT 6) no puede devolver — el fixture y el
+//     código compartían la suposición, que es la lección `verificar-con-el-mismo-camino-de-produccion`.
+//   · Subsumida: con la tasa CRUDA en las dos ramas que paran, `tragados/total >= 0,5` implica
+//     `inbox/total <= 0,5`, o sea siempre por debajo de PISO_SANO ⇒ baja igual, y por debajo de
+//     PISO_CRITICO frena, que es MÁS seguro que el `rampa/2` que daba la regla vieja. Dos reglas
+//     para el mismo hecho, una de ellas muerta, es peor que una sola que se puede disparar.
 /** Debajo de esto seguir mandando profundiza el pozo: se frena. */
 export const PISO_CRITICO = 0.35;
+/**
+ * El piso que tiene que superar el LÍMITE INFERIOR de Wilson para que la rampa AVANCE.
+ *
+ * NO es `PISO_SANO`, y confundirlos habría matado la rampa en silencio. Producción corre con
+ * `WARMUP_LIVE_PLACEMENT_WINDOW=6` (verificado en gateway.env), o sea que la muestra tiene 6 filas
+ * como máximo — y `wilsonLowerBound(6, 6)` da 0,6096. Contra 0,70 el gate sería MATEMÁTICAMENTE
+ * inalcanzable: ni una ventana perfecta lo cruza, "subir" no vuelve a ocurrir nunca, y la fábrica
+ * deja de crecer sin que nada falle ni nadie se entere. Comparar un límite inferior contra el
+ * mismo umbral que se usa para el valor puntual es contar la prudencia dos veces.
+ *
+ * 0,60 no es un número elegido: es el que ya usa el §9 del diseño para su propio gate de Wilson
+ * ("ningún proveedor mayor con LB < 0.60"). Con él, una ventana limpia de 6 avanza (0,6096) y
+ * cuatro aciertos de cuatro no (0,5101), que es exactamente la asimetría pedida.
+ */
+export const PISO_PARA_SUBIR = 0.6;
 /** Mediciones mínimas antes de reaccionar. Con menos, es ruido. */
 export const MUESTRA_MINIMA = 4;
 /** Con qué volumen arranca un dominio sin historial. */
@@ -126,7 +205,16 @@ export interface EntradaDecision {
    * Con el cupo desconocido gobierna la rampa, que ya es un techo sano, y se declara en el motivo.
    */
   cupoFisico: number | null;
-  /** Cupo de hace 2 días, para el clamp 3×/48h del diseño. */
+  /**
+   * Lo que este dominio MANDÓ hace 2 días (envíos reales, no cupo autorizado). Alimenta UNA sola
+   * cosa: el piso del "sostener" de abajo, que va topado por la rampa y por eso no puede inflar
+   * nada.
+   *
+   * NO alimenta más el clamp 3×/48h de `dailyQuota`. El porqué está entero arriba de la llamada a
+   * `dailyQuota`: los envíos reales están topados por un límite GLOBAL del daemon sin relación con
+   * el cupo del dominio, así que como base del clamp frenaba a los sanos, soltaba a los que no
+   * mandaron, y se realimentaba hasta congelar el plan.
+   */
   cupoHace2Dias?: number;
   /** Día de la semana en el receptor (1=lun…7=dom). */
   isoWeekday: IsoWeekday;
@@ -147,10 +235,24 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
     return { cupo: 0, accion: "frenar", motivo: "el nodo está frenado en Postfix (cap 0)", placement: null };
   }
 
-  const muestra = e.placements.length;
-  const tasa = muestra > 0 ? e.placements.filter(esInbox).length / muestra : null;
+  const { muestra, inbox, tragados, tasa, tasaCruda } = medirPlacement(e.placements);
 
   // La rampa del diseño: lineal por día, con los clamps de §10. No se reescribe acá.
+  //
+  // EL CLAMP 3×/48h NO SE ALIMENTA MÁS DE `cupoHace2Dias`, y esto se midió contra la base de
+  // producción antes de sacarlo. `cupoHace2Dias` son ENVÍOS REALES, y los envíos reales están
+  // topados por `WARMUP_LIVE_MAX_PER_DAY` (14 vueltas para TODA la flota), así que por dominio dan
+  // 1-8, casi siempre 2. Con eso adentro el clamp hacía dos cosas al revés:
+  //   · corpfiling-infra.com —el más sano, 83% de bandeja— mandó 1 el 05-ago ⇒ techo 3/día;
+  //   · opscorpfiling.com mandó 0 ese día ⇒ ausente del Map ⇒ SIN clamp, rampa entera.
+  // O sea: frenaba a los sanos y soltaba a los que no mandaron. Y se realimentaba: el plan quedaba
+  // fijo en 3-6/día para siempre mientras `accion` seguía diciendo "subir" y el panel pintaba una
+  // rampa que no avanzaba.
+  //
+  // ponytail: el clamp anti-firma del §10 necesita el CUPO AUTORIZADO de hace dos días, que hoy no
+  // se persiste en ningún lado (no hay tabla de plan diario ni el `sent` guarda el cupo del día).
+  // Mientras no exista, un proxy que mide otra cosa es peor que no clampear: hoy el techo real lo
+  // ponen el cupo físico del nodo y el tope global del daemon, los dos muy por debajo de la rampa.
   const rampa = dailyQuota(
     {
       dailyLimit: e.limiteDiario ?? RAMPA_LIMITE_DIARIO_DEFAULT,
@@ -158,8 +260,7 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
       dayIndex: e.diaN,
       weekdaysOnly: false
     },
-    e.isoWeekday,
-    { quotaTwoDaysAgo: e.cupoHace2Dias }
+    e.isoWeekday
   );
 
   const contra = (n: number, accion: AccionDiaria, motivo: string): DecisionDiaria => {
@@ -187,32 +288,103 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
     return contra(
       Math.min(rampa, CUPO_ARRANQUE),
       "sostener",
-      `solo ${muestra} medición(es): hacen falta ${MUESTRA_MINIMA} para mover el volumen`
+      `solo ${muestra} medición(es)${tragados > 0 ? ` (y ${tragados} correo(s) que se tragaron sin dejar rastro)` : ""}: ` +
+        `hacen falta ${MUESTRA_MINIMA} para mover el volumen`
     );
   }
 
-  if (tasa < PISO_CRITICO) {
+  // ── LAS DOS RAMAS QUE PARAN MIRAN LA PROPORCIÓN CRUDA ───────────────────────────────────────
+  //
+  // `cruda` cuenta los tragados en el denominador. Es la única forma de que un MISSING no pueda
+  // SACAR a un dominio del freno (ver `medirPlacement`), y de que el dominio del que el receptor se
+  // traga 36 de 40 —4 de 4 en bandeja, 100% depurado— caiga igual: 4/40 = 10%, frenar.
+  //
+  // El corte por `MUESTRA_MINIMA` sigue siendo sobre las filas MEDIDAS y sigue estando arriba, a
+  // propósito: bajar el corte a `placements.length` haría que un dominio con 4 tragados y 2 medidos
+  // pasara de `sostener 2` a `bajar rampa/2` = 20/día. "Bajar" no puede terminar mandando más que
+  // "sostener": ésa es la dirección insegura y ya se metió una vez por esta misma puerta.
+  const cruda = tasaCruda ?? tasa;
+  // EL VOLUMEN DE "SOSTENER", CALCULADO ACÁ ARRIBA PORQUE ES EL TECHO DE "BAJAR".
+  //
+  // Lo pide la MONOTONÍA: peor placement no puede terminar mandando más correo. La rama `bajar`
+  // vale `rampa/2`, que CRECE con el día (día 20 ⇒ 20/día), mientras `sostener` está anclado a lo
+  // que el dominio realmente mandó anteayer —1 u 8, casi siempre 2, porque los envíos reales están
+  // aplastados por el tope GLOBAL del daemon (`WARMUP_LIVE_MAX_PER_DAY=14` para toda la flota)—.
+  // Con las dos ramas sueltas, medido corriendo `decidirCupoDeHoy` sobre la ventana de 6 de
+  // producción (`WARMUP_LIVE_PLACEMENT_WINDOW=6`, verificado en gateway.env):
+  //
+  //   5 INBOX / 1 SPAM (83%) → sostener  2/día
+  //   4 INBOX / 2 SPAM (67%) → bajar    20/día     ← DIEZ VECES MÁS, con peor entrega
+  //
+  // y lo mismo en toda la rampa (día 4: 2 vs 4; día 8: 2 vs 8; día 12: 2 vs 12). El presupuesto del
+  // día se corría hacia el dominio que peor entrega: `live-warmup-daemon` gatea el envío real con
+  // `enviadosHoyBox >= delDia.cupo`, así que el sano salía del reparto a los 2 envíos y el que se
+  // estaba yendo a spam seguía elegible toda la vuelta. Ése es exactamente el mecanismo que empuja
+  // al umbral permanente de Gmail.
+  //
+  // El comentario de la rama de la tasa cruda ya declaraba el invariante ("'Bajar' no puede
+  // terminar mandando más que 'sostener'") y lo cuidaba en el borde de MUESTRA_MINIMA; la puerta
+  // abierta era la de al lado. Ahora vale POR CONSTRUCCIÓN: subir ≥ sostener ≥ bajar ≥ frenar.
+  const sostenido = Math.min(rampa, Math.max(CUPO_ARRANQUE, e.cupoHace2Dias ?? CUPO_ARRANQUE));
+  const detalleCrudo =
+    `${inbox} de ${e.placements.length} correos llegaron a bandeja` +
+    (tragados > 0 ? ` (${tragados} se los tragaron sin dejar rastro)` : "");
+
+  if (cruda < PISO_CRITICO) {
     return {
       cupo: 0,
       accion: "frenar",
-      motivo: `placement ${pct(tasa)} sobre ${muestra} mediciones: seguir mandando profundiza el pozo`,
+      motivo: `placement ${pct(cruda)}: ${detalleCrudo}. Seguir mandando profundiza el pozo`,
       placement: tasa
     };
   }
-  if (tasa < PISO_SANO) {
+  if (cruda < PISO_SANO) {
     // A la MITAD, no a cero. Un dominio que deja de mandar no recupera reputación: se queda
     // quieto. Lo que reconstruye es volumen bajo con buena señal.
     return contra(
-      Math.max(1, Math.floor(rampa / 2)),
+      Math.min(Math.max(1, Math.floor(rampa / 2)), sostenido),
       "bajar",
-      `placement ${pct(tasa)} sobre ${muestra} mediciones: se baja a la mitad y se sigue mandando`
+      `placement ${pct(cruda)}: ${detalleCrudo}. Se baja a la mitad y se sigue mandando`
+    );
+  }
+
+  // ── SUBIR EXIGE PRUEBA. BAJAR NO. ───────────────────────────────────────────────────────────
+  //
+  // Wilson entra ASIMÉTRICO y sólo acá, y la asimetría es el punto: para arriesgar más volumen hace
+  // falta evidencia; para replegarse, no. Por eso las dos ramas de arriba (bajar y frenar) siguen
+  // mirando la proporción cruda y ésta mira el límite inferior del intervalo.
+  //
+  // El bug que cierra, medido corriendo el código: el día que un dominio junta su CUARTA medición
+  // pasa de `sostener 2` a la rampa entera —2 → 8/10/12/14/16 en 24 h— porque `4 de 4` se lee como
+  // 100%. Con n=4, el 100% crudo es compatible con una tasa real del 51%: `wilsonLowerBound(4,4)`
+  // da 0,51 y no llega a `PISO_PARA_SUBIR`. Una ventana limpia de 6 da 0,61 y ahí sí. O sea: la
+  // rampa avanza cuando la evidencia la banca, no cuando la muestra es chica y tuvo suerte.
+  //
+  // El piso es `PISO_PARA_SUBIR` (0,60) y NO `PISO_SANO` (0,70): con la ventana de 6 de producción,
+  // 0,70 hace el gate inalcanzable y la rampa muere en silencio. Ver la constante.
+  //
+  // `wilsonLowerBound` estaba implementado en domain/placement.ts desde el diseño v1 (§9, "gateo
+  // sobre el LOWER-BOUND, no la proporción cruda") y NINGÚN camino vivo lo llamaba. Esta línea es
+  // la que lo enchufa.
+  const piso = wilsonLowerBound(inbox, muestra) ?? 0;
+  if (piso < PISO_PARA_SUBIR) {
+    // SOSTENER = el volumen que ya venía teniendo, no el de arranque. Bajarlo a 2 castigaría a un
+    // dominio sano por no haber juntado muestra todavía, que es justo lo contrario de lo que se
+    // busca. `cupoHace2Dias` es lo que REALMENTE mandó hace dos días (lo alimenta el daemon desde
+    // la base): sin ese dato, un dominio que no mandó nada hace dos días no tiene volumen que
+    // sostener y arranca de nuevo por el piso.
+    return contra(
+      sostenido,
+      "sostener",
+      `placement ${pct(tasa)} sobre ${muestra} mediciones, pero con esa muestra el piso real puede ser ${pct(piso)}: ` +
+        `sostengo el volumen y junto evidencia antes de subir`
     );
   }
 
   return contra(
     rampa,
     e.diaN > 1 ? "subir" : "arrancar",
-    `placement ${pct(tasa)} sobre ${muestra} mediciones: la rampa avanza (día ${e.diaN})`
+    `placement ${pct(tasa)} sobre ${muestra} mediciones (piso ${pct(piso)}): la rampa avanza (día ${e.diaN})`
   );
 }
 

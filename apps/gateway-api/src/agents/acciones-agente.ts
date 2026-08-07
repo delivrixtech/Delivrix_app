@@ -148,6 +148,15 @@ export interface ReputacionLeida {
   dkim: ChequeoReputacion;
   dmarc: ChequeoReputacion;
   ptr: ChequeoReputacion;
+  /**
+   * El certificado TLS del propio nodo, por el 587. No lo mira NADIE y ya pasó una vez:
+   * filing-ops.com quedó sin cert y los receptores que exigen STARTTLS le cerraron la puerta sin
+   * que ninguna de las otras cuatro señales se moviera un milímetro.
+   *
+   * No cuesta cuota (es node:tls contra nuestro propio nodo, sin terceros), así que no compite con
+   * las listas negras por el presupuesto de MXToolbox.
+   */
+  tls: ChequeoReputacion;
 }
 
 /** Lo que el agente pidió hacer. Sale del modelo, así que se trata como entrada no confiable. */
@@ -902,7 +911,7 @@ export async function ejecutarAcciones(
           // publicar la primera sola: el que lee se queda con la que confirma lo que ya creía.
           detalle:
             `${dominio} (${rep.ip}): listas negras ${rep.blacklist.detalle} · auth ` +
-            `${[sello("SPF", rep.spf), sello("DKIM", rep.dkim), sello("DMARC", rep.dmarc), sello("PTR", rep.ptr)].join(", ")}` +
+            `${[sello("SPF", rep.spf), sello("DKIM", rep.dkim), sello("DMARC", rep.dmarc), sello("PTR", rep.ptr), sello("TLS", rep.tls)].join(", ")}` +
             ` · receptor: ${receptor}`,
           despues: rep.blacklist.estado
         });

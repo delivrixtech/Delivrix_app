@@ -614,3 +614,77 @@ test("CONTRATO: todos los Pool de pg del warmup registran listener de 'error'", 
     assert.match(src, /\.on\("error"/, `${f}: Pool sin listener 'error' — un socket ocioso mata el proceso`);
   }
 });
+
+// ── El turno de continuación por fin MIDE ────────────────────────────────────────────────────────
+//
+// Medido el 2026-08-06: de 18 envíos de la vuelta, 7 eran continuaciones y NINGUNA producía una
+// fila `measured`. El 45% del correo de corpfiling-infra.com gastaba cupo del día y no aportaba una
+// sola muestra de la evidencia que gobierna su propia rampa.
+
+import { medirTurnoDeHilo } from "./live-warmup-daemon.ts";
+
+function grabador() {
+  const filas: Array<Record<string, unknown>> = [];
+  return { filas, recorder: { async record(e: Record<string, unknown>) { filas.push(e); } } as never };
+}
+
+const BASE_HILO = { cycleId: "cyc-1", boxDomain: "corpfiling-infra.com", seedInbox: "s@gmail.com" };
+const ENVIADO = { messageId: "<abc@corpfiling-infra.com>", response: "250 2.0.0 Ok: queued as 4XyZ" };
+const SIN_ESPERA = { pollAttempts: 2, pollDelayMs: 0, sleep: async () => {} };
+
+test("el turno de continuación graba su placement con el lector ya abierto", async () => {
+  const { filas, recorder } = grabador();
+  const vistos: unknown[] = [];
+  await medirTurnoDeHilo({
+    ...SIN_ESPERA,
+    ops: {
+      findMessage: async (q: unknown) => { vistos.push(q); return { gmailId: "g1", threadId: "t1", labelIds: ["INBOX"] }; },
+      modifyLabels: async () => { throw new Error("medir no puede TOCAR el buzón"); },
+      sendReply: async () => { throw new Error("medir no puede responder"); }
+    } as never,
+    enviado: ENVIADO, subject: "Re: algo [abc123]", recorder, base: BASE_HILO, testId: "t-abc123",
+    log: () => {}
+  });
+  assert.equal(filas.length, 1);
+  assert.equal(filas[0]!.kind, "measured");
+  assert.equal(filas[0]!.placement, "INBOX");
+  assert.deepEqual(vistos[0], { rfc822MessageId: "abc@corpfiling-infra.com", subject: "Re: algo [abc123]" }, "sin los <>");
+});
+
+test("el turno que nadie volvió a ver se graba MISSING, no 'error'", async () => {
+  // Grabarlo como `error` lo dejaría FUERA de las ventanas de placement (que filtran
+  // kind='measured') y ese silencio se lee como éxito: el único camino del sistema hacia más
+  // volumen sobre evidencia falsa, ya cerrado una vez en el ciclo principal.
+  const { filas, recorder } = grabador();
+  await medirTurnoDeHilo({
+    ...SIN_ESPERA,
+    ops: { findMessage: async () => null, modifyLabels: async () => {}, sendReply: async () => ({ id: "x" }) } as never,
+    enviado: ENVIADO, subject: "Re: algo", recorder, base: BASE_HILO, testId: "t-1", log: () => {}
+  });
+  assert.equal(filas[0]!.kind, "measured");
+  assert.equal(filas[0]!.placement, "MISSING");
+});
+
+test("un IMAP que corta a mitad NO se convierte en MISSING: es 'no sé'", async () => {
+  // MISSING es una afirmación fuerte sobre la reputación del dominio. Un lector que se cae es la
+  // lección del probe con `head -c` del 2026-07-29: un chequeo colgado devuelve "no sé", jamás un
+  // veredicto que castigue.
+  const { filas, recorder } = grabador();
+  await medirTurnoDeHilo({
+    ...SIN_ESPERA,
+    ops: { findMessage: async () => { throw new Error("ECONNRESET"); }, modifyLabels: async () => {}, sendReply: async () => ({ id: "x" }) } as never,
+    enviado: ENVIADO, subject: "Re: algo", recorder, base: BASE_HILO, testId: "t-1", log: () => {}
+  });
+  assert.equal(filas[0]!.kind, "error");
+  assert.equal((filas[0]!.detail as { stage: string }).stage, "measured");
+  assert.notEqual(filas[0]!.placement, "MISSING");
+});
+
+test("sin lector no se inventa un veredicto: no se graba nada", async () => {
+  const { filas, recorder } = grabador();
+  await medirTurnoDeHilo({
+    ...SIN_ESPERA, ops: null,
+    enviado: ENVIADO, subject: "Re: algo", recorder, base: BASE_HILO, testId: "t-1", log: () => {}
+  });
+  assert.deepEqual(filas, [], "no medido y 'no llegó' no son lo mismo");
+});

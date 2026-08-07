@@ -17,10 +17,11 @@ import {
   buildDailyCapStatusCommand,
   CAP_POLICY_PARAM,
   parseDailyCapStatus,
+  porEncimaDelTecho,
   renderDailyCapPolicyScript,
   SUBMISSION_RESTRICTIONS
 } from "./node-daily-cap.ts";
-import { TECHO_ABSOLUTO } from "./sender-quota.ts";
+import { TECHO_DURO_POR_DOMINIO } from "../../warmup-engine/src/domain/decision-diaria.ts";
 
 /** Un request real del protocolo de policy delegation (atributos + línea vacía). */
 function request(attrs: Record<string, string>): string {
@@ -253,12 +254,44 @@ test("el cap del plan se valida: nada de 0, negativos ni fracciones", () => {
   assert.equal(buildDailyCapInstallPlan({ cap: 2000 }).length > 0, true);
 });
 
-test("un cap por encima del tope absoluto se RECHAZA (no se recorta)", () => {
-  // El agujero que cazó el gate: sin esto, --cap=50000 instalaba en la flota un tope 10× arriba
-  // del umbral permanente de Google — justo lo que este módulo existe para impedir.
-  assert.throws(() => buildDailyCapInstallPlan({ cap: 50_000 }), /supera el tope absoluto/);
-  assert.throws(() => buildDailyCapInstallPlan({ cap: TECHO_ABSOLUTO + 1 }), /supera el tope absoluto/);
-  assert.equal(buildDailyCapInstallPlan({ cap: TECHO_ABSOLUTO }).length > 0, true, "el tope exacto sí vale");
+test("el cap físico NO puede instalarse por encima del techo irreversible", () => {
+  // EL INCIDENTE: hay nueve nodos con 15.000/día cableado, 3× el umbral permanente de Google, y
+  // los nueve figuran hoy como cruzados. El cap hizo su trabajo; el trabajo estaba mal definido,
+  // porque este módulo validaba contra 4.000 mientras la decisión del warmup validaba contra
+  // 2.000. Dos números para la misma pared = ninguna pared.
+  assert.throws(() => buildDailyCapInstallPlan({ cap: 15_000 }), /TECHO_DURO_POR_DOMINIO/);
+  assert.throws(() => buildDailyCapInstallPlan({ cap: 50_000 }), /TECHO_DURO_POR_DOMINIO/);
+  assert.throws(() => buildDailyCapInstallPlan({ cap: TECHO_DURO_POR_DOMINIO + 1 }), /TECHO_DURO_POR_DOMINIO/);
+  assert.equal(buildDailyCapInstallPlan({ cap: TECHO_DURO_POR_DOMINIO }).length > 0, true, "el techo exacto sí vale");
+  assert.equal(TECHO_DURO_POR_DOMINIO, 2000, "si esto cambia, cambió la pared de todo el sistema");
+});
+
+test("el cruce que faltaba: cerca del umbral Y con un cap que lo deja cruzarlo", () => {
+  // infranationalreport.com: pico de 4.649/día a Google (93% del umbral irreversible) con 15.000
+  // instalado. Los dos archivos los lee el monitor en la misma vuelta, cada 10 minutos, y nadie
+  // los relacionó jamás — así que el aviso llegaría el día después de que ya no sirva.
+  const nodos = [
+    { domain: "infranationalreport.com", cap: 15_000 },
+    { domain: "corpfiling-infra.com", cap: 20 },
+    { domain: "docfiling-ops.com", cap: 2000 }
+  ];
+  assert.deepEqual(
+    porEncimaDelTecho({ cerca: ["infranationalreport.com", "corpfiling-infra.com", "docfiling-ops.com"], nodos }),
+    // EL CAP VIAJA CON EL NOMBRE. Con la lista de nombres sola, el mensaje de d2 no podía decir los
+    // dos números que hacen falta para decidir (15.000 cableado contra 2.000 de techo) y la
+    // respuesta textual del jefe al mensaje sin números fue "No entiendo, es decir ?".
+    [{ dominio: "infranationalreport.com", cap: 15_000 }],
+    "sólo el que está por ENCIMA del techo; 2000 exacto es el techo, no una violación"
+  );
+});
+
+test("no medido NO es 'está sobre el techo': sin cap leído, el dominio no entra", () => {
+  // La regla 5 del encargo, acá donde más caro sale: éste es el input de una regla de DAÑO, y un
+  // aviso de daño inventado sobre un `cap: null` (SSH caído en ese nodo) es exactamente el probe
+  // colgado del 2026-07-29 con otra ropa.
+  assert.deepEqual(porEncimaDelTecho({ cerca: ["x.com"], nodos: [{ domain: "x.com", cap: null }] }), []);
+  assert.deepEqual(porEncimaDelTecho({ cerca: ["x.com"], nodos: [] }), [], "ausente del archivo tampoco afirma nada");
+  assert.deepEqual(porEncimaDelTecho({ cerca: [], nodos: [{ domain: "x.com", cap: 15_000 }] }), [], "sin cercanía no hay daño inminente");
 });
 
 test("un rollback fallido NO puede reportar éxito (el `|| true` va aislado)", () => {

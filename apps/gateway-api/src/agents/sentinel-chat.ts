@@ -61,6 +61,16 @@ export const VOZ = [
   "- Un emoji está bien cuando suma (👀 para \"lo estoy mirando\", ✅ para \"listo\", ⚠️ para algo",
   "  serio). Uno, no cinco. Y nunca en una mala noticia.",
   "- Podés usar signos de exclamación cuando de verdad hay entusiasmo o urgencia. No en cada frase.",
+  // LA MITAD DEL PROMPT DE LA REGLA DEL MARKDOWN. La otra es `limpiarParaSlack`, y las dos hacen
+  // falta: el reclamo textual del jefe es "esa manera o lexico de escribir esta muy bot del 2000…
+  // recuerdo que openclaw me respondia con asteriscos, muy horrible genericamente". La regresión
+  // exacta que fija el test es la respuesta del 2026-08-07T11:10Z, guardada en
+  // warmup-conversacion.json: "Hoy calientan **6 dominios**, todos con cupo controlado:\n\n-
+  // **corpfiling-infra.com** — el mejor: 83% inbox…". SISTEMA ya tenía la prohibición para su
+  // carril ("Sin viñetas, sin títulos, sin despedidas") y VOZ no la tenía: por eso salía informe.
+  // Pedirlo acá baja la frecuencia; lo que la SOSTIENE el día que el modelo se olvide es el código.
+  "- NADA DE MARKDOWN. Escribís en un chat, no en un informe: sin asteriscos, sin negritas, sin",
+  "  viñetas, sin títulos y sin listas numeradas. Si son varias cosas, van en frases seguidas.",
   "",
   "PERO CUANDO EL TEMA ES SERIO, EL TONO SE PONE PLANO. Una mala noticia, un número, un",
   "diagnóstico: ahí no hay emojis ni color. El cariño va en el saludo y en el cierre, nunca en el",
@@ -198,7 +208,22 @@ export interface ContextoChat {
   hilo: Array<{ quien: "jefe" | "vos"; texto: string }>;
   /** La última lectura VERIFICADA del otro carril. Es la única fuente de hechos del chat. */
   snapshot: LecturaAgente | null;
-  /** Qué acciones pidió y en qué terminaron (bitacora-acciones.ts). */
+  /**
+   * Qué acciones pidió y en qué terminaron (bitacora-acciones.ts).
+   *
+   * ES UNA ENTRADA, NUNCA UNA SALIDA, y ahí está el arreglo de la queja de la voz. Hoy el
+   * orquestador arma `hechas = res.map(a => \`${a.ejecutada ? "hecho" : "no pude"}: ${a.detalle}\`)`
+   * y lo CONCATENA debajo de la prosa del modelo, así que al jefe le llega el detalle crudo tal
+   * como sale de la máquina. Textual del log de producción: "no pude medirlo: connect ECONNREFUSED
+   * 127.0.0.1:5432", 'rechazada: "medir_dominio_controlcontrolledger.com" no es una acción
+   * permitida', "no_traffic, 0 entregados / 0 rechazados". Eso no es una frase de persona: es un
+   * stack trace con un prefijo en castellano.
+   *
+   * El camino correcto ya existía y no se usaba: el resultado entra POR ACÁ al turno siguiente y lo
+   * cuenta el modelo con sus palabras, que es exactamente para lo que este campo fue escrito.
+   * Hay un test que fija el contrato: lo que entra por este campo aparece en el PROMPT y nunca en
+   * el texto publicable.
+   */
   loQueHiciste: readonly string[];
 }
 
@@ -334,6 +359,22 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
 /**
  * Marca lo que el modelo afirmó y no está en el contexto. NO edita la respuesta —editarla escondería
  * que se está portando mal, que es justo lo que hay que ver— pero deja constancia.
+ *
+ * QUIÉN DECIDE QUÉ HACER CON ESTO CAMBIÓ, y la firma no. Hasta hoy el resultado se imprimía en el
+ * log ("[chat] observaciones: cita el número 13, que no está en el contexto · … el 16 · … el 29",
+ * textual del 2026-08-07) y se publicaba igual: una observación que nadie mira es un detector
+ * apagado. La regla nueva, por CLASE del mensaje:
+ *
+ *   · Respuesta al jefe en el chat (este carril): se publica igual y las observaciones se cuentan.
+ *     Él está del otro lado y puede corregir en el mismo turno; callarle una respuesta por un número
+ *     dudoso le cuesta más de lo que le ahorra.
+ *   · Aviso PROACTIVO de clase huella promovida por aprendizaje: BLOQUEANTE. Si hay una sola
+ *     observación, el mensaje NO sale y queda `tapado=voz-inventada`. Nadie lo va a contradecir del
+ *     otro lado —el jefe puede estar durmiendo— y un avance con un número inventado es peor que no
+ *     mandarlo: el panel ya tiene el avance de verdad.
+ *
+ * Un array vacío NO es "verificado": es "no encontré nada que no estuviera en el contexto". Con el
+ * contexto flaco, todo pasa limpio. Es un piso, no un sello.
  */
 export function revisarRespuesta(respuesta: string, contexto: string): string[] {
   const observaciones: string[] = [];
@@ -398,6 +439,68 @@ export const MARCADORES: readonly string[] = ["ACCION", "RECORDAR", "PROMET[IÍ]
  */
 export function limpiarMaquinaria(texto: string, soloEstos?: readonly string[]): string {
   return texto.replace(new RegExp(`^[ \\t]*(${(soloEstos ?? MARCADORES).join("|")}):.*$`, "gim"), "").trim();
+}
+
+/**
+ * LA ÚLTIMA PUERTA ANTES DE SLACK. Todo lo que se publica en el canal —los dos carriles— pasa por
+ * acá. Deja el texto como lo escribiría una persona en un chat.
+ *
+ * POR QUÉ EXISTE. El reclamo textual del jefe: "esa manera o lexico de escribir esta muy bot del
+ * 2000… recuerdo que openclaw me respondia con asteriscos, muy horrible genericamente, y luego
+ * arreglamos eso". Y el hallazgo que ordena el arreglo: el vicio NO viene del prompt. De las 189
+ * líneas VOZ del log de producción, UNA sola mete un nombre de acción en la prosa; lo que suena a
+ * máquina lo AGREGA EL CÓDIGO DESPUÉS de que el modelo terminó de escribir. Ningún prompt puede
+ * arreglar eso, porque para cuando eso se pega el modelo ya contestó.
+ *
+ * QUÉ SACA, y cada cosa con su incidente:
+ *  · Markdown. Textual del 2026-08-07T11:10Z: "Hoy calientan **6 dominios**, todos con cupo
+ *    controlado:\n\n- **corpfiling-infra.com** — el mejor: 83% inbox…". Slack no renderiza `**`,
+ *    así que al jefe le llegan los asteriscos crudos. Es la mitad de código de la regla; la otra
+ *    mitad, la del prompt, está en VOZ. Las dos, porque una sola no alcanza: sin la del prompt el
+ *    modelo lo sigue escribiendo, y sin la del código un olvido del modelo llega igual al canal.
+ *  · El vocativo inicial. `slack.ts` declara el invariante desde hace tiempo y nadie lo aplicaba:
+ *    71 de 192 líneas VOZ del log arrancan con "Juanes,". El único `replace` que lo sacaba vivía
+ *    suelto en el orquestador, cubría UN carril (el chat) y solo si había SLACK_JUANES_USER_ID.
+ *    Se saca únicamente cuando es un vocativo de verdad —el nombre y una coma o un signo—, así que
+ *    "Juanes tiene razón" no se toca y "Acá estoy, Juanes 👀" tampoco: ese suena a persona.
+ *  · Los marcadores. Va sobre `limpiarMaquinaria` COMPLETA a propósito, no sobre una lista elegida
+ *    a mano: el orquestador publica hoy con dos `.replace` escritos a mano (ACCION: y RECORDAR:) y
+ *    ése es el modo de falla que este repo ya pagó tres veces — se agrega un marcador al prompt y
+ *    algún camino de publicación se olvida de limpiarlo, así que sale crudo. Acá no se puede
+ *    olvidar: quien publica llama a una función y los marcadores futuros vienen incluidos.
+ *
+ * QUÉ NO TOCA: los guiones bajos de un identificador. Convertir `revisar_reputacion` en
+ * "revisarreputacion" sería cambiar un texto de máquina por uno roto. Los nombres de acción no
+ * tienen que llegar acá — se sacan en origen, no se disfrazan.
+ */
+export function limpiarParaSlack(texto: string): string {
+  const sinFormato = limpiarMaquinaria(texto)
+    // Negritas e itálicas. El `*` de énfasis se saca ANTES que las viñetas: si no, una línea
+    // `*importante* esto` perdería el primer asterisco como si fuera un bullet y quedaría
+    // "importante* esto", que es peor que el markdown original.
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/(?<![\w*])\*([^*\n]+)\*(?![\w*])/g, "$1")
+    // El subrayado SOLO cuando envuelve una frase entera (bordes que no son palabra). Así
+    // `__negrita__` cae y `frenar_dominio` sobrevive entero.
+    .replace(/(?<![\w_])__([^_\n]+)__(?![\w_])/g, "$1")
+    .replace(/(?<![\w_])_([^_\n]+)_(?![\w_])/g, "$1")
+    // Títulos y viñetas: la línea deja de ser un ítem de informe y pasa a ser una frase.
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^[ \t]*[-*•][ \t]+/gm, "");
+
+  const sinVocativo = sinFormato.replace(/^[¡\s]*juanes[ \t]*[,!:]+[ \t]*/i, "");
+  // LA MAYÚSCULA SOLO REPARA LO QUE ESTA FUNCIÓN ROMPIÓ, y las dos condiciones costaron un test en
+  // rojo. (1) Solo si de verdad se sacó el vocativo: subirle la mayúscula a un mensaje que ya
+  // arrancaba en minúscula sería reescribir lo que estaba bien, y un saneador que corrige de más es
+  // una fuente de bugs que nadie mira porque parecen aciertos. (2) Solo si la primera palabra son
+  // letras: sin eso, "Juanes, corpfiling-infra.com viene en 83%" salía como "Corpfiling-infra.com",
+  // o sea un dominio con mayúscula inventada — cambiar un tic de bot por un dato deformado es peor
+  // que el tic. Un dominio, una IP o un identificador nunca empiezan una frase en mayúscula.
+  const arreglado =
+    sinVocativo === sinFormato
+      ? sinVocativo
+      : sinVocativo.replace(/^\p{Ll}+(?=[\s.,;:!?]|$)/u, (p) => p[0]!.toUpperCase() + p.slice(1));
+  return arreglado.trim();
 }
 
 /**
@@ -475,7 +578,16 @@ export interface RespuestaChat {
    * trae.
    */
   promesa: { que: string; esperando: string | null } | null;
-  /** Prometió volver en prosa y no marcó la línea. Solo para el log: no crea ninguna promesa. */
+  /**
+   * Prometió volver en prosa y no marcó la línea. Solo para el log: no crea ninguna promesa.
+   *
+   * QUIÉN LO CONSUME, porque si no lo consume nadie es un campo muerto: el orquestador imprime
+   * `prometio=marcada|EN PROSA sin marcar|no` en la misma línea del turno. Sin ese contador, la
+   * queja más grave del jefe —promete y desaparece— tiene 401 líneas de módulo (promesas.ts), 23 KB
+   * de test, `warmup-promesas.json = []` y CERO forma de saber si el problema es el prompt o el
+   * cableado. Con el contador, en 48 h se sabe: si sube y las promesas anotadas siguen en cero, el
+   * que falla es el prompt.
+   */
   prometioSinMarcar: boolean;
 }
 

@@ -8,7 +8,10 @@
 // riesgo: primero lo irreversible (el umbral permanente de Google), después lo que frena hoy, al
 // final lo que solo avisa.
 
-import { TECHO_ABSOLUTO, armarCuotaFlota, resolverTecho, type CuotaBandeja } from "./sender-quota.ts";
+import { armarCuotaFlota, resolverTecho, type CuotaBandeja } from "./sender-quota.ts";
+// EL MISMO TECHO QUE INSTALA `buildDailyCapInstallPlan` y que clampea `decidirCupoDeHoy`, de un solo
+// lugar. Un techo duplicado deja de ser un techo el día que alguien sube uno solo — y ese día ya pasó.
+import { TECHO_DURO_POR_DOMINIO } from "../../warmup-engine/src/domain/decision-diaria.ts";
 import { CAP_MEASUREMENT_FILE, CERCA_DEL_CAP, type CapFlota, type CapNodo } from "./node-daily-cap.ts";
 import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
 
@@ -143,9 +146,18 @@ export function alertasDeCap(nodo: CapNodo, opciones: { contadorDelDia?: boolean
   // Un cap arriba del techo que este sistema sabe instalar lo escribió algo de AFUERA, y es el
   // agujero por donde se pierde lo único irreversible del proyecto. Medido el 2026-08-06 en
   // sender-cap.json (medidoEn 14:56:59.863Z, 58 nodos): 10 nodos con cap 15000 y `cableado: true`,
-  // contra un TECHO_ABSOLUTO de 4000 que el propio código se NIEGA a instalar — `node-daily-cap.ts`
-  // tira error si le piden más. `grep -rn "15000\|15_000"` sobre apps/ scripts/ packages/ no
-  // encuentra ni un lugar donde este sistema escriba ese número: ningún código nuestro lo puso.
+  // contra un techo que el propio código se NIEGA a instalar — `node-daily-cap.ts` tira error si le
+  // piden más. `grep -rn "15000\|15_000"` sobre apps/ scripts/ packages/ no encuentra ni un lugar
+  // donde este sistema escriba ese número: ningún código nuestro lo puso.
+  //
+  // EL NÚMERO ES `TECHO_DURO_POR_DOMINIO` (2.000) Y NO `TECHO_ABSOLUTO` (4.000), y son dos contratos
+  // distintos que hay que no confundir: `TECHO_ABSOLUTO` acota la cuota que se le VENDE a un cliente;
+  // el que decide lo que se INSTALA en un nodo pasó a ser `TECHO_DURO_POR_DOMINIO` cuando
+  // `buildDailyCapInstallPlan` empezó a rechazar contra él. Este archivo se quedó con el viejo y
+  // abrió una franja 2001-4000 donde el cap está por encima de lo que este sistema acepta instalar y
+  // el alertador CALLA: `alertasDeCap` sobre un nodo con cap 3000 devolvía `[]` mientras
+  // `buildDailyCapInstallPlan({cap: 3000})` tiraba error. `porEncimaDelTecho` tampoco lo ve, porque
+  // sólo mira dominios que además están `cerca`. De tres copias del techo se había movido una.
   //
   // De esos 10, ocho YA están clasificados como bulk sender permanente por Google; el noveno,
   // `infranationalreport.com`, está a 0,93 del umbral con la puerta de Gmail todavía ABIERTA, o sea
@@ -160,13 +172,13 @@ export function alertasDeCap(nodo: CapNodo, opciones: { contadorDelDia?: boolean
   // tiene UN problema y no es cuán lleno está el día. Por la misma razón va antes del corte por
   // `contadorDelDia`: el cap no caduca con el día, igual que `sin_limite_fisico`. `cap_alcanzado`
   // vuelve solo cuando el cap se corrige.
-  if (nodo.cap > TECHO_ABSOLUTO) {
+  if (nodo.cap > TECHO_DURO_POR_DOMINIO) {
     return [
       {
         domain: nodo.domain,
         severity: "critical",
         kind: "cap_ilegal",
-        detail: `cap ${nodo.cap} en el nodo y el techo de este sistema es ${TECHO_ABSOLUTO}: lo puso algo de afuera, el nodo puede cruzar el umbral permanente de Google en un día`
+        detail: `cap ${nodo.cap} en el nodo y el techo de este sistema es ${TECHO_DURO_POR_DOMINIO}: lo puso algo de afuera, el nodo puede cruzar el umbral permanente de Google en un día`
       }
     ];
   }

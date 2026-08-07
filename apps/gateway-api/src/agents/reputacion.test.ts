@@ -5,7 +5,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { revisarReputacionDe, type EntradaReputacion } from "./reputacion.ts";
+import {
+  barridoDeReputacion,
+  ordenDelBarrido,
+  PRESUPUESTO_LISTAS_POR_BARRIDO,
+  revisarReputacionDe,
+  type ChequeoReputacion,
+  type EntradaReputacion,
+  type ReputacionLeida
+} from "./reputacion.ts";
 
 const AHORA = new Date("2026-08-06T12:00:00.000Z");
 
@@ -220,4 +228,118 @@ test("la API que revienta no rompe la lectura: las otras cuatro señales siguen 
   assert.match(r.blacklist.detalle, /ECONNRESET/);
   assert.equal(r.spf.estado, "ok");
   assert.equal(r.dmarc.estado, "ok");
+});
+
+// ── TLS: la señal que no miraba nadie ────────────────────────────────────────────────────────────
+
+test("sin sonda de TLS el certificado sale 'no sé', nunca vigente", async () => {
+  // La regla 1 del módulo, en el chequeo más nuevo: el cuarto estado implícito ("no lo miré, debe
+  // estar bien") es el que fabrica las mentiras caras.
+  const r = await revisarReputacionDe(entrada());
+  assert.equal(r.tls.estado, "no-se");
+});
+
+test("el certificado vencido y el que está por vencer son los dos 'mal'", async () => {
+  // filing-ops.com se quedó sin cert TLS y ninguna de las otras cuatro señales se movió: SPF, DKIM,
+  // DMARC y PTR seguían en verde mientras los receptores que exigen STARTTLS le cerraban la puerta.
+  const vencido = await revisarReputacionDe(entrada({ tls: async () => ({ vence: "2026-08-01T00:00:00Z", nombre: "mail.x.com" }) }));
+  assert.equal(vencido.tls.estado, "mal");
+  assert.match(vencido.tls.detalle, /venció hace \d+ día/);
+
+  const porVencer = await revisarReputacionDe(entrada({ tls: async () => ({ vence: "2026-08-13T12:00:00Z", nombre: null }) }));
+  assert.equal(porVencer.tls.estado, "mal", "7 días de margen ya es un problema: hay que renovarlo antes");
+
+  const sano = await revisarReputacionDe(entrada({ tls: async () => ({ vence: "2026-11-06T12:00:00Z", nombre: "mail.x.com" }) }));
+  assert.equal(sano.tls.estado, "ok");
+});
+
+test("el 587 sin certificado es 'mal', y el handshake que se cuelga es 'no sé'", async () => {
+  const sinCert = await revisarReputacionDe(entrada({ tls: async () => null }));
+  assert.equal(sinCert.tls.estado, "mal", "responde pero no presenta certificado: STARTTLS no sirve");
+
+  const colgado = await revisarReputacionDe(entrada({ timeoutMs: 20, tls: nunca }));
+  assert.equal(colgado.tls.estado, "no-se", "un chequeo colgado es 'no sé', no 'bloqueado' (la lección del probe con head -c)");
+});
+
+// ── El barrido diario ────────────────────────────────────────────────────────────────────────────
+
+const rep = (dominio: string, over: Partial<ReputacionLeida> = {}): ReputacionLeida => {
+  const ok: ChequeoReputacion = { estado: "ok", detalle: "ok" };
+  return { dominio, ip: "1.2.3.4", blacklist: { estado: "ok", detalle: "sin detecciones" }, spf: ok, dkim: ok, dmarc: ok, ptr: ok, tls: ok, ...over };
+};
+
+test("el orden del barrido: primero los que calientan, después los cerca, después el resto", async () => {
+  // No es cosmético: con la cuota acotada, el orden decide QUIÉN queda medido. Los dos primeros
+  // grupos son donde la respuesta cambia una decisión de hoy o algo irreversible.
+  assert.deepEqual(
+    ordenDelBarrido({
+      todos: ["zzz.com", "quema.com", "aaa.com", "calienta.com"],
+      calientanHoy: ["calienta.com"],
+      cerca: ["quema.com"]
+    }),
+    ["calienta.com", "quema.com", "aaa.com", "zzz.com"]
+  );
+});
+
+test("cuota agotada ⇒ los que sobran quedan en 'no-se', NUNCA en limpio", async () => {
+  // Es LA confusión que costó julio: el 2026-07-25 había 38 nodos cerrados en Gmail y el chequeo de
+  // blacklists decía 0 detecciones, y alguien leyó ese cero como "está limpio".
+  const pedidos: Array<{ d: string; conListas: boolean }> = [];
+  const a = await barridoDeReputacion({
+    orden: ["a.com", "b.com", "c.com"],
+    presupuesto: 1,
+    now: () => AHORA,
+    revisar: async (d, conListas) => {
+      pedidos.push({ d, conListas });
+      return rep(d, conListas ? {} : { blacklist: { estado: "no-se", detalle: "no consultado" } });
+    }
+  });
+  assert.deepEqual(a.dominios.map((f) => f.listas), [[], "no-se", "no-se"]);
+  assert.deepEqual(a.cuota, { gastadas: 1, presupuesto: 1, sinConsultar: 2 });
+  assert.deepEqual(pedidos.map((p) => p.conListas), [true, false, false], "no se llama a la API paga después del tope");
+  // Y lo gratis se mide igual: quedarse sin cuota no puede dejar ciega a la autenticación.
+  assert.equal(a.dominios[2]!.spf.estado, "ok");
+
+  // LOS DOS "NO SÉ" SON DISTINTOS, y el archivo tiene que poder distinguirlos: "no pregunté porque
+  // me quedé sin cuota" (decisión nuestra) contra "pregunté y falló" (ceguera de verdad). Sin la
+  // marca, la regla del canal que avisa "no pude consultar las listas negras" era permanentemente
+  // verdadera —33 de 58 filas todos los días— y sacaba ~4 mensajes diarios que no cambian ninguna
+  // decisión del jefe.
+  assert.deepEqual(a.dominios.map((f) => f.porPresupuesto), [undefined, true, true]);
+});
+
+test("un dominio que revienta no vacía el barrido ni se reporta limpio", async () => {
+  const r = await barridoDeReputacion({
+    orden: ["roto.com", "sano.com"],
+    now: () => AHORA,
+    revisar: async (d) => {
+      if (d === "roto.com") throw new Error("ECONNREFUSED");
+      return rep(d);
+    }
+  });
+  assert.equal(r.dominios.length, 2, "el barrido sigue: un nodo no puede colgar la vuelta entera");
+  assert.equal(r.dominios[0]!.listas, "no-se");
+  assert.equal(r.dominios[0]!.spf.estado, "no-se", "las cinco señales quedan en 'no sé', no en verde");
+  assert.equal(r.dominios[1]!.dominio, "sano.com");
+});
+
+test("el barrido es READ-ONLY: lo único que hace es preguntar", async () => {
+  // El test que fija la promesa. `barridoDeReputacion` no recibe UN solo puerto de escritura —ni
+  // mailer, ni cap, ni SSH— así que "no manda correo y no toca caps" no es una convención que
+  // alguien pueda romper sin cambiar la firma. Lo único inyectado es `revisar`.
+  const llamadas: string[] = [];
+  const r = await barridoDeReputacion({
+    orden: ["a.com"],
+    now: () => AHORA,
+    revisar: async (d) => { llamadas.push(d); return rep(d); }
+  });
+  assert.deepEqual(llamadas, ["a.com"], "una consulta por dominio, y nada más");
+  assert.equal(r.medidoEn, AHORA.toISOString());
+});
+
+test("el presupuesto de cuota vive en CÓDIGO, no en una variable de entorno", () => {
+  // Un tope que se sube con una env var a las 3 de la mañana dejó de ser un tope. La cuota de
+  // MXToolbox se comparte con la pestaña Reputación del panel.
+  assert.equal(typeof PRESUPUESTO_LISTAS_POR_BARRIDO, "number");
+  assert.ok(PRESUPUESTO_LISTAS_POR_BARRIDO > 0 && PRESUPUESTO_LISTAS_POR_BARRIDO < 58, "menos que la flota entera");
 });

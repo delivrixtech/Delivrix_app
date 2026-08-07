@@ -37,7 +37,7 @@ import {
 } from "../../apps/gateway-api/src/agents/slack.ts";
 import { anotarPromesa, revisarPromesas, type Promesa } from "../../apps/gateway-api/src/agents/promesas.ts";
 import { acusarRecibo, agruparParaContestar, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
-import { extraerRecordar, limpiarMaquinaria, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
+import { extraerRecordar, limpiarMaquinaria, limpiarParaSlack, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
   anotar as anotarConversacion,
   anotarReaccion,
@@ -51,9 +51,14 @@ import {
   type Decisiones
 } from "../../apps/gateway-api/src/agents/decisiones-del-jefe.ts";
 import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
-import { placementsDeDominio, planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
+import { flotaAtribuida, placementsDeDominio, planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { esInbox } from "../../apps/warmup-engine/src/domain/decision-diaria.ts";
-import { revisarReputacionDe } from "../../apps/gateway-api/src/agents/reputacion.ts";
+import {
+  ordenDelBarrido,
+  REPUTACION_FILE,
+  revisarReputacionDe,
+  type ArchivoReputacion
+} from "../../apps/gateway-api/src/agents/reputacion.ts";
 import { createMxtoolboxAdapterFromEnv } from "../../packages/adapters/src/mxtoolbox-adapter.ts";
 import {
   countCyclesToday,
@@ -61,7 +66,7 @@ import {
   recentPlacements,
   resolveLiveDaemonConfig
 } from "../../apps/warmup-engine/src/service/live-warmup-daemon.ts";
-import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
+import { CAP_MEASUREMENT_FILE, porEncimaDelTecho, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
 import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
@@ -488,11 +493,32 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           // a quién aplicársela.
           frenados: cap.nodos.filter((n) => n.cap === 0).map((n) => n.domain),
           sinLimite: cap.nodos.filter((n) => !n.cableado).length,
+          // LOS QUE ESTÁN CERCA DEL UMBRAL Y ADEMÁS TIENEN EL NODO CABLEADO POR ENCIMA DEL TECHO.
+          // Sale con el cap AL LADO del nombre, y no es cosmético: con la lista de nombres sola el
+          // aviso decía "tiene el cupo del nodo por encima del techo que aguanta el dominio" y la
+          // respuesta textual del jefe fue "No entiendo, es decir ?". Los dos números —15.000
+          // cableado contra 2.000 de techo— son lo único que convierte ese mensaje en una acción.
+          porEncimaDelTecho: med
+            ? porEncimaDelTecho({
+                cerca: med.bandejas
+                  .filter((b) => (b.cerca ?? []).length > 0 && (b.cruzados ?? []).length === 0)
+                  .map((b) => b.domain),
+                nodos: cap.nodos
+              })
+            : [],
           // La FECHA viaja con el dato: sin ella el agente reportaba un cap de ayer como si fuera
           // de hoy, y la regla "si un dato está viejo, decilo" no tenía con qué cumplirse.
           medidoEn: cap.medidoEn ?? null
         }
       : null,
+    // LA REPUTACIÓN, si el barrido ya la escribió. AUSENTE si el archivo no está — no `{}` ni `[]`:
+    // las reglas que la miran tienen que dar SILENCIO, jamás "está limpio". Es la confusión más
+    // cara del sistema y ya costó 38 nodos cerrados en Gmail leídos como sanos porque el chequeo de
+    // listas negras decía cero.
+    ...(await workspace
+      .readInventoryJson<ArchivoReputacion>(REPUTACION_FILE)
+      .then((r) => (r && Array.isArray(r.dominios) ? { reputacion: r.dominios as never } : {}))
+      .catch(() => ({}))),
     flota: med
       ? {
           sanas: med.bandejas.filter((b) => b.estado === "healthy").length,
@@ -504,6 +530,10 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           cerca: med.bandejas
             .filter((b) => (b.cerca ?? []).length > 0 && (b.cruzados ?? []).length === 0)
             .map((b) => b.domain),
+          // ¿La salud se juzgó con correo NUESTRO? Hoy no: el 99,9% del log es de NFC. Entra como
+          // dato para que el agente lo pueda decir, nunca como gate que lo deje sin manos.
+          // El Map se arma acá y no se importa de otro lado: `flotaAtribuida` es puro sobre él.
+          atribuido: flotaAtribuida(new Map(med.bandejas.map((b) => [b.domain, b as never]))),
           // La FECHA viaja con el dato, igual que en el cap. Sin esto el agente reportaba un
           // retrato de hace 23 h como si fuera de ahora, 11 de 11 veces.
           medidoEn: med.medidoEn ?? null
@@ -890,7 +920,12 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
       // sin violar ninguna regla: en 8 horas habló 3 veces (dos rellenos y un error) mientras la
       // base registraba 14 eventos reales, dos de ellos INBOX. Y a la 1:10 el jefe escribió "no me
       // has dicho nada en toda la tarde".
-      novedades: novedades(camposAntes, camposAhora)
+      novedades: novedades(camposAntes, camposAhora),
+      // LOS HECHOS, y es UNA línea que habilita SEIS reglas. Sin esto, las reglas que miran la
+      // fábrica —el cap por encima del techo, la reputación cruzada, la fábrica que no da vueltas—
+      // evalúan sobre `undefined` y dan false. El resultado sería silencio, nunca una afirmación
+      // falsa (fail-closed), pero silencio es exactamente la queja que vinimos a resolver.
+      hechos
     };
     const aviso = decidirSiHablar(estadoSlack, memPrevia, lectura.generadoEn);
     let hablo = false;
@@ -1277,7 +1312,15 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
     // Con <@U...> sí suena en el móvil. Se usa solo cuando pide una decisión o hay algo urgente —
     // si notificara todo, en dos días el jefe silencia el canal y volvemos al principio.
     const jefeId = process.env.SLACK_JUANES_USER_ID?.trim();
-    let cuerpo = r.texto.replace(/^ACCION:.*$/gim, "").replace(/^RECORDAR:.*$/gim, "").trim();
+    // EL SANEADOR, y es el que mata el "bot del 2000". `limpiarParaSlack` saca la maquinaria
+    // (ACCION:, RECORDAR:) y además el markdown que el modelo mete solo: negritas con asteriscos,
+    // viñetas, títulos con almohadilla, y el "Juanes," de vocativo pegado al principio. El jefe lo
+    // dijo con nombre propio: "recuerdo que openclaw me respondía con asteriscos, muy horrible
+    // genéricamente, y luego arreglamos eso". Era el mismo vicio, en otro agente.
+    //
+    // Va acá y no en el prompt a propósito: pedirle a un modelo que no use markdown funciona el 90%
+    // de las veces, y el 10% restante le llega al jefe. Un saneador funciona siempre.
+    let cuerpo = limpiarParaSlack(r.texto);
     if (jefeId) {
       const urgente = /\bJUANES\b/.test(cuerpo) || /necesito (que|tu)|no puedo|confirm|decid|ayuda/i.test(cuerpo);
       cuerpo = cuerpo.replace(/^\s*JUANES[,!\s]*/i, "").replace(/^\s*Juanes[,]\s*/, "");

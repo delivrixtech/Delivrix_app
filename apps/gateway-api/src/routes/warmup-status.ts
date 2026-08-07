@@ -24,12 +24,26 @@ export interface WarmupStatusDeps {
   env?: NodeJS.ProcessEnv;
 }
 
-/** Snapshot degradado (Postgres o tablas ausentes): nunca 500, el panel siempre puede pintar algo. */
-function degradedSnapshot(now: Date, note: string): WarmupStatusSnapshot & { note: string } {
+/**
+ * Snapshot degradado (Postgres o tablas ausentes): nunca 500, el panel siempre puede pintar algo.
+ *
+ * LOS CONTADORES VAN EN `null`, NO EN 0, y es el mismo incidente del 2026-07-25 con otra ropa: un
+ * cero que nadie midió se lee como una medición ("38 nodos cerrados en Gmail con CERO detecciones
+ * de blacklist" ⇒ "está limpio"). Acá el 0 decía "0 nodos activos, 0 envíos en cola" con Postgres
+ * caído, que es indistinguible de una fábrica sana y quieta.
+ *
+ * Van los contadores y no el objeto entero: `Warmup.tsx` declara `totals` como obligatorio aunque
+ * no lo lee, y el panel está fuera de esta corrida. `null` en cada número no rompe ningún render y
+ * deja de mentir igual.
+ */
+function degradedSnapshot(
+  now: Date,
+  note: string
+): Omit<WarmupStatusSnapshot, "totals"> & { totals: { activeNodes: null; queuedSends: null }; note: string } {
   return {
     generatedAt: now.toISOString(),
     enabled: false,
-    totals: { activeNodes: 0, queuedSends: 0 },
+    totals: { activeNodes: null, queuedSends: null },
     byState: {},
     nodes: [],
     note

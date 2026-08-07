@@ -133,7 +133,12 @@ test("returns a degraded snapshot when pgClient is null", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.enabled, false);
   assert.equal(res.body.note, "postgres_unavailable");
-  assert.equal(res.body.totals.activeNodes, 0);
+  // NULL Y NO 0. Un contador en cero sobre un camino degradado se lee como una medición: es el
+  // incidente del 2026-07-25 (38 nodos cerrados en Gmail con CERO detecciones de blacklist, leído
+  // como "está limpio"). Con Postgres caído no sabemos cuántos nodos hay activos, y eso hay que
+  // poder decirlo.
+  assert.equal(res.body.totals.activeNodes, null);
+  assert.equal(res.body.totals.queuedSends, null);
   assert.deepEqual(res.body.nodes, []);
 });
 
@@ -147,6 +152,6 @@ test("returns a degraded snapshot when the query throws", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.enabled, false);
   assert.equal(res.body.note, "warmup_tables_unavailable");
-  assert.equal(res.body.totals.activeNodes, 0);
+  assert.equal(res.body.totals.activeNodes, null, "tablas ausentes es 'no sé', no 'cero nodos activos'");
   assert.equal(warnings.length, 1);
 });

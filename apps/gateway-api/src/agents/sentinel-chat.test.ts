@@ -4,6 +4,7 @@ import {
   construirContexto,
   extraerPromesa,
   limpiarMaquinaria,
+  limpiarParaSlack,
   responder,
   revisarRespuesta,
   TIMEOUT_PRIMER_INTENTO,
@@ -714,4 +715,181 @@ test("prometer en PROSA se cuenta, no se convierte en promesa", async () => {
   })) as never;
   const s = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: sinPrometer });
   assert.equal(s.prometioSinMarcar, false, "una respuesta que no promete nada no cuenta como promesa perdida");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// LA VOZ: matar el texto de máquina grapado al final de una frase humana.
+//
+// El hallazgo que ordena este bloque: el vicio NO viene del prompt. De las 189 líneas VOZ del log
+// de producción, UNA sola mete un nombre de acción en la prosa. Lo que suena a bot lo AGREGA EL
+// CÓDIGO después de que el modelo terminó de escribir. Por eso todo lo de acá abajo se prueba
+// sobre funciones, no sobre párrafos: ningún prompt puede arreglar algo que se pega después.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * LA REGRESIÓN, textual. Es la respuesta guardada en warmup-conversacion.json de producción para el
+ * turno del 2026-08-07T11:10:20Z, a la pregunta "Buenas, por favor brindame reporte, cuantos smtps,
+ * dominios, ips estan calentando hoy?". Está cortada a 200 caracteres porque así la guarda la
+ * memoria: no se completa a mano, un fixture escrito desde mi suposición de cómo seguía sería
+ * inventar la evidencia (la lección de [[verificar-con-el-mismo-camino-de-produccion]]).
+ */
+const INFORME_DEL_11_10 =
+  "Listo Juanes, acá va 👀\n\n" +
+  "Hoy calientan **6 dominios**, todos con cupo controlado:\n\n" +
+  "- **corpfiling-infra.com** — el mejor: 83% inbox, cupo 8/día, día 4, va para arriba\n" +
+  "- **opscorpfiling.com** — 75% inb";
+
+test("el informe con negritas y viñetas del 2026-08-07T11:10Z sale como un chat, no como un reporte", () => {
+  // Slack NO renderiza `**`, así que al jefe le llegaron los asteriscos crudos en la cara. Su
+  // reclamo textual: "esa manera o lexico de escribir esta muy bot del 2000... recuerdo que
+  // openclaw me respondia con asteriscos, muy horrible genericamente, y luego arreglamos eso".
+  const limpio = limpiarParaSlack(INFORME_DEL_11_10);
+
+  assert.ok(!limpio.includes("*"), `quedó un asterisco: ${JSON.stringify(limpio)}`);
+  for (const linea of limpio.split("\n")) {
+    assert.doesNotMatch(linea, /^\s*[-*•]\s/, `quedó una viñeta: ${JSON.stringify(linea)}`);
+  }
+  // Y NO se pierde un solo dato: el arreglo es de forma. Una voz más "humana" que se come el número
+  // exacto obliga al jefe a volver a preguntar, y eso ya pasó ("No entiendo, es decir ?", 21:15).
+  for (const dato of ["6 dominios", "corpfiling-infra.com", "83% inbox", "cupo 8/día", "día 4", "opscorpfiling.com"]) {
+    assert.ok(limpio.includes(dato), `se perdió el dato "${dato}" al limpiar`);
+  }
+  // "Listo Juanes, acá va" se queda: eso suena a persona. Lo que se saca es el vocativo INICIAL.
+  assert.match(limpio, /^Listo Juanes, acá va/);
+  // Idempotente: la publicación puede pasar dos veces por acá (un reintento, un camino que llama a
+  // los dos limpiadores) y la segunda no puede comerse una letra ni recapitalizar una frase.
+  assert.equal(limpiarParaSlack(limpio), limpio);
+});
+
+test("el vocativo inicial se saca, y SOLO cuando es un vocativo", () => {
+  // 71 de las 192 líneas VOZ del log arrancan con "Juanes," mientras slack.ts declara el invariante
+  // contrario desde hace tiempo. El único replace que lo sacaba vivía suelto en el orquestador
+  // (scripts/ops/warmup-monitor.ts:1283), cubría UN carril y solo si había SLACK_JUANES_USER_ID.
+  assert.equal(limpiarParaSlack("Juanes, esto no lo puedo destrabar yo, mirá el nodo."), "Esto no lo puedo destrabar yo, mirá el nodo.");
+  // Textual del log del 2026-08-07: "¡Juanes! Aquí andamos, de guardia."
+  assert.equal(limpiarParaSlack("¡Juanes! Aquí andamos, de guardia."), "Aquí andamos, de guardia.");
+  assert.equal(limpiarParaSlack("JUANES: el freno no quedó puesto."), "El freno no quedó puesto.");
+
+  // Y lo que NO se toca, que es la mitad que evita el arreglo tonto:
+  // el nombre como SUJETO de la frase.
+  assert.equal(limpiarParaSlack("Juanes tiene razón: el freno no quedó puesto."), "Juanes tiene razón: el freno no quedó puesto.");
+  // y el vocativo en el medio, que es justamente cómo habla una persona.
+  assert.equal(limpiarParaSlack("Acá estoy, Juanes 👀"), "Acá estoy, Juanes 👀");
+});
+
+test("ningún marcador puede llegar crudo a Slack, ni los que se inventen mañana", () => {
+  // El modo de falla que este repo ya pagó TRES veces: se agrega un marcador al prompt y algún
+  // camino de publicación se olvida de limpiarlo. Hoy el orquestador publica con dos `.replace`
+  // escritos a mano (ACCION: y RECORDAR:), así que PROMETI: salía crudo hasta que se lo consumió en
+  // el módulo. La regla que lo cierra: quien publica llama a UNA función, y esa función va sobre la
+  // lista completa de marcadores — un marcador nuevo queda cubierto sin que nadie se acuerde.
+  const bruto = [
+    "Listo, ya lo frené.",
+    "ACCION: frenar_dominio | dominio=corp-delivery.com | motivo=placement en el piso",
+    "RECORDAR: no hay semillas de outlook por ahora",
+    "PROMETI: te aviso del placement | espero=placement:corp-delivery.com"
+  ].join("\n");
+  assert.equal(limpiarParaSlack(bruto), "Listo, ya lo frené.");
+});
+
+test("un identificador NO se disfraza: los guiones bajos de una acción quedan enteros", () => {
+  // El arreglo tonto sería sacar todos los `_` y publicar "revisarreputacion", que es cambiar un
+  // texto de máquina por uno roto. Un nombre de acción no se maquilla: no tiene que llegar hasta
+  // acá. La única razón por la que este caso existe es que el limpiador NO se puede usar como excusa
+  // para dejar de sacarlos en origen.
+  assert.equal(limpiarParaSlack("El log del nodo dice revisar_reputacion y frenar_dominio."), "El log del nodo dice revisar_reputacion y frenar_dominio.");
+  // El subrayado que SÍ es markdown (envuelve una frase) sí se saca.
+  assert.equal(limpiarParaSlack("El placement _no_ se movió."), "El placement no se movió.");
+  assert.equal(limpiarParaSlack("__Foto general:__ 6 dominios activos"), "Foto general: 6 dominios activos");
+});
+
+test("un mensaje que ya suena a persona pasa intacto", () => {
+  // La contra-condición del limpiador. Un saneador que reescribe lo que ya estaba bien es una
+  // fuente nueva de bugs, y encima invisible: nadie mira lo que salió bien.
+  for (const humano of [
+    "Dale, ya lo frené y quedó en cero ✅",
+    "Lo miro y te cuento 👀",
+    "corpfiling-infra.com viene en 83% sobre 6 mediciones; sigo."
+  ]) {
+    assert.equal(limpiarParaSlack(humano), humano);
+  }
+});
+
+test("la VOZ prohíbe el markdown: es la mitad del arreglo que vive en el prompt", () => {
+  // Las DOS mitades o ninguna, que es la lección de las manos prometidas. Sin la del prompt el
+  // modelo lo sigue escribiendo (y gasta tokens en formato que después se tira); sin la del código
+  // el día que se olvide llega igual al canal. SISTEMA ya tenía la suya ("Sin viñetas, sin títulos,
+  // sin despedidas") y VOZ no: por eso el carril del chat contestaba con un informe.
+  const v = seguido(VOZ);
+  assert.match(v, /NADA DE MARKDOWN/);
+  assert.match(v, /sin asteriscos, sin negritas, sin viñetas, sin títulos/);
+  assert.match(v, /Escribís en un chat, no en un informe/, "le dice la intención, no solo la lista");
+});
+
+test("el detalle crudo de una acción entra por el PROMPT, nunca por el texto que se publica", () => {
+  // Hoy el orquestador arma `hechas = res.map(a => \`hecho: ${a.detalle}\`)` y lo CONCATENA debajo
+  // de la prosa. Resultado en el canal, textual del log: "Voy a medir y diagnosticar los cercanos y
+  // los frenados para ver qué puedo soltar. Hice esto: revisar_reputacion controlnationalcorp.com."
+  // — una frase de persona con un identificador de código pegado atrás.
+  //
+  // El camino correcto ya existía y no se usaba: `loQueHiciste`. El resultado entra por ahí al turno
+  // SIGUIENTE y lo cuenta el modelo con sus palabras. Este test fija el contrato del lado del
+  // módulo: entra al prompt, y de la salida se ocupa quien publica (ver como_cablearlo).
+  const CRUDOS = [
+    "hecho: controlnationalcorp.com: no_traffic, 0 entregados / 0 rechazados. el log no registra ni entregas ni rechazos ni diferidos en la ventana leida",
+    "no pude: no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432",
+    'no pude: rechazada: "medir_dominio_controlcontrolledger.com" no es una acción permitida'
+  ];
+  const ctx = construirContexto(
+    { hilo: [{ quien: "jefe", texto: "¿cómo vamos?" }], snapshot: snapshot(), loQueHiciste: CRUDOS },
+    "2026-08-06T02:30:00.000Z"
+  );
+  for (const crudo of CRUDOS) {
+    assert.ok(ctx.includes(crudo), `el detalle tiene que llegarle al modelo para que lo cuente él: ${crudo}`);
+  }
+  assert.match(ctx, /LO QUE PEDISTE Y QUÉ PASÓ:/);
+
+  // Y la otra mitad: lo que se publica es lo que ESCRIBIÓ el modelo, sin nada pegado abajo.
+  const conProsa = limpiarParaSlack("Lo medí y no hay tráfico en la ventana, así que todavía no sé si lo aceptan.");
+  for (const crudo of CRUDOS) {
+    assert.ok(!conProsa.includes(crudo), "el detalle crudo no puede aparecer en el texto publicable");
+  }
+  assert.ok(!/no_traffic|ECONNREFUSED|no es una acción permitida/.test(conProsa));
+});
+
+test("las observaciones son BLOQUEANTES para el aviso proactivo, y contadas para la respuesta al jefe", async () => {
+  // La regla se decide por CLASE, no por gusto. En el chat el jefe está del otro lado y puede
+  // corregir en el mismo turno, así que la respuesta sale y la observación se cuenta (así se midió
+  // el 2026-08-07: "[chat] observaciones: cita el número 13 · el 16 · el 29", publicado igual).
+  // En un aviso PROACTIVO promovido por aprendizaje no hay nadie del otro lado —el jefe puede estar
+  // durmiendo— y el panel ya tiene el avance de verdad: si `revisarRespuesta` marca algo, el mensaje
+  // NO sale y queda tapado=voz-inventada. Un avance con un número inventado es peor que no mandarlo.
+  const conInvento = (async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: "El placement de corp-delivery.com subió a 91% sobre 14 mediciones." } }], usage: {} })
+  })) as never;
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: conInvento });
+  assert.ok(r.texto, "en el chat la respuesta SALE: el jefe puede contradecirla en el mismo turno");
+  assert.ok(r.observaciones.length > 0, "…pero queda marcada, y esa marca es la que bloquea el carril proactivo");
+  assert.ok(r.observaciones.some((o) => o.includes("91")));
+
+  // El caso simétrico, que es el que prueba que el detector no bloquea todo por costumbre: una
+  // respuesta cuyos números salen del contexto no produce ni una observación, y esa es la condición
+  // para que un promovido pueda salir.
+  assert.deepEqual(revisarRespuesta("El emisor sigue pausado con el inbox en 33%.", "el emisor está pausado, inbox 33%"), []);
+});
+
+test("sacar el vocativo NO puede deformar un dato: un dominio no arranca con mayúscula", () => {
+  // El bug lo destapó el test de arriba y vale su propio caso porque es de los caros: la mayúscula
+  // que repara la frase después de sacar "Juanes," le subía la primera letra a lo que hubiera,
+  // incluido un nombre de dominio. Salía "Corpfiling-infra.com viene en 83%", que es un dato
+  // deformado — y este sistema ya se quemó con datos que parecen bien y no lo están. La regla:
+  // la mayúscula solo repara lo que esta función rompió, y solo si la primera palabra son letras.
+  assert.equal(
+    limpiarParaSlack("Juanes, corpfiling-infra.com viene en 83% sobre 6 mediciones."),
+    "corpfiling-infra.com viene en 83% sobre 6 mediciones."
+  );
+  assert.equal(limpiarParaSlack("Juanes, 89.117.75.226 está en una lista negra."), "89.117.75.226 está en una lista negra.");
+  // Y la frase normal sí se repara.
+  assert.equal(limpiarParaSlack("Juanes, esto no lo puedo destrabar yo."), "Esto no lo puedo destrabar yo.");
 });

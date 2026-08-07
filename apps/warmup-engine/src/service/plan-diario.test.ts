@@ -10,7 +10,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decidirCupoDeHoy, rampaDesdeEnv } from "../domain/decision-diaria.ts";
-import { elegirPool, leerCuposFisicos, planDelDia, type MedicionCupos } from "./plan-diario.ts";
+import {
+  elegirPool,
+  enviosDelDia,
+  flotaAtribuida,
+  leerCuposFisicos,
+  leerReputacion,
+  placementsDeDominio,
+  planDelDia,
+  type MedicionCupos
+} from "./plan-diario.ts";
+// El OTRO lector de la misma ventana. Se importa acá a propósito: la regla vive duplicada en dos
+// SQL, y un test por archivo nunca ve que sólo uno la cumple.
+import { recentPlacements } from "./live-warmup-daemon.ts";
 
 const AHORA = new Date("2026-08-04T15:00:00.000Z");
 
@@ -120,11 +132,16 @@ test("flota entera en cap 0: pool VACÍO, no un fallback que rebote 58 veces", (
 // ── El plan completo ─────────────────────────────────────────────────────────────────────────────
 
 /** Postgres falso: responde por la forma de la consulta. */
-function pgFalso(filas: { medidos?: string[]; enviadosHoy?: number; historial?: string[]; rebotes?: string[] }) {
+function pgFalso(filas: { medidos?: string[]; enviadosHoy?: number; hace2Dias?: number; historial?: string[]; rebotes?: string[] }) {
   return {
-    async query(sql: string) {
+    async query(sql: string, params?: unknown[]) {
       if (sql.includes("kind = 'measured'")) return { rows: (filas.medidos ?? []).map((placement) => ({ placement })) };
-      if (sql.includes("COUNT(*)::int")) return { rows: [{ node_domain: "a.com", n: filas.enviadosHoy ?? 0 }] };
+      // `enviosDelDia` lleva el día en el parámetro: 0 = hoy, 2 = anteayer. Distinguirlos acá es lo
+      // que hace que el test pueda probar el clamp de 48h por separado del cupo del día.
+      if (sql.includes("COUNT(*)::int")) {
+        const n = params?.[0] === 2 ? filas.hace2Dias ?? 0 : filas.enviadosHoy ?? 0;
+        return { rows: [{ node_domain: "a.com", n }] };
+      }
       if (sql.includes("kind = 'error'")) return { rows: (filas.rebotes ?? []).map((d) => ({ node_domain: d })) };
       if (sql.includes("seed_inbox, occurred_at")) {
         return { rows: (filas.historial ?? []).map((cuando) => ({ node_domain: "a.com", seed_inbox: "s@x.com", occurred_at: new Date(cuando) })) };
@@ -133,6 +150,48 @@ function pgFalso(filas: { medidos?: string[]; enviadosHoy?: number; historial?: 
     }
   } as never;
 }
+
+test("NINGUNA ventana de placement cuenta los turnos de continuación de hilo — las DOS", async () => {
+  // EL DEFECTO QUE ESTE TEST IMPIDE: desde que `medirTurnoDeHilo` graba `kind:'measured'`, las
+  // respuestas dentro de un hilo ya establecido entraban en las ventanas de placement. Un "Re:" es
+  // una clase de correo mucho más fácil de entregar: la tasa se sesga hacia arriba, y esa tasa es lo
+  // único entre la flota y el umbral permanente de Gmail. Encima, con un turno por vuelta y LIMIT 6,
+  // seis continuaciones barren toda la medición del ciclo principal.
+  //
+  // SE RECORREN LOS DOS LECTORES EN EL MISMO TEST, y ése es el punto. La cláusula se agregó sólo en
+  // `placementsDeDominio` (el que nombraba el ticket) y quedó afuera de `recentPlacements` — que es
+  // el que alimenta `placement-pause`, el ÚNICO corte que apaga los 58 nodos de golpe. Con la
+  // ventana global sesgada hacia arriba, el freno de catástrofe se abre solo: medido con
+  // `decideDaemonAction` real, 3 dominios × 4 mediciones frías al 25% dan `placement-pause`, y
+  // sumando 3 continuaciones en INBOX por dominio la misma llamada devuelve `send` ("inbox 57%").
+  // El defecto de fondo es que la regla vive duplicada en dos SQL: un test por lector no lo ve.
+  const espiar = async (correr: (pg: never) => Promise<unknown>): Promise<string> => {
+    let sql = "";
+    const pg = {
+      async query(q: string) {
+        if (q.includes("kind = 'measured'")) sql = q;
+        return { rows: [] };
+      }
+    } as never;
+    await correr(pg);
+    return sql;
+  };
+
+  const lectores: Array<[string, (pg: never) => Promise<unknown>]> = [
+    ["placementsDeDominio (la rampa por dominio)", (pg) => placementsDeDominio(pg, "a.com", 6)],
+    ["recentPlacements (el gate GLOBAL que apaga la flota)", (pg) => recentPlacements(pg, 6)]
+  ];
+
+  for (const [quien, correr] of lectores) {
+    const sql = await espiar(correr);
+    assert.match(sql, /origen/, `${quien}: la ventana tiene que filtrar por el origen de la fila`);
+    assert.match(
+      sql,
+      /IS DISTINCT FROM 'continuación de hilo'/,
+      `${quien}: IS DISTINCT FROM y no <>, porque las filas del ciclo principal no traen \`origen\` y \`NULL <> 'x'\` las descartaría a todas`
+    );
+  }
+});
 
 test("el plan cuenta el mismo cuento que el daemon: día, placement, cupo y decisión", async () => {
   const plan = await planDelDia({
@@ -153,7 +212,10 @@ test("el plan cuenta el mismo cuento que el daemon: día, placement, cupo y deci
   assert.equal(d.placement.muestra, 4);
   assert.equal(d.enviadosHoy, 1);
   assert.equal(d.cupoFisico, 20);
-  assert.equal(d.decision.accion, "subir");
+  // "sostener" y no "subir": 3 de 4 es 75% crudo pero su piso de Wilson es 30%, y la rampa avanza
+  // con evidencia. El panel dice EXACTAMENTE lo que el daemon va a ejecutar, que es el punto de
+  // que las dos mitades llamen a la misma función.
+  assert.equal(d.decision.accion, "sostener");
 });
 
 test("las palancas de la rampa: el plan y el daemon dan EL MISMO número", async () => {
@@ -167,7 +229,9 @@ test("las palancas de la rampa: el plan y el daemon dan EL MISMO número", async
   // entera de cuánto sale, y el agente lo afirmaría con seguridad estando mal.
   const env = { WARMUP_RAMPA_LIMITE_DIARIO: "200", WARMUP_RAMPA_PASO_POR_DIA: "50" };
   const args = {
-    pg: pgFalso({ medidos: ["INBOX", "INBOX", "INBOX", "INBOX"], historial: ["2026-08-02T10:00:00Z", "2026-08-03T10:00:00Z"] }),
+    // 12 mediciones limpias: hacen falta para que la rampa AVANCE (Wilson asimétrico). Con 4, la
+    // decisión es "sostener" y las dos palancas dan el mismo 2 — el test no probaría nada.
+    pg: pgFalso({ medidos: Array.from({ length: 12 }, () => "INBOX"), historial: ["2026-08-02T10:00:00Z", "2026-08-03T10:00:00Z"] }),
     capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 2000 }]),
     poolConfigurado: [],
     ventanaPlacement: 6,
@@ -180,8 +244,12 @@ test("las palancas de la rampa: el plan y el daemon dan EL MISMO número", async
   const d = conPalanca.dominios[0]!;
   const delDaemon = decidirCupoDeHoy({
     diaN: d.diaN ?? 0,
-    placements: ["INBOX", "INBOX", "INBOX", "INBOX"],
+    placements: Array.from({ length: 12 }, () => "INBOX" as const),
     cupoFisico: d.cupoFisico,
+    // El daemon pasa el MISMO `cupoHace2Dias` que el plan (lo lee de la misma consulta): sin esta
+    // línea el test compararía dos cuentas distintas y volvería a tapar la divergencia que existe
+    // para cazar.
+    cupoHace2Dias: 0,
     isoWeekday: 2, // 2026-08-04 es martes
     ...rampaDesdeEnv(env)
   });
@@ -429,4 +497,107 @@ test("las tres ventanas de 'hoy' usan date_trunc con zona EXPLÍCITA", async () 
       assert.match(linea, /date_trunc\('day', now\(\), 'UTC'\)/, `${f}: ventana sin zona explícita → ${linea.trim()}`);
     }
   }
+});
+
+// ── La cuarta exclusión: la autenticación ────────────────────────────────────────────────────────
+
+test("auth ROTA saca del pool: calentar así construye la reputación al revés", () => {
+  // Hasta hoy el warmup mandaba sin comprobar que DKIM, PTR o el certificado siguieran vivos. No es
+  // teórico: filing-ops.com se quedó sin cert TLS y controlcorpfiling.com sin base SASL, y las dos
+  // cosas se descubrieron a mano semanas después.
+  const auth = new Map([
+    ["a.com", { spf: { estado: "ok" }, dkim: { estado: "mal" }, ptr: { estado: "ok" }, tls: { estado: "ok" } }],
+    ["c.com", { spf: { estado: "ok" }, dkim: { estado: "ok" }, ptr: { estado: "ok" }, tls: { estado: "ok" } }]
+  ]);
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["c.com", 20]]) }), [], undefined, auth);
+  assert.deepEqual(r.boxes, ["c.com"]);
+  assert.match(r.motivo, /DKIM en mal estado/);
+});
+
+test("auth en 'no sé' NO saca a nadie: un hipo del DNS no puede apagar la fábrica", () => {
+  // LA ASIMETRÍA que hace que esto se pueda encender: sólo excluye una medición POSITIVA de que
+  // está roto. Al revés, un resolver con hipo dejaría la flota entera fuera del pool, y la
+  // consecuencia física de mandar con una auth desconocida-pero-sana es exactamente cero.
+  const auth = new Map([
+    ["a.com", { spf: { estado: "no-se" }, dkim: { estado: "no-se" }, ptr: { estado: "no-se" }, tls: { estado: "no-se" } }]
+  ]);
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20]]) }), [], undefined, auth);
+  assert.deepEqual(r.boxes, ["a.com"]);
+
+  // Y un dominio AUSENTE del archivo tampoco: el barrido puede no haber llegado por la cuota.
+  const sinFila = elegirPool(medicion({ porDominio: new Map([["z.com", 20]]) }), [], undefined, auth);
+  assert.deepEqual(sinFila.boxes, ["z.com"]);
+});
+
+test("sin archivo de reputación el pool sale exactamente igual que antes", async () => {
+  assert.equal(await leerReputacion("/no/existe/warmup-reputacion.json"), undefined);
+  const r = elegirPool(medicion(), [], undefined, undefined);
+  assert.deepEqual(r.boxes, ["a.com"], "b.com está en cap 0; nada más cambió");
+});
+
+// ── La atribución: DATO, no gate ────────────────────────────────────────────────────────────────
+
+test("la flota en modo 'todo' NO es atribuida, y eso no saca a nadie del pool", () => {
+  // Las 58 bandejas están en modo "todo" hoy: los veredictos de salud incluyen el correo del OTRO
+  // inquilino del nodo. Usarlo como gate dejaría al agente sin manos de un plumazo. Se declara para
+  // que el canal pueda decir "no sé de quién es este veredicto" en vez de afirmarlo como propio.
+  const todo = new Map([["a.com", { estado: "healthy", entregados: 5, modo: "todo" as const }]]);
+  assert.equal(flotaAtribuida(todo), false);
+  assert.deepEqual(elegirPool(medicion(), [], todo).boxes, ["a.com"], "sigue calentando igual");
+
+  const nuestro = new Map([["a.com", { estado: "healthy", entregados: 5, modo: "nuestro" as const }]]);
+  assert.equal(flotaAtribuida(nuestro), true);
+  assert.equal(flotaAtribuida(undefined), false, "sin medición no se afirma que sea nuestro");
+  assert.equal(flotaAtribuida(new Map()), false);
+});
+
+// ── La ventana de hace 2 días ────────────────────────────────────────────────────────────────────
+
+test("los envíos de hace 2 días salen de UN día cerrado, no de 'desde entonces'", async () => {
+  const vistos: Array<{ sql: string; params: unknown[] }> = [];
+  const pg = { async query(sql: string, params: unknown[]) { vistos.push({ sql, params }); return { rows: [] }; } } as never;
+  await enviosDelDia(pg, 2);
+  assert.equal(vistos[0]!.params[0], 2);
+  assert.match(vistos[0]!.sql, /occurred_at >= date_trunc\('day', now\(\), 'UTC'\) - make_interval/);
+  assert.match(vistos[0]!.sql, /occurred_at <\s+date_trunc\('day', now\(\), 'UTC'\) - make_interval/, "cerrada por arriba");
+  // Y la zona explícita, por lo mismo que enviosDeHoy: bajo TZ=America/Bogota se perdían los envíos
+  // de entre 00:00 y 05:00 UTC, y contar de menos autoriza a mandar de más.
+  assert.equal(vistos[0]!.sql.includes("'UTC'"), true);
+});
+
+test("lo que mandó hace 2 días NO le pone techo a un dominio sano", async () => {
+  // MEDIDO EN PRODUCCIÓN el 2026-08-07: los envíos reales están topados por un límite GLOBAL
+  // (WARMUP_LIVE_MAX_PER_DAY = 14 vueltas para TODA la flota), así que por dominio dan 1-8. Usados
+  // como base del clamp 3×/48h, corpfiling-infra.com —el más sano, 83% de bandeja— mandó 1 el
+  // 05-ago y quedaba con techo 3/día, mientras opscorpfiling.com, que no mandó nada, quedaba SIN
+  // techo. Frenaba a los sanos, soltaba a los mudos, y se realimentaba: el plan se congelaba en
+  // 3-6/día para siempre mientras el panel pintaba una rampa que avanzaba.
+  const conEnvios = await planDelDia({
+    pg: pgFalso({
+      medidos: Array.from({ length: 12 }, () => "INBOX"),
+      hace2Dias: 2,
+      historial: ["2026-07-20T10:00:00Z"]
+    }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 2000 }]),
+    poolConfigurado: [],
+    ventanaPlacement: 12,
+    ahora: AHORA
+  });
+  const sinEnvios = await planDelDia({
+    pg: pgFalso({
+      medidos: Array.from({ length: 12 }, () => "INBOX"),
+      hace2Dias: 0,
+      historial: ["2026-07-20T10:00:00Z"]
+    }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 2000 }]),
+    poolConfigurado: [],
+    ventanaPlacement: 12,
+    ahora: AHORA
+  });
+  assert.equal(
+    conEnvios.dominios[0]!.decision.cupo,
+    sinEnvios.dominios[0]!.decision.cupo,
+    "haber mandado 2 correos hace dos días no puede dejarte con menos cupo que no haber mandado ninguno"
+  );
+  assert.equal(conEnvios.dominios[0]!.decision.accion, "subir");
 });

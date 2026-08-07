@@ -5,7 +5,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { decidirCupoDeHoy, CUPO_ARRANQUE, MUESTRA_MINIMA, TECHO_DURO_POR_DOMINIO } from "./decision-diaria.ts";
+import {
+  decidirCupoDeHoy,
+  medirPlacement,
+  CUPO_ARRANQUE,
+  MUESTRA_MINIMA,
+  PISO_PARA_SUBIR,
+  TECHO_DURO_POR_DOMINIO
+} from "./decision-diaria.ts";
+import { wilsonLowerBound } from "./placement.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
 
 const inbox = (n: number): Placement[] => Array.from({ length: n }, () => "INBOX" as const);
@@ -35,7 +43,7 @@ test("NO se mueve el volumen con muestra insuficiente", () => {
   assert.ok(d.cupo <= CUPO_ARRANQUE, "sin evidencia no se ramp-ea");
 });
 
-test("placement sano: la rampa avanza", () => {
+test("placement sano CON EVIDENCIA: la rampa avanza", () => {
   const d = decidirCupoDeHoy({ ...base, diaN: 5, placements: inbox(8) });
   assert.equal(d.accion, "subir");
   assert.equal(d.cupo, 10, "día 5 × paso 2");
@@ -306,4 +314,177 @@ test("techo duro · con los números de HOY no cambia un solo correo", () => {
   const d = decidirCupoDeHoy({ ...base, diaN: 30, placements: inbox(10) });
   assert.equal(d.cupo, 20, "el cupo del nodo sigue mandando");
   assert.doesNotMatch(d.motivo, /techo duro/);
+});
+
+// ── MISSING fuera del denominador, y el agujero que eso NO puede reabrir ─────────────────────────
+
+const missing = (n: number): Placement[] => Array.from({ length: n }, () => "MISSING" as const);
+
+test("MISSING sale del denominador: 3 INBOX + 1 MISSING es 100% sobre muestra 3, no 75% sobre 4", () => {
+  // "No apareció en ninguna carpeta" no es "cayó en spam": es que no lo pudimos medir. El §9 del
+  // propio diseño le da a `missing` un bucket propio, ni inbox ni spam. Y con la muestra de hoy —4—
+  // una sola fila movía la tasa 25 puntos y con ella la decisión del día entero.
+  const m = medirPlacement([...inbox(3), ...missing(1)]);
+  assert.equal(m.muestra, 3);
+  assert.equal(m.tasa, 1);
+  assert.equal(m.tragados, 1);
+});
+
+test("todo MISSING no es 0% de bandeja: no hay muestra, y no se frena por eso", () => {
+  const d = decidirCupoDeHoy({ ...base, diaN: 8, placements: missing(6) });
+  assert.equal(d.placement, null, "null es 'no sé', y no se puede leer como cero");
+  assert.equal(d.accion, "sostener");
+  assert.match(d.motivo, /se tragaron/);
+});
+
+test("el correo tragado NO puede subir el volumen de nadie (el incidente del día 20)", () => {
+  // El desastre textual del comentario de warmup-live-cycle.ts: "un dominio en día 20 manda 40,
+  // Gmail se traga 36 y 4 llegan a INBOX". Con MISSING fuera del denominador eso da 4 de 4 = 100%,
+  // y sería el único camino del sistema hacia MÁS volumen sobre la peor señal que existe. Con la
+  // tasa CRUDA en la rama que frena, son 4 de 40 = 10% y para.
+  const d = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, placements: [...inbox(4), ...missing(36)] });
+  assert.equal(d.accion, "frenar");
+  assert.equal(d.cupo, 0);
+  assert.match(d.motivo, /4 de 40 correos llegaron a bandeja \(36 se los tragaron/);
+});
+
+test("UN MISSING no puede sacar a un dominio del freno (ventana 6 de producción)", () => {
+  // EL DEFECTO QUE ESTE TEST EXISTE PARA IMPEDIR, medido con un A/B de 8.820 combinaciones contra
+  // la versión anterior: de las 2.626 donde la decisión nueva mandaba MÁS que la vieja, en las
+  // 2.626 había un MISSING. Con MISSING fuera del denominador, [MISSING,SPAM,SPAM,SPAM,INBOX,INBOX]
+  // pasaba de 33% (frenar) a 40% (bajar) y el dominio saltaba de cupo 0 a 20 correos/día — el único
+  // camino nuevo hacia más volumen, y apuntando justo al receptor que nos manda a spam.
+  const ventana: Placement[] = ["MISSING", "SPAM", "SPAM", "SPAM", "INBOX", "INBOX"];
+  const d = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: null, placements: ventana });
+  assert.equal(d.accion, "frenar");
+  assert.equal(d.cupo, 0);
+
+  // Y el control: la misma ventana sin el tragado sigue dando lo mismo que daba antes.
+  const sinTragado = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: null, placements: ventana.slice(1) });
+  assert.equal(sinTragado.accion, "bajar", "40% sobre 5 medidas: baja, no frena");
+});
+
+test("la señal de correo tragado TIENE que ser alcanzable con la ventana de producción", () => {
+  // El hermano del test de Wilson, y por el mismo motivo. La regla vieja (`PISO_TRAGADOS`) exigía
+  // 4 filas MEDIDAS *y* la mitad de tragados: con `WARMUP_LIVE_PLACEMENT_WINDOW=6` eso pide 3+4
+  // sobre 6 filas, imposible. Su test la probaba con 40 placements, una ventana que
+  // `placementsDeDominio` (LIMIT 6) no puede devolver: el fixture y el código compartían la
+  // suposición. Con la tasa cruda, 2 tragados sobre 6 bastan para bajar el volumen.
+  const perfectaSalvoTragados: Placement[] = [...missing(2), ...inbox(4)];
+  const d = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, placements: perfectaSalvoTragados });
+  assert.equal(d.accion, "bajar", "4 de 6 = 67% crudo, debajo del piso sano");
+  assert.match(d.motivo, /2 se los tragaron/);
+
+  // Y con MÁS tragados no puede terminar mandando MÁS: la rama que baja nunca pasa a la que
+  // sostiene por muestra corta.
+  const masTragados = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, placements: [...missing(4), ...inbox(2)] });
+  assert.ok(masTragados.cupo <= d.cupo, `con 4 tragados no puede mandar más que con 2 (${masTragados.cupo} vs ${d.cupo})`);
+});
+
+// ── Wilson ASIMÉTRICO: subir exige prueba, bajar no ──────────────────────────────────────────────
+
+test("4 de 4 NO dispara subir por la proporción cruda", () => {
+  // El salto medido corriendo el código: el día que un dominio junta su CUARTA medición pasa de
+  // `sostener 2` a la rampa entera — 2 → 8/10/12/14/16, de ×4 a ×8 en 24 horas. Con n=4, el 100%
+  // crudo es compatible con una tasa real del 51%.
+  const d = decidirCupoDeHoy({ ...base, diaN: 5, cupoHace2Dias: 2, placements: inbox(4) });
+  assert.equal(d.accion, "sostener");
+  assert.equal(d.cupo, 2, "se queda en lo que venía mandando, no salta a la rampa");
+  assert.match(d.motivo, /el piso real puede ser/);
+});
+
+test("1 de 4 sigue bajando enseguida: la dirección segura no necesita prueba", () => {
+  const d = decidirCupoDeHoy({ ...base, diaN: 10, placements: [...inbox(1), ...spam(3)] });
+  assert.equal(d.accion, "frenar", "25% cruda está debajo del piso crítico y no espera evidencia");
+});
+
+test("sostener no castiga a un dominio sano: mantiene el volumen que ya tenía", () => {
+  // Bajarlo al cupo de arranque sería castigarlo por no haber juntado muestra todavía, que es lo
+  // contrario de lo que se busca.
+  const d = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, cupoHace2Dias: 14, placements: inbox(5) });
+  assert.equal(d.accion, "sostener");
+  assert.equal(d.cupo, 14);
+});
+
+// ── El clamp 3×/48h NO se alimenta de los envíos ─────────────────────────────────────────────────
+
+test("el clamp no se alimenta de los ENVÍOS: frenaba a los sanos y soltaba a los que no mandaron", () => {
+  // MEDIDO CONTRA LA BASE DE PRODUCCIÓN el 2026-08-07. `cupoHace2Dias` son envíos REALES, y los
+  // envíos reales están topados por WARMUP_LIVE_MAX_PER_DAY (14 vueltas para TODA la flota), así
+  // que por dominio dan 1-8. Con eso como base del clamp:
+  //   · corpfiling-infra.com (el más sano, 83% de bandeja) mandó 1 el 05-ago ⇒ techo 3/día;
+  //   · opscorpfiling.com mandó 0 ese día ⇒ ausente del Map ⇒ sin clamp, rampa entera.
+  // Y se realimentaba: el plan quedaba fijo en 3-6/día para siempre mientras `accion` decía "subir".
+  const sano = decidirCupoDeHoy({ ...base, diaN: 10, cupoFisico: 20, cupoHace2Dias: 1, placements: inbox(6) });
+  const mudo = decidirCupoDeHoy({ ...base, diaN: 10, cupoFisico: 20, placements: inbox(6) });
+  assert.equal(sano.accion, "subir");
+  assert.equal(
+    sano.cupo,
+    mudo.cupo,
+    "haber mandado 1 correo hace dos días no puede dejarte con MENOS cupo que no haber mandado ninguno"
+  );
+  assert.equal(sano.cupo, 20, "manda el cupo físico del nodo, no un múltiplo de lo que salió");
+});
+
+// ── LA MONOTONÍA: peor placement NUNCA manda más correo ──────────────────────────────────────────
+
+test("INVARIANTE: a peor placement, cupo no creciente (la escalera entera, no un caso suelto)", () => {
+  // EL BUG QUE ESTE TEST EXISTE PARA IMPEDIR, y ya se había shipeado. Con la ventana de producción
+  // (WARMUP_LIVE_PLACEMENT_WINDOW=6, verificado por ssh en el gateway.env de la Studio):
+  //
+  //   5 INBOX / 1 SPAM (83%) → sostener  2/día        ← el que entrega BIEN
+  //   4 INBOX / 2 SPAM (67%) → bajar    20/día        ← DIEZ VECES MÁS, el que entrega PEOR
+  //
+  // porque `bajar` valía `rampa/2` (crece con el día) y `sostener` está anclado a `cupoHace2Dias`,
+  // que son ENVÍOS REALES aplastados por el tope GLOBAL del daemon (1-8, casi siempre 2). No es un
+  // número de panel: `live-warmup-daemon` gatea el envío real con `enviadosHoyBox >= delDia.cupo`,
+  // así que el presupuesto del día se corría hacia el dominio que peor entrega — el mecanismo exacto
+  // que empuja al umbral permanente de Gmail.
+  //
+  // Un test de casos sueltos no iba a ver esto nunca: lo que falla es la RELACIÓN entre dos ramas.
+  // Por eso se recorre la escalera entera, en toda la rampa, con SPAM y con MISSING (los dos bajan
+  // la tasa cruda) y con varios valores de lo que mandó anteayer.
+  const VENTANA_DE_PRODUCCION = 6;
+  const tragado = (n: number): Placement[] => Array.from({ length: n }, () => "MISSING" as const);
+
+  for (const diaN of [4, 8, 12, 20, 40]) {
+    for (const cupoHace2Dias of [0, 1, 2, 8, 14]) {
+      for (const malos of [spam, tragado]) {
+        let previo = Number.POSITIVE_INFINITY;
+        for (let bien = VENTANA_DE_PRODUCCION; bien >= 0; bien--) {
+          const placements = [...inbox(bien), ...malos(VENTANA_DE_PRODUCCION - bien)];
+          const d = decidirCupoDeHoy({ ...base, diaN, cupoFisico: 2000, cupoHace2Dias, placements });
+          assert.ok(
+            d.cupo <= previo,
+            `día ${diaN}, anteayer ${cupoHace2Dias}: ${bien}/${VENTANA_DE_PRODUCCION} en bandeja dio ` +
+              `${d.accion} ${d.cupo}/día, MÁS que el ${bien + 1}/${VENTANA_DE_PRODUCCION} anterior (${previo}/día)`
+          );
+          previo = d.cupo;
+        }
+      }
+    }
+  }
+});
+
+test("el techo irreversible gana sobre TODO, incluso sobre una rampa configurada absurda", () => {
+  const d = decidirCupoDeHoy({
+    ...base, diaN: 400, cupoFisico: null, cupoHace2Dias: 9000,
+    limiteDiario: 50_000, pasoPorDia: 500, placements: inbox(20)
+  });
+  assert.equal(d.cupo, TECHO_DURO_POR_DOMINIO);
+});
+
+test("el gate de Wilson TIENE que ser alcanzable con la ventana de producción", () => {
+  // EL BUG QUE ESTE TEST EXISTE PARA IMPEDIR, y estuvo a punto de shipearse: producción corre con
+  // WARMUP_LIVE_PLACEMENT_WINDOW=6 (verificado en gateway.env de la Mac Studio), o sea que la
+  // muestra tiene 6 filas como máximo. `wilsonLowerBound(6,6)` da 0,6096: contra PISO_SANO (0,70)
+  // el gate es MATEMÁTICAMENTE inalcanzable, "subir" no vuelve a ocurrir nunca, y la fábrica deja
+  // de crecer sin que nada falle ni nadie se entere. La peor clase de bug de este proyecto.
+  const VENTANA_DE_PRODUCCION = 6;
+  assert.ok(
+    (wilsonLowerBound(VENTANA_DE_PRODUCCION, VENTANA_DE_PRODUCCION) ?? 0) >= PISO_PARA_SUBIR,
+    "una ventana PERFECTA tiene que poder cruzar el piso, o la rampa está muerta"
+  );
+  const d = decidirCupoDeHoy({ ...base, diaN: 5, placements: inbox(VENTANA_DE_PRODUCCION) });
+  assert.equal(d.accion, "subir");
 });

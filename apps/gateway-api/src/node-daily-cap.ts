@@ -28,7 +28,7 @@
 // restringe la inyección local con `authorized_submit_users`. Mientras tanto, "físico" significa
 // físico PARA EL CAMINO AUTENTICADO (el de NFC), no para quien ya tiene root en el nodo.
 
-import { TECHO_ABSOLUTO } from "./sender-quota.ts";
+import { TECHO_DURO_POR_DOMINIO } from "../../warmup-engine/src/domain/decision-diaria.ts";
 
 /** Un paso remoto, compatible con lo que consume SmtpSshRunner.run(). */
 export interface NodeCapStep {
@@ -193,11 +193,26 @@ export function buildDailyCapInstallPlan(input: { cap: number }): NodeCapStep[] 
   if (!Number.isInteger(input.cap) || input.cap <= 0) {
     throw new Error(`cap invalido: ${input.cap} (debe ser entero > 0)`);
   }
-  // El mismo tope absoluto que la cuota, y por la misma razón: arriba de esto el cap deja de
-  // proteger del umbral permanente de Google y pasa a bendecir el volumen que lo cruza. Se
-  // RECHAZA, no se recorta: un recorte callado le mentiría al operador sobre lo que instaló.
-  if (input.cap > TECHO_ABSOLUTO) {
-    throw new Error(`cap ${input.cap} supera el tope absoluto ${TECHO_ABSOLUTO}: se rechaza, no se recorta`);
+  // EL MISMO TECHO QUE LA DECISIÓN DEL WARMUP, IMPORTADO DE UN SOLO LUGAR.
+  //
+  // Antes acá vivía `TECHO_ABSOLUTO` (4.000) y en `decision-diaria.ts` vivía
+  // `TECHO_DURO_POR_DOMINIO` (2.000): dos números para la misma pared, y el que gobernaba lo que
+  // se INSTALA en el nodo era el flojo. El resultado está MEDIDO contra el sender-cap.json de
+  // producción del 2026-08-07T09:07Z: DIEZ nodos con 15.000/día cableado —3× el umbral permanente
+  // de Google— y NUEVE de esos diez ya figuran como cruzados en sender-measurement.json. El décimo
+  // es infranationalreport.com, que todavía no cruzó. El cap hizo exactamente lo que le pidieron;
+  // lo que estaba mal era lo que le pidieron.
+  //
+  // Se RECHAZA, no se recorta: un recorte callado le mentiría al operador sobre lo que instaló, y
+  // el número que él escribió es la señal de que entendió mal el límite.
+  //
+  // La constante vive en warmup-engine y se importa cruzado (patrón ya establecido en 6 archivos
+  // del gateway). Un techo duplicado deja de ser un techo el día que alguien sube uno solo.
+  if (input.cap > TECHO_DURO_POR_DOMINIO) {
+    throw new Error(
+      `cap ${input.cap} supera TECHO_DURO_POR_DOMINIO (${TECHO_DURO_POR_DOMINIO}/día): se rechaza, no se recorta. ` +
+        `Cruzar 5.000/día a destinatarios personales clasifica el dominio como bulk sender de forma PERMANENTE.`
+    );
   }
   return [
     {
@@ -371,6 +386,45 @@ export interface CapFlota {
    * el panel dijera "58 nodos" sobre una flota más grande y los diera por cubiertos.
    */
   omitidos: number;
+}
+
+/**
+ * EL CRUCE QUE NADIE HACÍA: los dominios que están cerca del umbral permanente Y encima tienen
+ * instalado un cap que los deja cruzarlo.
+ *
+ * Los dos archivos ya se leen en la MISMA vuelta del monitor, cada 10 minutos, y nadie los
+ * relacionó nunca. El caso concreto que lo motiva: infranationalreport.com viene con un pico de
+ * 4.649/día hacia Google —el 93% del umbral irreversible— y tiene 15.000 puesto en el nodo. O sea
+ * que el freno que debería atajarlo está configurado tres veces por encima de lo que hay que
+ * atajar, y el único aviso posible llegaría el día después de que ya no sirva.
+ *
+ * PURA a propósito: es el input de la regla de DAÑO del canal, y una regla de daño no puede
+ * depender de una lectura de disco que puede fallar.
+ *
+ * FAIL-HONEST en las dos direcciones:
+ *  · un dominio `cerca` que no figura en la medición del cap NO entra. No sabemos qué cap tiene, y
+ *    "no medido" no es "está sobre el techo" — inventarlo produciría el aviso de daño más caro del
+ *    sistema sobre nada.
+ *  · un dominio con `cap: null` (el archivo no se pudo leer en ese nodo) tampoco entra, por lo
+ *    mismo. Su silencio lo declara `ilegibles` en el propio CapFlota.
+ */
+export function porEncimaDelTecho(input: {
+  /** Dominios que la medición de la flota marcó cerca del umbral permanente y que NO lo cruzaron. */
+  cerca: readonly string[];
+  /** La última lectura del cap por nodo. */
+  nodos: readonly { domain: string; cap: number | null }[];
+}): Array<{ dominio: string; cap: number }> {
+  const capDe = new Map(input.nodos.map((n) => [n.domain.toLowerCase(), n.cap]));
+  // SALE EL CAP AL LADO DEL NOMBRE. Con la lista de nombres sola, el aviso de daño decía "tiene el
+  // cupo del nodo por encima del techo que aguanta el dominio" y la respuesta textual del jefe fue
+  // "No entiendo, es decir ?". Los dos números —15.000 cableado y 2.000 de techo— son lo único que
+  // convierte ese mensaje en una acción.
+  return input.cerca
+    .flatMap((d) => {
+      const cap = capDe.get(d.toLowerCase());
+      return typeof cap === "number" && cap > TECHO_DURO_POR_DOMINIO ? [{ dominio: d, cap }] : [];
+    })
+    .sort((a, b) => a.dominio.localeCompare(b.dominio));
 }
 
 export interface DailyCapStatus {

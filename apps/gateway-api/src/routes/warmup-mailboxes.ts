@@ -461,7 +461,10 @@ export async function handleWarmupMailboxesHealth(
   if (!deps.pgClient) {
     json(response, 200, {
       generatedAt: now.toISOString(),
-      totals: { nodes: 0, warm: 0, queuedSends: 0, deadLetteredSends: 0, failedSends: 0 },
+      // NULL Y NO 0: es un camino DEGRADADO, no una medición. Un "0 nodos, 0 en cola" con Postgres
+      // caído es indistinguible de una fábrica sana y quieta, que es el incidente del 2026-07-25
+      // (38 nodos cerrados en Gmail con CERO detecciones de blacklist, leído como "está limpio").
+      totals: { nodes: null, warm: null, queuedSends: null, deadLetteredSends: null, failedSends: null },
       byState: {},
       bySendStatus: {},
       note: "warmup_db_unavailable"
@@ -478,7 +481,10 @@ export async function handleWarmupMailboxesHealth(
     });
     json(response, 200, {
       generatedAt: now.toISOString(),
-      totals: { nodes: 0, warm: 0, queuedSends: 0, deadLetteredSends: 0, failedSends: 0 },
+      // NULL Y NO 0: es un camino DEGRADADO, no una medición. Un "0 nodos, 0 en cola" con Postgres
+      // caído es indistinguible de una fábrica sana y quieta, que es el incidente del 2026-07-25
+      // (38 nodos cerrados en Gmail con CERO detecciones de blacklist, leído como "está limpio").
+      totals: { nodes: null, warm: null, queuedSends: null, deadLetteredSends: null, failedSends: null },
       byState: {},
       bySendStatus: {},
       note: "warmup_tables_unavailable"

@@ -18,6 +18,7 @@
 // candidatos que el gate después rechaza: una promesa que se rompe al ejecutarla, que es peor que
 // no haberla hecho.
 import { porQueNoVuelve } from "./acciones-agente.ts";
+import type { ReputacionDominio } from "./slack.ts";
 
 /**
  * Un dominio frenado (cap 0) con las tres condiciones de `soltar_dominio` ya evaluadas.
@@ -89,10 +90,30 @@ export interface HechosWarmup {
      * cruzó el umbral permanente. Adivinó, en vez de mirar. Ahora mira.
      */
     frenadosDetalle?: readonly FrenadoDetalle[];
+    /**
+     * Los que están CERCA del umbral permanente Y además tienen el nodo cableado por encima del
+     * techo que aguanta un dominio. Con el cap AL LADO del nombre, no solo el nombre: con la lista
+     * pelada el aviso decía "tiene el cupo del nodo por encima del techo" y la respuesta textual
+     * del jefe fue "No entiendo, es decir ?". Los dos números son lo que lo vuelve accionable.
+     */
+    porEncimaDelTecho?: readonly { dominio: string; cap: number }[];
     sinLimite: number;
     medidoEn?: string | null;
   } | null;
+  /**
+   * La última corrida del barrido de reputación, si existe. AUSENTE cuando el archivo no está —
+   * nunca `{}` ni `[]`: las reglas que la miran tienen que dar SILENCIO, jamás "está limpio". Es la
+   * confusión más cara del sistema, la que dejó leer "0 blacklist" como sano mientras 38 nodos
+   * estaban cerrados en Gmail.
+   */
+  reputacion?: readonly ReputacionDominio[];
   flota: {
+    /**
+     * ¿El veredicto de salud se calculó con correo NUESTRO? Hoy las 58 bandejas están en modo
+     * "todo", así que entra como DATO —el agente puede decir "estoy juzgando salud con correo que
+     * no es nuestro"— y nunca como gate: marcarlas no-accionables lo dejaría sin manos.
+     */
+    atribuido?: boolean | null;
     sanas: number;
     bloqueadas: number;
     atascadas: number;
@@ -190,8 +211,15 @@ export const SISTEMA = [
   "Por defecto la VOZ cuenta LO QUE HICISTE o lo que estás por hacer — no pide nada:",
   "  'Ya lo frené y quedó en cero.'   'Lo medí, viene bien, sigo.'   'Lo estoy mirando.'",
   "Solo le pedís algo a Juanes cuando de verdad no tenés cómo resolverlo vos, y entonces lo decís",
-  "sin rodeos: 'Juanes, esto no lo puedo destrabar yo, mirá X'. Si dudás de si podés, MIRÁ TU LISTA",
-  "de acciones: si está ahí, es tuyo y no se pide permiso.",
+  // EL EJEMPLO ENSEÑABA EL TIC. Decía "'Juanes, esto no lo puedo destrabar yo, mirá X'", o sea que
+  // el prompt le mostraba cómo arrancar cada línea con el vocativo — y el modelo aprendió: 71 de las
+  // 192 líneas VOZ del log de producción empiezan con "Juanes,". Mientras tanto slack.ts declara el
+  // invariante contrario y nadie lo aplicaba. Sacarlo del ejemplo es la mitad barata del arreglo; la
+  // que lo sostiene el día que el modelo lo escriba igual es `limpiarParaSlack` en sentinel-chat.ts.
+  // Los dos hablan por el mismo canal: ahí ya sabe con quién habla, repetirle el nombre en cada
+  // frase es de bot, no de compañero de trabajo.
+  "sin rodeos y sin arrancar con su nombre: 'esto no lo puedo destrabar yo, mirá X'. Si dudás de si",
+  "podés, MIRÁ TU LISTA de acciones: si está ahí, es tuyo y no se pide permiso.",
   "Si algo está bien, lo decís corto y seguís. Si algo te preocupa y podés investigarlo, investigalo",
   "primero y contá lo que encontraste — no le pases la duda cruda.",
   "",

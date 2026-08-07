@@ -113,13 +113,24 @@ test("returns trends from a live pgClient", async () => {
   assert.ok(res.body.ramp.length > 0);
 });
 
-test("returns degraded trends when pgClient is null", async () => {
+test("en degradado las señales son NULL, no cero: el panel no puede pintar una medición que nadie hizo", async () => {
+  // ES LA CONFUSIÓN MÁS CARA DE ESTE SISTEMA. El 2026-07-25 había 38 nodos cerrados en Gmail con
+  // CERO detecciones de blacklist, y alguien leyó ese cero como "está limpio". Acá pasaba lo mismo
+  // con Postgres apagado: el panel pintaba "0 rebotes, 0 quejas" sobre datos que nadie leyó.
+  //
+  // Las listas siguen vacías y no es incoherencia: una serie vacía se ve vacía. Un `0` se lee como
+  // un número medido.
   const res = await route({ pgClient: null });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.note, "postgres_unavailable");
   assert.deepEqual(res.body.placementSeries, []);
   assert.deepEqual(res.body.perProvider, []);
-  assert.deepEqual(res.body.signals, { bounces: 0, complaints: 0 });
+  assert.equal(res.body.signals, null);
+
+  // Y el barrido que pide el encargo: ni un solo 0 en el cuerpo degradado que pueda leerse como
+  // medición. Si alguien agrega un contador nuevo con `?? 0`, este test lo caza.
+  const crudo = JSON.stringify(res.body);
+  assert.equal(/:\s*0(?=[,}])/.test(crudo), false, `hay un 0 que se puede leer como medición: ${crudo}`);
 });
 
 test("returns degraded trends when a query throws", async () => {
@@ -132,5 +143,6 @@ test("returns degraded trends when a query throws", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.note, "warmup_tables_unavailable");
   assert.deepEqual(res.body.placementSeries, []);
+  assert.equal(res.body.signals, null, "tablas sin migrar tampoco son cero rebotes");
   assert.equal(warnings.length, 1);
 });

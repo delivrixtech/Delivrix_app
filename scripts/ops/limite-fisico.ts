@@ -15,7 +15,8 @@
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
 import { createSmtpSshRunnerFromEnv } from "../../apps/gateway-api/src/routes/smtp-provisioning.ts";
 import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
-import { resolverTecho, TECHO_ABSOLUTO } from "../../apps/gateway-api/src/sender-quota.ts";
+import { resolverTecho } from "../../apps/gateway-api/src/sender-quota.ts";
+import { TECHO_DURO_POR_DOMINIO } from "../../apps/warmup-engine/src/domain/decision-diaria.ts";
 import {
   buildDailyCapInstallPlan,
   buildDailyCapRollbackPlan,
@@ -84,16 +85,20 @@ function enteroFlag(nombre: string, max: number): number | null {
 }
 
 const LIMITE = enteroFlag("limit", 10_000);
-// El tope absoluto es el mismo de la cuota: arriba de eso el cap deja de proteger del umbral
-// permanente de Google. Se rechaza (no se recorta) para no mentirle al operador sobre lo instalado.
-const CAP = enteroFlag("cap", TECHO_ABSOLUTO) ?? resolverTecho();
+// EL MISMO TECHO QUE INSTALA `buildDailyCapInstallPlan`, y por eso se importa de ahí en vez de
+// tener su propia copia. Con TECHO_ABSOLUTO (4000) acá, el operador que escribía `--cap=3000` leía
+// "se espera un entero entre 1 y 4000", pasaba la validación, y recién después el instalador tiraba
+// una excepción cruda: el mensaje que lo guía le decía un número y el que decide era otro. Igual con
+// `SENDER_QUOTA_DAILY_MAX` puesto arriba de 2000, que hacía morir al script en vez de instalar el
+// freno. Se rechaza (no se recorta) para no mentirle al operador sobre lo instalado.
+const CAP = enteroFlag("cap", TECHO_DURO_POR_DOMINIO) ?? Math.min(resolverTecho(), TECHO_DURO_POR_DOMINIO);
 const EXCEPTO = new Set(
   (flag("excepto") ?? "")
     .split(",")
     .map((d) => d.trim().toLowerCase())
     .filter(Boolean)
 );
-const CAP_EXCEPTO = enteroFlag("cap-excepto", TECHO_ABSOLUTO) ?? 20;
+const CAP_EXCEPTO = enteroFlag("cap-excepto", TECHO_DURO_POR_DOMINIO) ?? 20;
 
 /**
  * `--cada=<horas>`: repite el `--status` para siempre, refrescando la medición.
