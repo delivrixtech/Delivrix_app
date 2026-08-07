@@ -100,6 +100,34 @@ export interface RunLiveCycleDeps {
    * que sí llegó). En ese caso el ciclo envía y se detiene: enviado-sin-medir, no medido-mal.
    */
   gmail: GmailOps | null;
+  /**
+   * El cupo que la decisión del día AUTORIZÓ para este dominio. Viaja al `detail` del evento `sent`
+   * y de ahí lo lee `cupoAutorizadoVigente`, que es la entrada del clamp anti-firma 3×/48h del §10.
+   *
+   * Existe porque ese clamp estaba escrito en `dailyQuota` desde el diseño v1 y NUNCA tuvo entrada:
+   * el dato que pide —el cupo AUTORIZADO de hace dos días— no se persistía en ningún lado, y el
+   * proxy que se usó en su lugar (los envíos reales) mide otra cosa y hacía lo contrario de lo
+   * pedido. Sin esto, el día que se destrabe la rampa no hay nada entre un dominio y un salto de 2 a
+   * 10 en 24 h, que es exactamente la firma que el clamp existe para evitar.
+   *
+   * `detail` ya es JSONB y ya se escribe en cada envío: no cuesta migración ni tabla nueva.
+   */
+  cupoDelDia?: number;
+  /**
+   * ¿Se le aplica la señal (`not_spam` + `important`) a ESTA semilla?
+   *
+   * EL INSTRUMENTO NO SE ENTRENA A SÍ MISMO (R-02, §0/§4 del doc de auditoría). Hasta acá cada
+   * vuelta medía el placement y acto seguido hacía `not_spam+important` SOBRE LA MISMA SEMILLA que
+   * acababa de medir. Gmail aprende POR DESTINATARIO: medido en producción, 32 engaged sobre 51
+   * enviados y 7 de las 34 mediciones eran un SPAM rescatado a mano, con sólo dos semillas. Con ~25
+   * rescates cada una, la semilla deja de reportar dónde caería nuestro correo en una bandeja
+   * FRESCA — que es exactamente convertirse en el "health score interno del pool" que el README
+   * llama la lección DFY y que §6 pone como NUESTRA ventaja sobre Instantly.
+   *
+   * Default `true` = el comportamiento de siempre; el daemon es quien decide, porque es el único que
+   * sabe cuál de las semillas es el instrumento.
+   */
+  engagear?: boolean;
   recorder: ActivityRecorder;
   sleep: (ms: number) => Promise<void>;
   /** Intentos de polling de la medición (default 12) y espera entre intentos (default 5000ms). */
@@ -139,7 +167,14 @@ export async function runLiveCycle(deps: RunLiveCycleDeps): Promise<RunLiveCycle
   let sent: SentMail;
   try {
     sent = await mailer.send({ from: fromAddress, to: seedInbox, subject, text: conversation.body, testId });
-    await recorder.record({ ...base, kind: "sent", subject, testId, detail: { smtp: sent.response, topic: conversation.topic } });
+    await recorder.record({
+      ...base,
+      kind: "sent",
+      subject,
+      testId,
+      // `cupoDelDia` es la ENTRADA del clamp anti-firma; ver el campo en `RunLiveCycleDeps`.
+      detail: { smtp: sent.response, topic: conversation.topic, ...(deps.cupoDelDia !== undefined ? { cupoDelDia: deps.cupoDelDia } : {}) }
+    });
     deps.logger?.info?.(`live-cycle ${cycleId} sent (${boxDomain} → ${seedInbox})`);
   } catch (err) {
     await recorder.record({ ...base, kind: "error", subject, testId, detail: { stage: "sent", note: errMsg(err) } });
@@ -189,7 +224,23 @@ export async function runLiveCycle(deps: RunLiveCycleDeps): Promise<RunLiveCycle
   // ③ ENGAGE
   let afterPlacement: Placement = placement;
   try {
-    if (placement === "SPAM" || placement === "PROMOTIONS") {
+    if (deps.engagear === false) {
+      // LA SEMILLA QUE MIDE NO SE TOCA. Ver `engagear` en `RunLiveCycleDeps`: rescatar de spam la
+      // misma bandeja que acaba de medir le enseña a Gmail que nuestro correo es deseado EN ESA
+      // CUENTA, y a partir de ahí deja de decir dónde caería en una bandeja fresca.
+      //
+      // Se graba el evento igual, con `action: "ninguna"`: sin la fila, el feed del panel pierde un
+      // paso de la vuelta y "no engageé a propósito" se vería idéntico a "el engage falló".
+      // `placement` queda INTACTO — no hubo señal, así que no hay nada que mover.
+      await recorder.record({
+        ...base,
+        kind: "engaged",
+        placement,
+        subject,
+        testId,
+        detail: { action: "ninguna", motivo: "semilla instrumento: la que mide no se entrena (R-02)" }
+      });
+    } else if (placement === "SPAM" || placement === "PROMOTIONS") {
       await gmail.modifyLabels(found.gmailId, { add: ["INBOX", "IMPORTANT"], remove: ["SPAM", "CATEGORY_PROMOTIONS"] });
       afterPlacement = "INBOX";
       await recorder.record({ ...base, kind: "engaged", placement: afterPlacement, subject, testId, detail: { action: "not_spam+important" } });

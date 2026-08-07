@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  aColombiano,
   construirContexto,
   extraerPromesa,
   limpiarMaquinaria,
@@ -32,9 +33,13 @@ const snapshot = (over: Partial<LecturaAgente> = {}): LecturaAgente =>
 test("la voz acusa recibo antes de trabajar", () => {
   // El reclamo textual del jefe: "si se coloca a trabajar con una orden que le estoy dando, que
   // responda, que diga al menos ok, trabajando". Quedarse mudo mientras trabaja parece ignorarlo.
-  assert.match(VOZ, /CONTESTÁ PRIMERO/);
-  assert.match(VOZ, /voy|me pongo/, "tiene ejemplos concretos de cómo acusar recibo");
-  assert.match(VOZ, /CUANDO TERMINÁS ALGO, DECILO/);
+  //
+  // ESTE TEST PEDÍA LOS EJEMPLOS ("voy|me pongo") Y ERA EL CONTRATO DEL DEFECTO: con esa frase
+  // adentro, 8 de 9 respuestas abrieron con "listo Juanes, voy", también ante saludos. Lo que se
+  // fija ahora es la CONDUCTA —acusar recibo y después contar— sin una plantilla que copiar.
+  assert.match(VOZ, /CONTESTA PRIMERO/);
+  assert.match(VOZ, /Antes de nada, di que ya la tienes/, "acusa recibo antes de trabajar");
+  assert.match(VOZ, /CUANDO TERMINAS ALGO, DILO/);
 });
 
 test("la voz es cálida, pero se pone plana cuando el tema es serio", () => {
@@ -50,7 +55,46 @@ test("la voz sigue prohibiendo lo que la vuelve un call center", () => {
   }
   assert.ok(VOZ.includes("Juanes"), "sabe con quién habla");
   assert.ok(/güey|coño/.test(VOZ), "prohíbe los regionalismos de otros países");
-  assert.match(VOZ, /NO PROMETAS LO QUE NO PODÉS HACER/, "la regla que evita el 'ajusto la tasa'");
+  assert.match(VOZ, /NO PROMETAS LO QUE NO PUEDES HACER/, "la regla que evita el 'ajusto la tasa'");
+});
+
+test("LA VOZ ESTÁ EN TUTEO COLOMBIANO, y no crece", () => {
+  // EL HALLAZGO: el prompt pedía "como se habla en Colombia" ESCRITO EN RIOPLATENSE — 20 marcas de
+  // voseo, y la línea que pedía el registro colombiano empezaba con "podés usar". Un modelo imita el
+  // REGISTRO de sus instrucciones antes que el contenido de la instrucción.
+  //
+  // Y EL REGISTRO OBJETIVO ES TUTEO, NO USTED: medido en los 18 mensajes reales del jefe guardados
+  // en warmup-conversacion.json hay 13 marcas de tuteo, 0 de usted y 0 de voseo.
+  //
+  // Sólo formas que NO existen en tuteo, así que un match siempre es un error: "mira", "lee" y
+  // "contesta" no están porque son correctas en los dos registros. Lookarounds con `u` y nunca `\b`,
+  // que en JavaScript es ASCII y deja pasar "Mirá:".
+  const VOSEO =
+    /(?<![\p{L}\p{N}])(sos|vos|podés|tenés|sabés|querés|hacés|decís|resolvés|andás|mirá|revisá|andá|decí|hacé|contá|dejá|poné|contestá|agregá|respondé|pedí|escribí|seguí|mandá|leé|vení|tené|confirmá|fijate|usala|decilo|anotalo|proponelo|hacelo|leelo|avisame|miralo|revertilo)(?![\p{L}\p{N}])/giu;
+  const hits = VOZ.match(VOSEO) ?? [];
+  assert.deepEqual(hits, [], `el prompt le pide colombiano en rioplatense: ${hits.join(", ")}`);
+
+  // EL PROMPT NO CRECE: cada línea que entra saca una. Este lote agregó tres reglas (el léxico
+  // acotado, repetir con SUS palabras, el vocativo) y las pagó comprimiendo cuatro bloques que
+  // decían lo mismo dos veces — "MIRAR ES GRATIS" repetía palabra por palabra el cierre de "NO LE
+  // PIDAS A JUANES". Un prompt inflado es una regresión y este proyecto ya la pagó.
+  assert.ok(VOZ.split("\n").length <= 135, `el prompt creció a ${VOZ.split("\n").length} líneas: cada línea que entra tiene que sacar una`);
+
+  // El léxico va acotado a lo que los modelos YA producen solos y suena a oficina. La lista anterior
+  // ofrecía "hágale" —imperativo de USTED, o sea el registro que no es— y "bacano", que en 18 turnos
+  // reales no escribió ni una vez. Lo que sí escribió solo: dale ×5, listo ×3, "de una", "qué más".
+  assert.ok(VOZ.includes("listo, dale, de una, qué más"), "el léxico es el que el modelo ya produce solo");
+  assert.ok(!VOZ.includes("hágale"), "'hágale' es imperativo de USTED: es el registro que justamente no es");
+  assert.match(seguido(VOZ), /Nada de parce, bacano ni berraco/, "la caricatura es peor que el registro equivocado");
+
+  // LA REGLA QUE MÁS PAGA POR LÍNEA, y sale de dos fugas medidas: él escribió "Ok me avisas" y le
+  // contestaron "me avisás no, yo te aviso"; escribió "recuedame el lunes" y le contestaron "me
+  // confirmás". Reescribirle sus palabras en otro dialecto es lo único que él puede comparar letra
+  // por letra.
+  assert.match(VOZ, /DILO CON SUS PALABRAS/);
+  // El vocativo va por prompt y NO por regex: "Juanes" aparece en 17 de 18 respuestas y el saneador
+  // sólo borra el de la posición 0. Sacarlo del medio de la frase rompe la oración.
+  assert.match(VOZ, /SU NOMBRE NO VA EN CADA MENSAJE/);
 });
 
 test("si la última lectura tiene reparos, avisar es OBLIGATORIO", () => {
@@ -95,6 +139,46 @@ test("marca lo que el modelo afirmó y no estaba en el contexto", () => {
 
   // Las exclamaciones YA NO se observan: la voz nueva las permite cuando hay entusiasmo real.
   assert.deepEqual(revisarRespuesta("Listo, ya quedó", ctx), []);
+});
+
+test("MARCA LA ACCIÓN QUE DICE HABER HECHO Y NO HIZO — el detector solo miraba números y dominios", () => {
+  // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO, textual de las corridas del 2026-08-07 con el prompt
+  // vivo: "Ya le ejecuté revisar_reputacion a corpfiling-ops.com" en un turno SIN una sola línea
+  // ACCION. `observaciones` volvió vacío en las 9 muestras, porque los dos chequeos que había
+  // miraban números y dominios y esto no es ni una cosa ni la otra. Es "una mano prometida y no
+  // cableada" —cuatro veces pagada en este repo— pero dicha al jefe en tiempo real.
+  const ctx = "ESTO ES LO QUE SABES\nfrenados: corpfiling-ops.com";
+  const obs = revisarRespuesta("Ya le ejecuté revisar_reputacion a corpfiling-ops.com y salió limpio.", ctx);
+  assert.ok(obs.some((o) => o.includes("revisar_reputacion")), `tenía que marcarlo: ${JSON.stringify(obs)}`);
+
+  // Lo que SÍ pasa: hablar en futuro, y decirlo cuando el contexto lo respalda (ahí "LO QUE PEDISTE
+  // Y QUÉ PASÓ" trae la mano ejecutada del turno anterior).
+  assert.deepEqual(revisarRespuesta("Voy a mirar la reputación de corpfiling-ops.com.", ctx), []);
+  assert.deepEqual(
+    revisarRespuesta("Listo, ya ejecuté revisar_reputacion.", `${ctx}\nLO QUE PEDISTE Y QUÉ PASÓ:\nhecho: revisar_reputacion corpfiling-ops.com`),
+    []
+  );
+  // Y la línea ACCION del propio turno no se marca: nombra la mano sin afirmar que ya corrió.
+  assert.deepEqual(revisarRespuesta("Voy y lo miro.\nACCION: revisar_reputacion | dominio=corpfiling-ops.com | motivo=me lo pidió", ctx), []);
+
+  // EL BORDE QUE TIRÓ LA PRIMERA VERSIÓN: `\b` en JavaScript es ASCII, así que "ejecuté" —termina
+  // en letra acentuada— no cerraba el borde y la regex no matcheaba NUNCA. Un detector que no
+  // dispara se ve idéntico a uno que no encuentra nada.
+  assert.ok(revisarRespuesta("Ya corrí medir_dominio.", ctx).length > 0, "acentos: corrí");
+  assert.ok(revisarRespuesta("Ya programé diagnosticar_dominio.", ctx).length > 0, "acentos: programé");
+});
+
+test("EL PROMPT NO LE DA UNA FRASE DE APERTURA PARA COPIAR", () => {
+  // Medido con este mismo prompt: 8 de 9 respuestas abrieron con "listo Juanes, voy" —el ejemplo
+  // entrecomillado que estaba en la regla— incluso ante un saludo y ante "¿cómo vamos?", donde no
+  // significa nada. Un modelo copia el EJEMPLO antes que la regla: es la misma lección del voseo,
+  // un escalón más abajo. Y de paso pisaba la regla del vocativo ("SU NOMBRE NO VA EN CADA
+  // MENSAJE"): "Juanes" salió en 4 de 4 de la primera tanda.
+  const bloque = VOZ.split("\n\n").find((b) => b.startsWith("CUANDO TE DAN UNA ORDEN"));
+  assert.ok(bloque, "la regla sigue existiendo");
+  assert.doesNotMatch(bloque, /"/, `la regla no puede traer una frase entrecomillada: ${bloque}`);
+  assert.ok(!VOZ.includes("listo Juanes"), "y menos una que además lo nombra");
+  assert.match(bloque, /distintas cada vez/, "se pide la conducta, no una plantilla");
 });
 
 test("el chat NO manda herramientas al modelo: es la barrera contra la inyección", async () => {
@@ -142,7 +226,7 @@ test("la voz le exige ir a mirar antes de preguntar", () => {
   // El reclamo textual del jefe: "no me gusta que siga tan dependiente de nosotros, depende de mi,
   // luego de ti". Tener manos pasivas no alcanza si el prompt no le dice que las use ANTES de
   // pedir. Un agente con ojos que igual pregunta es un agente que no sabe que tiene ojos.
-  assert.match(VOZ, /NO LE PIDAS A JUANES LO QUE PODÉS IR A VER VOS/);
+  assert.match(VOZ, /NO LE PIDAS A JUANES LO QUE PUEDES IR A VER TÚ/);
   assert.match(VOZ, /MIRAR ES GRATIS/);
   assert.match(VOZ, /volverte inútil/, "le dice el costo, no solo la regla");
 });
@@ -154,14 +238,14 @@ test("la voz no lo deja declararse incapaz de lo que sí puede", () => {
   // El prompt va cortado a mano en líneas de ~100, así que una frase puede quedar partida al
   // medio. Buscar sobre el texto sin cortes evita que reacomodar un renglón rompa un test que no
   // tiene nada que ver con lo que se cambió.
-  assert.match(seguido(VOZ), /Leé la lista antes de declararte incapaz/);
+  assert.match(seguido(VOZ), /Lee la lista antes de declararte incapaz/);
 });
 
 test("la lista de manos incluye soltar, y con sus condiciones", () => {
   // Que exista la acción no alcanza: si el prompt no dice que un rechazo del gate es información
   // y no un error suyo, el modelo lo lee como falla propia y deja de intentarlo.
   assert.match(VOZ, /soltar_dominio/);
-  assert.match(VOZ, /El cupo no lo elegís vos/);
+  assert.match(VOZ, /El cupo no lo eliges tú/);
   assert.match(seguido(VOZ), /no un error tuyo/);
   assert.match(VOZ, /medir_dominio/);
   // Y la contradicción vieja tiene que estar muerta: el prompt decía textual que "soltar el cupo"
@@ -614,7 +698,7 @@ test("la voz pide el marcador de promesa y da la lista CERRADA de campos", () =>
   // bloque es la mitad del arreglo que vive en el prompt; la otra la ejecuta la guardia.
   const v = seguido(VOZ);
   assert.match(v, /PROMETI: <qué le vas a avisar> \| espero=<el campo que estás esperando>/);
-  assert.match(v, /SI VAS A ESPERAR UN DATO, DECILO CON LA LÍNEA/);
+  assert.match(v, /SI VAS A ESPERAR UN DATO, DILO CON LA LÍNEA/);
   assert.match(v, /prometiste y nadie lo anotó/, "le dice el costo, no solo la regla");
   // La lista va como DATO. Un criterio en prosa el modelo lo devuelve como hallazgo propio, y este
   // proyecto ya se quemó dos veces con eso.
@@ -641,7 +725,7 @@ test("EL CONTRATO DE espero=: todo campo que ofrece la VOZ lo tiene que producir
   } as unknown as HechosWarmup;
   const produce = camposObservables(hechos, {});
 
-  const lista = VOZ.slice(VOZ.indexOf("Lo que podés poner en espero=")).split("\n").slice(1).join(" ");
+  const lista = VOZ.slice(VOZ.indexOf("Lo que puedes poner en espero=")).split("\n").slice(1).join(" ");
   const ofrecidos = lista
     .split("·")
     .map((x) => x.trim())
@@ -765,7 +849,9 @@ test("el vocativo inicial se saca, y SOLO cuando es un vocativo", () => {
   // 71 de las 192 líneas VOZ del log arrancan con "Juanes," mientras slack.ts declara el invariante
   // contrario desde hace tiempo. El único replace que lo sacaba vivía suelto en el orquestador
   // (scripts/ops/warmup-monitor.ts:1283), cubría UN carril y solo si había SLACK_JUANES_USER_ID.
-  assert.equal(limpiarParaSlack("Juanes, esto no lo puedo destrabar yo, mirá el nodo."), "Esto no lo puedo destrabar yo, mirá el nodo.");
+  // El "mirá" del original sale "mira": el saneador de registro corre en el mismo embudo. Que las
+  // dos cosas pasen en una sola llamada es el punto — quien publica llama a UNA función.
+  assert.equal(limpiarParaSlack("Juanes, esto no lo puedo destrabar yo, mirá el nodo."), "Esto no lo puedo destrabar yo, mira el nodo.");
   // Textual del log del 2026-08-07: "¡Juanes! Aquí andamos, de guardia."
   assert.equal(limpiarParaSlack("¡Juanes! Aquí andamos, de guardia."), "Aquí andamos, de guardia.");
   assert.equal(limpiarParaSlack("JUANES: el freno no quedó puesto."), "El freno no quedó puesto.");
@@ -803,6 +889,67 @@ test("un identificador NO se disfraza: los guiones bajos de una acción quedan e
   assert.equal(limpiarParaSlack("__Foto general:__ 6 dominios activos"), "Foto general: 6 dominios activos");
 });
 
+test("aColombiano: las formas que el modelo escribió DE VERDAD, no las que imaginamos", () => {
+  // LOS CASOS SALEN DEL LOG, NO DE SUPONER CÓMO HABLARÍA. Los dos primeros son textuales de las
+  // respuestas reales guardadas en warmup-conversacion.json — las ÚNICAS 2 marcas rioplatenses que
+  // Kimi escribió en 18 turnos, contra 11 colombianas. El resto sale de las 41 marcas medidas en las
+  // líneas `[slack]` del log de producción, que eran nuestras propias plantillas.
+  const casos: Array<[string, string]> = [
+    // LA TRAMPA 1, y por qué esto no se puede escribir con `\b`: en JavaScript `\b` es ASCII, así que
+    // `/\bmirá\b/` NO matchea "Mirá:" — entre la `á` (que no es carácter de palabra para `\b`) y los
+    // dos puntos no hay borde. Y "Mirá:" es la forma más común del voseo imperativo en el log.
+    ["Mirá: los 6 que calientan van entre día 2 y día 5 de rampa.", "Mira: los 6 que calientan van entre día 2 y día 5 de rampa."],
+    // LA TRAMPA 2: un replace case-insensitive devuelve "tienes razón" sobre "Tenés razón" y le come
+    // la mayúscula a la oración. La mayúscula del original se le devuelve al reemplazo.
+    ["Tenés razón, Juanes.", "Tienes razón, Juanes."],
+    ["¿Lo resolvés vos?", "¿Lo resuelves tú?"],
+    ["Andá a ver si sigue vivo.", "Anda a ver si sigue vivo."],
+    ["Cuando te diga que una bandeja está sana, leelo con ese descuento.", "Cuando te diga que una bandeja está sana, léelo con ese descuento."],
+    ["Si no querés que quede así, revertilo.", "Si no quieres que quede así, reviértelo."],
+    ["El freno lo levantás vos.", "El freno lo levantas tú."],
+    // El pronombre tras preposición es "ti", no "tú": un saneador que deja "depende de tú" empeora
+    // la oración, que es la clase de arreglo peor que el problema.
+    ["Esto depende de vos.", "Esto depende de ti."],
+    ["Mandame el ok y sigo.", "Mandame el ok y sigo."],
+    // DEVOLVERLE SUS PROPIAS PALABRAS TRADUCIDAS. Los dos son textuales del hilo: el jefe escribió
+    // "Ok me avisas" y recibió "me avisás no, yo te aviso"; escribió "recuedame el lunes" y recibió
+    // "me confirmás". La tabla tenía el imperativo (`avisame`, `confirmá`) y NO la segunda persona,
+    // así que estos dos pasaban limpios — verificado corriendo la función antes de agregarlos.
+    ["Perfecto, me avisás y lo hago.", "Perfecto, me avisas y lo hago."],
+    ["Me confirmás el lunes y sigo.", "Me confirmas el lunes y sigo."],
+    ["Si lo frenás, avisame.", "Si lo frenas, avísame."],
+    ["Vos soltás el dominio cuando quieras.", "Tú sueltas el dominio cuando quieras."]
+  ];
+  for (const [de, esperado] of casos) assert.equal(aColombiano(de), esperado, `no tradujo: ${de}`);
+
+  // CONTRA-CONDICIÓN, y es la mitad que importa: lo que ya está bien NO se toca. Un saneador que
+  // corrige de más es una fuente de bugs que nadie mira, porque parecen aciertos.
+  for (const bueno of [
+    "Dale, ya lo frené y quedó en cero ✅",
+    "Lo miro y te cuento 👀",
+    "Listo, míralo cuando puedas.",
+    "corpfiling-infra.com viene en 83% sobre 6 mediciones; sigo.",
+    // Ni los identificadores: `revisar_reputacion` no es voseo aunque termine parecido.
+    "El log del nodo dice revisar_reputacion y frenar_dominio.",
+    // NI LAS PALABRAS QUE TERMINAN EN `ás` Y NO SON VERBOS. Es la razón de que la tabla enumere en
+    // vez de generalizar con `(\p{L}+)ás`: esa regla dejaría "m", "jam", "quiz", "adem", "atr".
+    "Más de la mitad quedó atrás, y jamás se midió; quizás además haya detrás otro nodo."
+  ]) {
+    assert.equal(aColombiano(bueno), bueno, `tocó lo que estaba bien: ${bueno}`);
+  }
+
+  // Idempotente: el texto publicado puede pasar dos veces por el embudo (un reintento, un camino que
+  // llama a los dos limpiadores) y la segunda no puede comerse una letra.
+  for (const [de] of casos) assert.equal(aColombiano(aColombiano(de)), aColombiano(de));
+});
+
+test("el saneador de registro corre DENTRO de limpiarParaSlack: quien publica llama a una sola función", () => {
+  // Es el mismo razonamiento que ya está escrito para el markdown: pedirlo en el prompt baja la
+  // frecuencia, pero un modelo se olvida y para cuando eso pasa ya contestó. El día que alguien
+  // agregue un camino de publicación nuevo, el registro viaja con él sin que se acuerde de nada.
+  assert.equal(limpiarParaSlack("Juanes, **mirá** esto: el placement no se movió."), "Mira esto: el placement no se movió.");
+});
+
 test("un mensaje que ya suena a persona pasa intacto", () => {
   // La contra-condición del limpiador. Un saneador que reescribe lo que ya estaba bien es una
   // fuente nueva de bugs, y encima invisible: nadie mira lo que salió bien.
@@ -823,7 +970,7 @@ test("la VOZ prohíbe el markdown: es la mitad del arreglo que vive en el prompt
   const v = seguido(VOZ);
   assert.match(v, /NADA DE MARKDOWN/);
   assert.match(v, /sin asteriscos, sin negritas, sin viñetas, sin títulos/);
-  assert.match(v, /Escribís en un chat, no en un informe/, "le dice la intención, no solo la lista");
+  assert.match(v, /Escribes en un chat, no en un informe/, "le dice la intención, no solo la lista");
 });
 
 test("el detalle crudo de una acción entra por el PROMPT, nunca por el texto que se publica", () => {

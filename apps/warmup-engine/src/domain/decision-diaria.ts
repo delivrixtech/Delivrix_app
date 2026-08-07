@@ -22,6 +22,7 @@
 
 import { dailyQuota, type IsoWeekday } from "./ramp.ts";
 import { wilsonLowerBound } from "./placement.ts";
+import { PROVEEDORES_CLAVE } from "./seeds.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
 
 /** Qué se decidió hacer hoy con este dominio. */
@@ -175,7 +176,11 @@ export const RAMPA_PASO_POR_DIA_DEFAULT = 2;
  * `WARMUP_RAMPA_LIMITE_DIARIO=0` escrito a propósito congela la rampa, y descartarlo en silencio
  * haría salir MÁS de lo que el operador pidió.
  */
-export function rampaDesdeEnv(env: NodeJS.ProcessEnv): { limiteDiario: number; pasoPorDia: number } {
+export function rampaDesdeEnv(env: NodeJS.ProcessEnv): {
+  limiteDiario: number;
+  pasoPorDia: number;
+  soloDiasHabiles: boolean;
+} {
   const leer = (raw: string | undefined, fallback: number): number => {
     const t = (raw ?? "").trim();
     if (t.length === 0) return fallback;
@@ -184,7 +189,17 @@ export function rampaDesdeEnv(env: NodeJS.ProcessEnv): { limiteDiario: number; p
   };
   return {
     limiteDiario: leer(env.WARMUP_RAMPA_LIMITE_DIARIO, RAMPA_LIMITE_DIARIO_DEFAULT),
-    pasoPorDia: leer(env.WARMUP_RAMPA_PASO_POR_DIA, RAMPA_PASO_POR_DIA_DEFAULT)
+    pasoPorDia: leer(env.WARMUP_RAMPA_PASO_POR_DIA, RAMPA_PASO_POR_DIA_DEFAULT),
+    // TERCERA PALANCA, Y SALE DE ACÁ POR LA MISMA RAZÓN QUE LAS OTRAS DOS: `dailyQuota` acepta
+    // `weekdaysOnly` desde el diseño v1 (§10) y los DOS llamadores lo tenían HARDCODEADO en `false`
+    // (decision-diaria.ts, en la llamada a `dailyQuota`). O sea que "días hábiles" existía como
+    // parámetro, estaba testeado en ramp.test.ts, y no había forma de encenderlo sin tocar código.
+    // §3 del doc de auditoría lo lista entre los levers ("spread horario con jitter, días hábiles").
+    //
+    // Default `false` = exactamente lo de hoy: no cambia un solo correo hasta que alguien lo escriba.
+    // Y cuando se escriba SOLO PUEDE BAJAR el volumen (sábado y domingo dan 0), que es la única
+    // dirección que este lote tiene permitido mover sin pasar por el operador.
+    soloDiasHabiles: (env.WARMUP_RAMPA_SOLO_DIAS_HABILES ?? "").trim().toLowerCase() === "true"
   };
 }
 
@@ -216,12 +231,39 @@ export interface EntradaDecision {
    * mandaron, y se realimentaba hasta congelar el plan.
    */
   cupoHace2Dias?: number;
+  /**
+   * El cupo que este dominio tenía AUTORIZADO hace 2 días. Es la entrada del clamp anti-firma
+   * 3×/48h del §10, y es un dato DISTINTO de `cupoHace2Dias`.
+   *
+   * La diferencia no es sutil, es la que rompió el clamp dos veces:
+   *   · `cupoHace2Dias`            = correos que SALIERON. Está aplastado por el tope GLOBAL del
+   *     daemon (14 vueltas para TODA la flota), así que da 1-8 y casi siempre 2 — sin relación con
+   *     lo que el dominio tenía permitido. Con eso como base, el clamp frenaba a los sanos
+   *     (corpfiling-infra.com mandó 1 el 05-ago ⇒ techo 3/día) y soltaba a los que no mandaron
+   *     nada (ausentes del Map ⇒ sin clamp, rampa entera).
+   *   · `cupoAutorizadoHace2Dias`  = lo que `decidirCupoDeHoy` DECIDIÓ ese día. Es la magnitud que
+   *     el §10 quiere acotar: la firma que ve el receptor no es un envío suelto, es el escalón.
+   *
+   * Hasta este cambio no se persistía en ningún lado y el comentario de abajo lo declaraba: el
+   * clamp existía en `dailyQuota` desde el diseño v1 y NUNCA tuvo entrada. Ahora el daemon lo graba
+   * en el `detail` del evento `sent` (`cupoDelDia`) y `cupoAutorizadoVigente` lo lee.
+   *
+   * SOLO PUEDE BAJAR: `dailyQuota` lo aplica con un `Math.min`, y con `0` o ausente no clampea
+   * nada (no se puede multiplicar desde cero). Perderlo no abre ninguna puerta.
+   */
+  cupoAutorizadoHace2Dias?: number;
   /** Día de la semana en el receptor (1=lun…7=dom). */
   isoWeekday: IsoWeekday;
   /** Techo del plan: cuánto llega a mandar este dominio al final de la rampa. */
   limiteDiario?: number;
   /** Cuánto sube por día la rampa lineal. */
   pasoPorDia?: number;
+  /**
+   * ¿La rampa manda 0 el fin de semana? §3 del doc lo lista entre los levers, y `dailyQuota` lo
+   * soporta desde el diseño v1 — pero los dos llamadores lo tenían escrito `false` a mano. Sale de
+   * `rampaDesdeEnv` para que el daemon y el panel no puedan divergir.
+   */
+  soloDiasHabiles?: boolean;
 }
 
 /**
@@ -249,18 +291,30 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   // fijo en 3-6/día para siempre mientras `accion` seguía diciendo "subir" y el panel pintaba una
   // rampa que no avanzaba.
   //
-  // ponytail: el clamp anti-firma del §10 necesita el CUPO AUTORIZADO de hace dos días, que hoy no
-  // se persiste en ningún lado (no hay tabla de plan diario ni el `sent` guarda el cupo del día).
-  // Mientras no exista, un proxy que mide otra cosa es peor que no clampear: hoy el techo real lo
-  // ponen el cupo físico del nodo y el tope global del daemon, los dos muy por debajo de la rampa.
+  // EL CLAMP YA TIENE SU ENTRADA, Y ES OTRA. `cupoAutorizadoHace2Dias` es el cupo que la decisión
+  // AUTORIZÓ hace dos días, no lo que salió: el daemon lo graba en el `detail` del `sent`
+  // (`cupoDelDia`) y `cupoAutorizadoVigente` lo lee. Es el dato que el §10 pide y que hasta hoy no
+  // existía en ningún lado, así que el clamp estaba escrito y desconectado desde el diseño v1.
+  //
+  // Por qué importa que sea el AUTORIZADO y no el enviado: sin este dato, el día que se destrabe la
+  // rampa no hay nada entre un dominio y un salto de 2 a 10 en 24 h — que es exactamente la firma
+  // que el clamp existe para evitar. Y con el ENVIADO como base ya se probó que hace lo contrario
+  // (frena a los sanos, suelta a los que no mandaron); ver el campo en `EntradaDecision`.
+  //
+  // Ausente o 0 ⇒ `dailyQuota` no clampea (no se puede multiplicar desde cero), o sea el
+  // comportamiento de hoy exacto. Sólo puede BAJAR.
   const rampa = dailyQuota(
     {
       dailyLimit: e.limiteDiario ?? RAMPA_LIMITE_DIARIO_DEFAULT,
       increaseByDay: e.pasoPorDia ?? RAMPA_PASO_POR_DIA_DEFAULT,
       dayIndex: e.diaN,
-      weekdaysOnly: false
+      // Dejó de estar hardcodeado en `false`: la palanca existía en `dailyQuota` desde el diseño v1
+      // y no había forma de encenderla sin tocar código. Sale de `rampaDesdeEnv`, igual que las
+      // otras dos, para que el daemon y `/v1/warmup/plan` no puedan decir números distintos.
+      weekdaysOnly: e.soloDiasHabiles ?? false
     },
-    e.isoWeekday
+    e.isoWeekday,
+    { quotaTwoDaysAgo: e.cupoAutorizadoHace2Dias ?? 0 }
   );
 
   const contra = (n: number, accion: AccionDiaria, motivo: string): DecisionDiaria => {
@@ -486,4 +540,391 @@ export function puedeMandarTurno(e: {
     };
   }
   return { si: true, motivo: `${e.dominio} tiene ${cupo - e.enviadosHoy} de cupo libre hoy` };
+}
+
+// ══ LA EVIDENCIA LLEVA SU PROVEEDOR (B2) ═════════════════════════════════════════════════════════
+//
+// §6 del doc de auditoría (2026-07-23) dice que la ventaja de Delivrix sobre Instantly es placement
+// con evidencia REAL por proveedor, contra su health score interno, que es un proxy. Verificado
+// contra el código de hoy, la ventaja estaba a medias y el número mentía por omisión: `placementTasa`
+// y `placementMuestra` viajaban SIN proveedor hasta el prompt y hasta el panel.
+//
+// Medido contra la Postgres de producción el 2026-08-07, las 24 filas `measured` de los últimos 10
+// días salen de DOS semillas y las dos son Gmail (trazosvercel@gmail.com y flomia33193@gmail.com).
+// O sea que el "83% inbox" que el jefe leyó es 83%-EN-GMAIL presentado como placement a secas, con
+// Outlook y Yahoo —los dos receptores que más nos bloquean— en punto ciego.
+//
+// Y no es cosmético: §3 del mismo doc usa umbrales DISTINTOS por proveedor (≥95% Gmail, ≥90%
+// Outlook). Un número sin proveedor no se puede comparar contra su umbral, así que sin esto el gate
+// determinista de más abajo no se puede construir honestamente.
+
+/**
+ * Una medición CON la semilla que la produjo. El campo `semilla` es todo lo que hacía falta: el
+ * proveedor sale por lookup en el registro (warmup-seeds.json), no por una migración.
+ */
+export interface FilaPlacement {
+  placement: Placement;
+  /** Dirección de la semilla que midió (columna `seed_inbox` de warmup_activity). */
+  semilla: string;
+}
+
+/** Lo que se midió EN UN receptor. `tasa: null` es NO MEDIDO, y no es lo mismo que 0%. */
+export interface PlacementDeProveedor {
+  proveedor: string;
+  tasa: number | null;
+  muestra: number;
+  inbox: number;
+}
+
+export interface PlacementConProveedor {
+  /**
+   * Quién midió. `"varios"` si más de un receptor aportó filas; `null` si nadie midió.
+   *
+   * `null` y no `"gmail"` por defecto: adivinar el proveedor es exactamente la mentira por omisión
+   * que este campo vino a cerrar.
+   */
+  proveedor: string | null;
+  /** La MISMA cuenta agregada de siempre (`medirPlacement`), para que nada cambie de valor. */
+  tasa: number | null;
+  muestra: number;
+  /** Uno por receptor, incluidos los que NO midieron nada — ésos salen con `tasa: null`. */
+  porProveedor: PlacementDeProveedor[];
+}
+
+/**
+ * Reparte las mediciones por receptor. Pura: el registro de semillas entra como función.
+ *
+ * LOS PROVEEDORES CLAVE APARECEN SIEMPRE, con `tasa: null` cuando nadie midió ahí. Es la regla más
+ * cara del archivo y por eso es explícita: "no medido" y "cero" no son lo mismo. Un Outlook que sale
+ * 0% se lee como "todo nuestro correo va a spam en Outlook" y dispara un freno sobre evidencia que
+ * no existe; un Outlook que sale `no sé` dice la verdad, que es que no tenemos semilla ahí.
+ */
+export function medirPorProveedor(
+  filas: readonly FilaPlacement[],
+  proveedorDe: (semilla: string) => string | null,
+  proveedoresDeInteres: readonly string[] = PROVEEDORES_CLAVE
+): PlacementConProveedor {
+  const porNombre = new Map<string, Placement[]>();
+  for (const f of filas) {
+    // Una semilla que no está en el registro NO se cuenta como gmail: se declara `desconocido`. Con
+    // el default silencioso, borrar una semilla del registro habría movido sus mediciones al montón
+    // del proveedor equivocado sin que nada fallara.
+    const p = proveedorDe(f.semilla) ?? "desconocido";
+    const lista = porNombre.get(p) ?? [];
+    lista.push(f.placement);
+    porNombre.set(p, lista);
+  }
+  for (const p of proveedoresDeInteres) if (!porNombre.has(p)) porNombre.set(p, []);
+
+  const porProveedor = [...porNombre.entries()]
+    .map(([proveedor, ps]) => {
+      // La MISMA cuenta que decide el volumen (`medirPlacement`), no una parecida: saca los MISSING
+      // del denominador igual que la agregada. Dos cuentas del mismo hecho es cómo se desincronizan.
+      const m = medirPlacement(ps);
+      return { proveedor, tasa: m.tasa, muestra: m.muestra, inbox: m.inbox };
+    })
+    .sort((a, b) => b.muestra - a.muestra || a.proveedor.localeCompare(b.proveedor));
+
+  const conMuestra = porProveedor.filter((p) => p.muestra > 0);
+  const total = medirPlacement(filas.map((f) => f.placement));
+  return {
+    proveedor: conMuestra.length === 0 ? null : conMuestra.length === 1 ? conMuestra[0]!.proveedor : "varios",
+    tasa: total.tasa,
+    muestra: total.muestra,
+    porProveedor
+  };
+}
+
+/** `gmail` → `Gmail`, `m365` → `M365`. Para que la cifra se lea, no para adornar. */
+export function nombreDeProveedor(p: string): string {
+  if (p === "varios") return "varios receptores";
+  if (p === "desconocido") return "una semilla que no está en el registro";
+  return p.replace(/^./, (c) => c.toUpperCase());
+}
+
+/**
+ * LA ÚNICA FORMA EN QUE UNA CIFRA DE PLACEMENT SALE DEL MOTOR.
+ *
+ * Existe como función y no como plantilla en cada llamador porque el defecto era justamente ése:
+ * cada lugar armaba su propio texto y ninguno tenía el proveedor. Con una sola función, el día que
+ * aparezca una semilla de Outlook la frase cambia sola en el log, en el panel y en Slack.
+ */
+export function textoPlacement(p: { proveedor: string | null; tasa: number | null; muestra: number }): string {
+  if (p.proveedor === null || p.tasa === null) return "placement no sé (todavía sin mediciones)";
+  return `placement ${nombreDeProveedor(p.proveedor)} ${pct(p.tasa)} sobre ${p.muestra} mediciones`;
+}
+
+/** Una línea por receptor, con el `no sé` explícito. Los que no midieron NUNCA salen como 0%. */
+export function textoPorProveedor(p: PlacementDeProveedor): string {
+  return p.muestra === 0
+    ? `${nombreDeProveedor(p.proveedor)}: no sé (ninguna semilla mide ahí)`
+    : `${nombreDeProveedor(p.proveedor)} ${pct(p.tasa!)} sobre ${p.muestra}`;
+}
+
+// ══ EL GATE DE §3 COMO DATO EVALUADO, NO COMO PROSA EN EL PROMPT (B1) ════════════════════════════
+//
+// §3 del doc trae la receta con números: avanzar si inbox ≥95% (Gmail) o ≥90% (Outlook) sostenido
+// 2-3 días, bounce <2%, complaint <0.1%; pausar si <80%, bounce >5%, complaint >0.3% o blacklist.
+//
+// VA COMO FUNCIÓN Y NO COMO TEXTO EN EL PROMPT por la lección que este proyecto ya pagó dos veces:
+// un criterio en PROSA dentro del prompt el modelo lo devuelve como hallazgo propio, y si es falso
+// lo devuelve con seguridad. Al modelo le llega el VEREDICTO (pasa / cuál condición falló), no el
+// criterio. §5.2 del mismo doc lo dice desde el otro lado: el LLM propone y explica, el breaker es
+// determinista.
+//
+// CADA UMBRAL DEL DOC, con la línea del código de HOY que lo implementa o la nota de que no existe
+// (el doc es del 2026-07-23 y parte de su diagnóstico ya se arregló — verificado uno por uno):
+//
+//   · inbox ≥95% Gmail / ≥90% Outlook   → `UMBRAL_INBOX_POR_PROVEEDOR`, acá abajo. El motor vigente
+//     corre con `piso placement 50%` (línea ARRANCA del daemon en producción) y `PISO_SANO = 0,70`:
+//     una banda entera POR DEBAJO de lo que el doc llama "pausar" (<80%). Ésta es la brecha.
+//   · sostenido 2-3 días                 → NO EXISTE EN EL MOTOR. `placementsDeDominio` devuelve una
+//     ventana de N filas (LIMIT 6 en producción), no una serie por día; `node-state.ts` tiene
+//     `sustainedDaysOverBar` y ningún camino vivo lo alimenta (§1.3 del doc, sigue vigente).
+//     El gate usa MUESTRA_MINIMA como sustituto declarado, que es más débil y hay que decirlo.
+//   · bounce <2%                         → se evalúa con `rechazadosMta/(entregados+rechazados)` del
+//     receptor, que sale de sender-measurement.json (`porReceptor`). Ausente en 5 de los 6 dominios
+//     que hoy calientan, porque el escritor filtra los receptores con menos de 20 intentos: ahí el
+//     gate dice "no sé", nunca "pasa".
+//   · complaint <0,1% (y >0,3%)          → NO EXISTE EN EL MOTOR. No hay ingesta de FBL ni de Google
+//     Postmaster en ningún archivo del repo; §7 del doc lo pone como pendiente P1 y sigue pendiente.
+//   · blacklist                          → EXISTE PERO NO ESTÁ CABLEADO AL PLAN. `checks/
+//     ip-network-checks.ts` implementa `rblQuery` (Spamhaus/Barracuda/SpamCop) y el único consumidor
+//     es `live/dns-adapters.ts`, que no lo llama ningún camino del plan diario.
+//   · cruzó el umbral permanente de Gmail → `elegirPool` (plan-diario.ts) ya lo excluye del pool.
+//     Entra igual al gate porque el gate se evalúa por dominio y tiene que poder decirlo.
+//
+// EL GATE SOLO INFORMA. No frena, no suelta y no cambia ningún cupo: `decidirCupoDeHoy` no lo llama.
+// Cablearlo a una acción cambia el comportamiento de la flota entera de golpe, y frenar de más es
+// tan caro como frenar de menos — es el episodio del `placement-pause`, que paró al único dominio
+// que calentaba bien.
+
+/** §3: el umbral de bandeja para AVANZAR, por receptor. Gmail es el más exigente. */
+export const UMBRAL_INBOX_POR_PROVEEDOR: Readonly<Record<string, number>> = {
+  gmail: 0.95,
+  workspace: 0.95,
+  outlook: 0.9,
+  m365: 0.9
+};
+/** Receptor no listado en §3 (yahoo, gmx, web.de): se le aplica el más permisivo de los dos. */
+export const UMBRAL_INBOX_POR_DEFECTO = 0.9;
+/** §3: bounce por encima de esto y el dominio no avanza. */
+export const UMBRAL_REBOTES = 0.02;
+
+export interface GateDelDoc {
+  pasa: boolean;
+  /** Qué condición falló, en castellano. `null` sólo si pasa. */
+  condicionQueFalla: string | null;
+  /** El receptor cuyo umbral se aplicó. `null` = no hubo medición. */
+  proveedor: string | null;
+  umbral: number | null;
+  /**
+   * Lo que el gate NO PUDO evaluar porque el motor no lo mide. Se declara, jamás se asume bueno:
+   * ausencia de dato no es evidencia de que algo está bien.
+   */
+  sinInstrumento: string[];
+}
+
+/**
+ * El veredicto de §3 para UN dominio. Pura: mismo estado ⇒ mismo veredicto, sin reloj ni red.
+ *
+ * Con más de un receptor midiendo se aplica el umbral MÁS EXIGENTE de los que midieron. Promediar
+ * dos receptores con umbrales distintos daría un número que no se puede comparar contra ninguno.
+ */
+export function evaluarGate(e: {
+  placement: PlacementConProveedor | { proveedor: string | null; tasa: number | null; muestra: number; porProveedor?: PlacementDeProveedor[] };
+  /** Lo que dijo NUESTRO MTA para ese receptor en la ventana. `null`/ausente = no medido. */
+  entregadosMta?: number | null;
+  rechazadosMta?: number | null;
+  /** ¿Ya cruzó el umbral permanente de "bulk sender" de Gmail? Lo sabe sender-measurement.json. */
+  cruzoUmbralPermanente?: boolean;
+}): GateDelDoc {
+  const sinInstrumento = [
+    "complaint rate (§3 pide <0,1%): no existe en el motor — no hay ingesta de FBL ni Postmaster",
+    "sostenido 2-3 días (§3): no existe en el motor — la ventana es de N mediciones, no una serie diaria",
+    "listas negras (§3): el chequeo existe (checks/ip-network-checks.ts) pero ningún camino del plan lo llama"
+  ];
+  // EL UMBRAL Y LA TASA TIENEN QUE SER DEL MISMO RECEPTOR. Antes se elegía el umbral con `Math.max`
+  // sobre los que midieron —correcto— y se comparaba contra `placement.tasa`, que es la tasa
+  // AGREGADA de todos los receptores juntos. Un promedio contra el umbral del más exigente da PASA
+  // falso: Gmail 9/10 (90%, por debajo de su propio 95%) + Outlook 10/10 (100%) ⇒ pooled 95% ⇒
+  // pasa, cuando §3 evaluado sobre Gmail dice que no. Y al revés esconde de quién es el problema:
+  // Gmail 100% + Outlook 0% salía como "placement varios receptores 50%", sin nombrar cuál falló.
+  //
+  // Hoy no dispara porque las dos semillas que miden son Gmail — o sea que el defecto está armado y
+  // esperando a la primera semilla de Outlook. Y un PASA falso no es sólo un texto: alimenta la
+  // propuesta de SUBIR volumen, que es irreversible si sale mal.
+  //
+  // La regla: TODOS los que midieron pasan el SUYO. La primera que incumple se nombra.
+  const conMuestra = (e.placement.porProveedor ?? [])
+    .filter((p) => p.muestra > 0)
+    .map((p) => ({ ...p, umbral: UMBRAL_INBOX_POR_PROVEEDOR[p.proveedor] ?? UMBRAL_INBOX_POR_DEFECTO }));
+  const incumple = conMuestra.find((p) => p.tasa === null || p.tasa < p.umbral);
+  const umbral =
+    incumple !== undefined
+      ? incumple.umbral
+      : conMuestra.length > 0
+        ? Math.max(...conMuestra.map((p) => p.umbral))
+        : e.placement.proveedor !== null
+          ? UMBRAL_INBOX_POR_PROVEEDOR[e.placement.proveedor] ?? UMBRAL_INBOX_POR_DEFECTO
+          : null;
+  // El proveedor que se reporta es el DUEÑO del umbral que se aplicó: decir umbral 95% con
+  // proveedor "varios" es la misma mezcla de magnitudes, contada en dos campos.
+  const base = { proveedor: incumple?.proveedor ?? e.placement.proveedor, umbral, sinInstrumento };
+
+  if (e.cruzoUmbralPermanente === true) {
+    return { ...base, pasa: false, condicionQueFalla: "cruzó el umbral permanente de bulk sender de Gmail: es irreversible" };
+  }
+  if (e.placement.tasa === null || e.placement.muestra < MUESTRA_MINIMA) {
+    return {
+      ...base,
+      pasa: false,
+      condicionQueFalla: `sin muestra suficiente: ${e.placement.muestra} de ${MUESTRA_MINIMA} mediciones — no sé dónde cae`
+    };
+  }
+  const intentos = (e.entregadosMta ?? 0) + (e.rechazadosMta ?? 0);
+  if (e.rechazadosMta != null && e.entregadosMta != null && intentos > 0) {
+    const tasaRebotes = e.rechazadosMta / intentos;
+    if (tasaRebotes >= UMBRAL_REBOTES) {
+      return {
+        ...base,
+        pasa: false,
+        condicionQueFalla: `rebotes ${pct(tasaRebotes)} sobre ${intentos} intentos: §3 pide menos de ${pct(UMBRAL_REBOTES)}`
+      };
+    }
+  } else {
+    sinInstrumento.push("rebotes (§3 pide <2%): nuestro MTA no reporta este receptor en la ventana");
+  }
+  if (incumple !== undefined) {
+    return {
+      ...base,
+      pasa: false,
+      condicionQueFalla:
+        `${textoPlacement(incumple)}: §3 pide ${pct(incumple.umbral)} para ${nombreDeProveedor(incumple.proveedor)}`
+    };
+  }
+  // El llamador que no trae `porProveedor` (la firma lo permite) se sigue evaluando como antes: su
+  // tasa es de UN receptor o de ninguno, así que ahí agregada y por proveedor son lo mismo.
+  if (conMuestra.length === 0 && umbral !== null && e.placement.tasa < umbral) {
+    return {
+      ...base,
+      pasa: false,
+      condicionQueFalla:
+        `${textoPlacement(e.placement)}: §3 pide ${pct(umbral)} para ${nombreDeProveedor(e.placement.proveedor ?? "")}`
+    };
+  }
+  return { ...base, pasa: true, condicionQueFalla: null };
+}
+
+// ══ EL CRUCE QUE NINGÚN COMPETIDOR PUEDE COPIAR ══════════════════════════════════════════════════
+//
+// Tenemos DOS cosas que nadie que compre el envío puede tener juntas:
+//   · lo que dijo NUESTRO MTA — entregados/rechazados/diferidos por receptor, sacados del mail.log
+//     del nodo por SSH (sender-measurement.json);
+//   · DÓNDE CAYÓ — la semilla leída por IMAP (warmup_activity).
+//
+// La diferencia entre "mi Postfix dice 250 entregado" y "la semilla dice SPAM" ES la reputación,
+// limpia de ruido de bloqueo. Un servicio comprado no puede dar ese número porque no tiene el MTA.
+// Hasta hoy los dos datos vivían en dos archivos que ningún código juntaba.
+//
+// LO QUE MIDIÓ EL PRIMER CRUCE, corriendo ESTA función sobre los datos reales de producción el
+// 2026-08-07 (la ventana salió por SELECT de la Postgres viva, el `porReceptor` de una copia de
+// sender-measurement.json). Es el número que decide si el ítem vale, y es modesto:
+//
+//   · CASOS DE "ENTREGADO PERO EN SPAM": UNO, en corpfiling-infra.com. Sobre la ventana de
+//     producción (`WARMUP_LIVE_PLACEMENT_WINDOW=6`) el MTA entregó 20 a gmail.com y de los 6
+//     medidos 1 cayó en SPAM ⇒ reputación pura, no bloqueo. Contando los 5 días completos del
+//     sender-measurement son 12 medidos (10 INBOX + 2 SPAM) ⇒ 2 casos; el número depende de la
+//     ventana y por eso las dos cifras van juntas.
+//   · 14 ENTREGAS QUE NINGUNA SEMILLA VIO en ese mismo dominio (20 del MTA contra 6 medidos). Ése
+//     es el dato que el cruce agrega y que ni el placement ni el MTA dan por separado.
+//   · SÓLO 2 DE 7 dominios tienen el dato del MTA por receptor (corpfiling-infra.com y
+//     nationalfiling-infra.com). Los otros cinco tienen `porReceptor: []`, porque el escritor filtra
+//     los receptores con menos de `BLOCKED_MIN_ATTEMPTS` (20) intentos y nuestro warmup manda
+//     ~2/día por dominio. Ahí el cruce dice `no sé`, que es la verdad.
+//   · y encima los 58 nodos están en `atribucion.modo: "todo"` con `queueIds: 0`, así que ni ese 20
+//     está atribuido a nosotros: puede incluir correo del otro inquilino. Se declara en la lectura.
+//
+// Por eso esto entra como DATO al lado de cada dominio y no como consejo, y por eso dice `no sé`
+// cuando no hay con qué cruzar. Hoy es un instrumento con UN caso; su valor sube solo cuando suba
+// el volumen o baje el filtro de 20 intentos, y las dos cosas son decisión del operador.
+
+/** Una fila de `porReceptor` de sender-measurement.json. */
+export interface EntregaPorReceptor {
+  receptor: string;
+  entregados: number;
+  rechazados: number;
+  diferidos: number;
+}
+
+export interface CruceEntregaPlacement {
+  /** Dominio del receptor, tal como lo llama el mail.log (`gmail.com`). */
+  receptor: string;
+  /** Lo que reportó NUESTRO MTA. `null` = el receptor no figura en la medición: no sé, no cero. */
+  entregadosMta: number | null;
+  rechazadosMta: number | null;
+  /** Lo que midió la semilla en la ventana de placement. */
+  medidos: number;
+  inbox: number;
+  enSpam: number;
+  /** Entregas del MTA que ninguna semilla vio. `null` cuando el MTA no reporta el receptor. */
+  sinMedir: number | null;
+  /** El cruce en castellano, como DATO. Nunca un consejo. */
+  lectura: string;
+}
+
+/**
+ * Cruza lo que dijo el MTA con dónde cayó, por receptor. Pura.
+ *
+ * El receptor sale del DOMINIO de la dirección de la semilla, que es exactamente la clave que usa
+ * `byProvider` en el clasificador del mail.log. Sin tabla de equivalencias: si algún día cambia el
+ * criterio del clasificador, esto se rompe ruidosamente en vez de mentir en silencio.
+ */
+export function cruzarEntregaConPlacement(e: {
+  filas: readonly FilaPlacement[];
+  porReceptor: readonly EntregaPorReceptor[] | undefined;
+  /** `true` sólo si la medición del MTA está atribuida a NUESTRO correo (`modo: "nuestro"`). */
+  atribuido: boolean;
+}): CruceEntregaPlacement[] {
+  const porDestino = new Map<string, Placement[]>();
+  for (const f of e.filas) {
+    const receptor = f.semilla.split("@")[1]?.toLowerCase() ?? "";
+    if (!receptor) continue;
+    const l = porDestino.get(receptor) ?? [];
+    l.push(f.placement);
+    porDestino.set(receptor, l);
+  }
+  const mta = new Map((e.porReceptor ?? []).map((r) => [r.receptor.toLowerCase(), r]));
+
+  return [...porDestino.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([receptor, ps]) => {
+      const m = medirPlacement(ps);
+      const enSpam = ps.filter((p) => p === "SPAM").length;
+      const fila = mta.get(receptor);
+      const entregadosMta = fila?.entregados ?? null;
+      const rechazadosMta = fila?.rechazados ?? null;
+      const sinMedir = entregadosMta === null ? null : Math.max(0, entregadosMta - ps.length);
+      const salvedad = e.atribuido
+        ? ""
+        : " (el veredicto del MTA sale de TODO el correo del nodo, no sólo del nuestro)";
+      let lectura: string;
+      if (entregadosMta === null) {
+        lectura =
+          `nuestro MTA no reporta ${receptor} en la ventana (el escritor filtra los receptores con ` +
+          `menos de 20 intentos): no sé cuánto entregó, así que el cruce no se puede hacer`;
+      } else if (entregadosMta === 0 && (rechazadosMta ?? 0) > 0) {
+        lectura = `nuestro MTA no entregó a ${receptor} (${rechazadosMta} rechazos): es BLOQUEO, el placement no aplica${salvedad}`;
+      } else if (enSpam > 0) {
+        lectura =
+          `nuestro MTA entregó ${entregadosMta} a ${receptor} y ${enSpam} de ${m.muestra} medidos ` +
+          `cayeron en SPAM: eso es REPUTACIÓN, no bloqueo${salvedad}`;
+      } else {
+        lectura = `nuestro MTA entregó ${entregadosMta} a ${receptor} y ningún medido cayó en SPAM${salvedad}`;
+      }
+      if (sinMedir !== null && sinMedir > 0) {
+        lectura += ` · ${sinMedir} entrega(s) que ninguna semilla vio`;
+      }
+      return { receptor, entregadosMta, rechazadosMta, medidos: m.muestra, inbox: m.inbox, enSpam, sinMedir, lectura };
+    });
 }

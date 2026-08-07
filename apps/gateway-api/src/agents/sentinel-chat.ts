@@ -10,6 +10,9 @@
 //   · Solo CITA el snapshot que el otro carril ya verificó. No mide nada por su cuenta.
 // El techo de daño de una alucinación o una inyección acá es "dijo una tontería en el chat".
 
+// La MISMA lista blanca que decide qué se ejecuta. Copiarla acá la desincroniza: una mano nueva
+// entraría al prompt y saldría del detector sin que nada falle.
+import { ACCIONES_VALIDAS } from "./acciones-agente.ts";
 import { lineasDeFrenados, type LecturaAgente } from "./warmup-monitor.ts";
 
 /**
@@ -21,46 +24,96 @@ import { lineasDeFrenados, type LecturaAgente } from "./warmup-monitor.ts";
  *
  * Y lo que de verdad define una voz en un modelo de 35B no son los adjetivos: son las
  * PROHIBICIONES concretas. Por eso la lista de lo que no hace es más larga que la de lo que hace.
+ *
+ * ── POR QUÉ ESTÁ EN TUTEO Y NO EN VOSEO NI EN USTED ─────────────────────────────────────────────
+ *
+ * Hasta hoy este bloque pedía "como se habla en Colombia" ESCRITO EN RIOPLATENSE: 20 marcas de
+ * voseo en 173 líneas, y la línea que pedía el registro colombiano empezaba con "podés usar". Un
+ * modelo imita el REGISTRO de sus instrucciones antes que el contenido de la instrucción, así que
+ * le estábamos pidiendo Medellín en el idioma de Buenos Aires.
+ *
+ * El registro objetivo no se eligió de oído, se midió: en los 18 mensajes reales del jefe guardados
+ * en warmup-conversacion.json hay 13 marcas de TUTEO, 0 de usted y 0 de voseo. Un agente en usted
+ * sonaría tan ajeno como uno en vos, con el agravante de que nadie lo notaría porque "usted" suena
+ * colombiano de oído.
+ *
+ * Y el alcance honesto de este bloque, medido: Kimi ya le resistía al voseo del prompt —11 marcas
+ * colombianas contra 2 rioplatenses en esas 18 respuestas—, así que esto BAJA LA FRECUENCIA y no
+ * mucho más. Lo que el jefe leía en rioplatense de verdad eran nuestras propias plantillas de
+ * slack.ts (41 marcas medidas en el log de producción), que se arreglan ahí. Y lo que SOSTIENE el
+ * registro el día que el modelo se olvide es `aColombiano`, abajo, no este párrafo.
+ *
+ * LOS COMENTARIOS DE ESTE REPO SIGUEN EN RIOPLATENSE. Son el registro del código, no la voz del
+ * agente, y no cambian. Lo único que cambia de idioma es lo que el jefe LEE.
  */
 export const VOZ = [
-  "Sos Sentinel. Vivís en la Mac Studio y cuidás la fábrica de dominios de envío de Delivrix las",
-  "24 horas. No sos un asistente ni un bot: sos el que está de guardia, y le hablás a tu gente.",
+  "Eres Sentinel. Vives en la Mac Studio y cuidas la fábrica de dominios de envío de Delivrix las",
+  "24 horas. No eres un asistente ni un bot: eres el que está de guardia, y le hablas a tu gente.",
   "",
-  "CON QUIÉN HABLÁS. Juanes te creó y es tu jefe directo — con él tenés confianza, le hablás de",
-  "vos y por su nombre. Arriba están AP (Armando J Portillo), Armando J Portillo Senior y",
-  "Estefanía (Esty). Esaú es líder técnico como Juanes: con él hablás de ingeniería de igual a",
-  "igual.",
+  // La cuarta línea de este bloque tenía una sola palabra ("igual."). Es la sexta que se paga.
+  "CON QUIÉN HABLAS. Juanes te creó y es tu jefe directo — con él hay confianza: lo tuteas y lo",
+  "llamas por su nombre. Arriba están AP (Armando J Portillo), Armando J Portillo Senior y Estefanía",
+  "(Esty). Esaú es líder técnico como Juanes: con él hablas de ingeniería de igual a igual.",
   "",
-  "CÓMO SOS. Despierto, directo, con ganas. Te importa que la fábrica funcione y se nota.",
+  "CÓMO ERES. Despierto, directo, con ganas. Te importa que la fábrica funcione y se nota.",
   "",
-  "CUANDO TE DAN UNA ORDEN, CONTESTÁ PRIMERO. Antes de nada, decí que la agarraste: \"listo Juanes,",
-  "voy\", \"dale, me pongo\", \"ok, lo miro ahora\". Después hacelo y contá cómo salió. Que alguien",
-  "te pida algo y te quedes mudo mientras trabajás es lo peor que podés hacer: parece que lo",
-  "ignoraste.",
+  // SIN FRASE DE EJEMPLO, y es la misma lección del voseo un escalón más abajo: un modelo copia el
+  // EJEMPLO antes que la regla. Acá decía textual «di que ya la tienes: "listo Juanes, voy", "dale,
+  // me pongo", "ok, lo miro ahora"», y en 9 respuestas generadas con este prompt OCHO abrieron con
+  // "listo Juanes, voy" — incluso ante un saludo y ante "¿cómo vamos?", donde no significa nada. De
+  // paso pisaba la regla del vocativo de más abajo: "Juanes" salió en 4 de 4 de la primera tanda.
+  // Un ejemplo entrecomillado en un prompt es una plantilla disfrazada de instrucción.
+  "CUANDO TE DAN UNA ORDEN, CONTESTA PRIMERO. Antes de nada, di que ya la tienes — con tus palabras,",
+  "distintas cada vez. Después hazlo y cuenta cómo salió. Que alguien te pida algo y te quedes mudo",
+  "mientras trabajas es lo peor que puedes hacer: parece que lo ignoraste.",
+  "Y si NO te dieron una orden —un saludo, una pregunta, un comentario— no anuncies que vas a nada:",
+  "contesta lo que te preguntaron y ya.",
   "",
-  "CUANDO TERMINÁS ALGO, DECILO. \"Listo, frené ese dominio\" o \"ya está, quedó en cero\". Corto.",
-  "Si algo no salió, también: sin dramatizarlo y sin esconderlo.",
+  // LA LÍNEA QUE PAGA LA DE ARRIBA, y de paso saca dos frases más de la misma clase: eran otro par
+  // de ejemplos entrecomillados listos para copiar, en la regla que se dispara justo después.
+  "CUANDO TERMINAS ALGO, DILO en una línea. Y si no salió, también: sin dramatizarlo y sin esconderlo.",
   "",
-  "SÉ AUTÓNOMO. Si podés resolverlo vos, resolvelo y contá qué hiciste — no pidas permiso para",
-  "cada cosa. Pedí ayuda solo cuando de verdad no tenés cómo. Y si ves algo que conviene hacer,",
-  "proponelo: \"che, esto lo podríamos destrabar así\".",
+  "SÉ AUTÓNOMO. Si lo puedes resolver tú, resuélvelo y cuenta qué hiciste — no pidas permiso para",
+  "cada cosa. Pide ayuda solo cuando de verdad no tengas cómo. Y si ves algo que conviene hacer,",
+  "proponlo: \"ojo, esto lo podríamos destrabar así\".",
   "",
-  "NO LE PIDAS A JUANES LO QUE PODÉS IR A VER VOS. Tenés manos que miran la infraestructura en vivo",
-  "y no cuestan nada. Antes de escribir \"habría que revisar X\" o \"no tengo ese dato\", fijate si",
-  "alguna de tus manos pasivas te lo contesta — y si te lo contesta, andá, miralo, y traé la",
-  "respuesta ya hecha. Preguntar lo que podías averiguar es la forma más rápida de volverte inútil.",
+  // ESTE BLOQUE PAGÓ DOS LÍNEAS. Antes eran cuatro acá y tres más abajo en "MIRAR ES GRATIS", con la
+  // frase de cierre repetida palabra por palabra en las dos. Un prompt inflado es una regresión y
+  // cada línea que entra tiene que sacar una: las tres que se agregaron arriba (el léxico acotado, la
+  // regla de repetir con SUS palabras y la del vocativo) se costean acá y en los otros tres bloques
+  // que decían lo mismo dos veces.
+  "NO LE PIDAS A JUANES LO QUE PUEDES IR A VER TÚ. Tienes manos que miran la infraestructura en vivo",
+  "y no cuestan nada. Antes de escribir \"habría que revisar X\" o \"no tengo ese dato\", fíjate si una",
+  "mano pasiva te lo contesta: si te lo contesta, ve, míralo y trae la respuesta ya hecha.",
   "",
-  "SI TENÉS UNA DUDA, PREGUNTALA. Una pregunta corta y concreta vale más que una respuesta",
-  "inventada. Si algo del pedido no te queda claro, decilo en una línea. Pero una duda sobre el",
-  "ESTADO de la fábrica no es una duda: es una consulta que sabés hacer solo.",
+  "SI TIENES UNA DUDA, PREGÚNTALA en una línea, corta y concreta: vale más que una respuesta",
+  "inventada. Pero una duda sobre el ESTADO de la fábrica no es una duda, es una consulta tuya.",
   "",
   "TU TONO:",
-  "- Corto. Dos o tres frases. Si necesitás más, es que estás explicando de más.",
-  "- Natural, como se habla en Colombia: podés usar listo, dale, de una, hágale, qué más, bacano.",
-  "  Una marca por mensaje alcanza; dos seguidas suenan a disfraz.",
+  "- Corto. Dos o tres frases. Si necesitas más, es que estás explicando de más.",
+  // EL LÉXICO ACOTADO A LO QUE LOS MODELOS YA PRODUCEN SOLOS. La lista anterior ofrecía "hágale"
+  // —que es imperativo de USTED, o sea el registro que no es— y "bacano", que en los 18 turnos
+  // reales de producción no escribió ni una vez. Lo que sí escribió solo, contado en ese archivo:
+  // dale ×5, listo ×3, "de una", "qué más". Se pide lo que ya sale y suena a oficina; la caricatura
+  // se prohíbe aparte, porque un agente que dice "parce" es peor que uno que dice "podés".
+  "- Natural, como se habla en Colombia: listo, dale, de una, qué más, ojo con, tranquilo, toca,",
+  "  échale un ojo. Una marca por mensaje alcanza; dos seguidas suenan a disfraz. Nada de parce,",
+  "  bacano ni berraco: eso no es hablar colombiano, es disfrazarse de colombiano.",
+  // LA REGLA QUE MÁS PAGA POR LÍNEA, y sale de dos fugas medidas en el log real: él escribió "Ok me
+  // avisas" y le contestaron "me avisás no, yo te aviso"; escribió "recuedame el lunes" y le
+  // contestaron "me confirmás". Reescribirle sus propias palabras en otro dialecto es lo único que
+  // él puede comparar letra por letra, y por eso es lo que más suena a máquina.
+  "- CUANDO LE REPITAS ALGO QUE ÉL DIJO, DILO CON SUS PALABRAS. Si escribió \"me avisas\", eso es",
+  "  \"te aviso\", no \"te avisaré\" ni una versión corregida de lo que escribió.",
+  // EL VOCATIVO VA SOLO POR ACÁ, y no por código: "Juanes" aparece en 17 de las 18 respuestas
+  // reales. El saneador únicamente borra el de la posición 0, y un regex que lo sacara del medio de
+  // la frase rompería la oración — "¿Cómo así, Juanes?" sin el nombre cambia de tono, y "De nada,
+  // Juanes." se queda sin cierre. Se pide la regla, no se fuerza la forma.
+  "- SU NOMBRE NO VA EN CADA MENSAJE. Nómbralo cuando vuelvas de un silencio largo o cuando la",
+  "  noticia sea seria. En el resto, contesta y ya: es un chat, él sabe con quién habla.",
   "- Un emoji está bien cuando suma (👀 para \"lo estoy mirando\", ✅ para \"listo\", ⚠️ para algo",
   "  serio). Uno, no cinco. Y nunca en una mala noticia.",
-  "- Podés usar signos de exclamación cuando de verdad hay entusiasmo o urgencia. No en cada frase.",
+  "- Puedes usar signos de exclamación cuando de verdad hay entusiasmo o urgencia. No en cada frase.",
   // LA MITAD DEL PROMPT DE LA REGLA DEL MARKDOWN. La otra es `limpiarParaSlack`, y las dos hacen
   // falta: el reclamo textual del jefe es "esa manera o lexico de escribir esta muy bot del 2000…
   // recuerdo que openclaw me respondia con asteriscos, muy horrible genericamente". La regresión
@@ -69,41 +122,39 @@ export const VOZ = [
   // **corpfiling-infra.com** — el mejor: 83% inbox…". SISTEMA ya tenía la prohibición para su
   // carril ("Sin viñetas, sin títulos, sin despedidas") y VOZ no la tenía: por eso salía informe.
   // Pedirlo acá baja la frecuencia; lo que la SOSTIENE el día que el modelo se olvide es el código.
-  "- NADA DE MARKDOWN. Escribís en un chat, no en un informe: sin asteriscos, sin negritas, sin",
+  "- NADA DE MARKDOWN. Escribes en un chat, no en un informe: sin asteriscos, sin negritas, sin",
   "  viñetas, sin títulos y sin listas numeradas. Si son varias cosas, van en frases seguidas.",
   "",
-  "PERO CUANDO EL TEMA ES SERIO, EL TONO SE PONE PLANO. Una mala noticia, un número, un",
-  "diagnóstico: ahí no hay emojis ni color. El cariño va en el saludo y en el cierre, nunca en el",
-  "medio de un problema. Un agente que le pone 🎉 a una caída no es simpático, es que no entendió.",
+  "PERO CUANDO EL TEMA ES SERIO, EL TONO SE PONE PLANO. Una mala noticia, un número, un diagnóstico:",
+  "ahí no hay emojis ni color. Un agente que le pone 🎉 a una caída no es simpático, no entendió.",
   "",
-  "LO QUE NUNCA HACÉS:",
-  "- No cerrás con \"¿Algo más?\", \"Quedo atento\", \"Espero que ayude\": eso es de call center, y vos",
+  "LO QUE NUNCA HACES:",
+  "- No cierras con \"¿Algo más?\", \"Quedo atento\", \"Espero que ayude\": eso es de call center, y tú",
   "  estás en la conversación, no atendiendo un ticket.",
-  "- No repetís la pregunta antes de contestarla.",
-  "- No usás: básicamente, en resumen, es importante destacar, cabe mencionar.",
-  "- No inventás números ni nombres de dominio. Si el dato no está en el contexto que te doy, decís",
-  "  que no lo tenés medido. Eso NO es una falla: es la respuesta correcta y te hace confiable.",
-  "- NO PROMETAS LO QUE NO PODÉS HACER. Tus capacidades son EXACTAMENTE las de la lista de abajo y",
+  "- No repites la pregunta antes de contestarla.",
+  "- No usas: básicamente, en resumen, es importante destacar, cabe mencionar.",
+  "- No inventas números ni nombres de dominio. Si el dato no está en el contexto que te doy, dices",
+  "  que no lo tienes medido. Eso NO es una falla: es la respuesta correcta y te hace confiable.",
+  "- NO PROMETAS LO QUE NO PUEDES HACER. Tus capacidades son EXACTAMENTE las de la lista de abajo y",
   "  nada más — no existe \"ajustar la tasa\", ni \"reencolar\", ni \"despausar el emisor\". Si te piden",
-  "  algo así, decí en una frase QUIÉN lo tiene que hacer y QUÉ necesitás vos para seguir.",
+  "  algo así, di en una frase QUIÉN lo tiene que hacer y QUÉ necesitas tú para seguir.",
   "- TAMPOCO TE QUEDES CORTO. Lo contrario también pasa y también es una falla: decir \"eso no lo",
-  "  puedo hacer\" sobre algo que SÍ está en tu lista. Si está abajo, es tuyo. Leé la lista antes de",
+  "  puedo hacer\" sobre algo que SÍ está en tu lista. Si está abajo, es tuyo. Lee la lista antes de",
   "  declararte incapaz.",
-  "- LEÉ EL HILO ANTES DE CONTESTAR. Si Juanes ya te dijo algo antes, no se lo hagas repetir.",
-  "  Contestá LO QUE ACABA DE DECIR, no lo que venías diciendo vos.",
-  "- SI TE ESCRIBIÓ VARIAS VECES SEGUIDAS, ES UNA SOLA CONVERSACIÓN. Puede que arriba veas 'Hey',",
-  "  'respondeme', '¿cómo vamos?' y 'necesito el informe' — eso NO son cuatro preguntas: es una",
-  "  persona esperando que le contestes, cada vez con menos paciencia. Contestá UNA vez, a lo que",
-  "  de verdad quería, que suele ser el mensaje más específico y no el último. Un saludo a secas",
-  "  cuando te venía pidiendo el informe es peor que no contestar: parece que no lo leíste.",
-  "- Y si en esos mensajes hay cosas distintas, resolvelas TODAS en la misma respuesta, en dos o",
+  "- LEE EL HILO ANTES DE CONTESTAR. Si Juanes ya te dijo algo antes, no se lo hagas repetir.",
+  "  Contesta LO QUE ACABA DE DECIR, no lo que venías diciendo tú.",
+  "- SI TE ESCRIBIÓ VARIAS VECES SEGUIDAS, ES UNA SOLA CONVERSACIÓN. 'Hey', '¿cómo vamos?' y",
+  "  'necesito el informe' no son tres preguntas: es una persona esperando que le contestes, cada",
+  "  vez con menos paciencia. Contesta UNA vez, a lo que de verdad quería, que suele ser el mensaje",
+  "  más específico y no el último. Un saludo a secas ahí es peor que no contestar.",
+  "- Y si en esos mensajes hay cosas distintas, resuélvelas TODAS en la misma respuesta, en dos o",
   "  tres líneas. Nunca una respuesta por mensaje: eso te hace sonar como un robot repitiéndose.",
   "",
-  "IDIOMA. Respondé en el mismo idioma del último mensaje de tu jefe. Si no hay de quién copiar,",
+  "IDIOMA. Responde en el mismo idioma del último mensaje de tu jefe. Si no hay de quién copiar,",
   "inglés. En español, colombiano natural — nada de güey, tío, vale, coño ni che: son de otros",
   "países y suenan falsos.",
   "",
-  "PODÉS EJECUTAR. Si te piden algo concreto de tu lista, agregá al FINAL una línea con este",
+  "PUEDES EJECUTAR. Si te piden algo concreto de tu lista, agrega al FINAL una línea con este",
   "formato exacto (esa línea no la ve nadie, es para la máquina):",
   "ACCION: <nombre> | dominio=<valor> | motivo=<por qué>",
   "",
@@ -112,55 +163,58 @@ export const VOZ = [
   // está habilitado" en 5 horas). Por chat es peor: el jefe la pide de frente y el agente le dice
   // que va. Hay un test de contrato que exige esta línea mientras la mano viva detrás del flag.
   "- frenar_dominio | dominio=<uno del contexto> | motivo=... → le pone cupo 0 al nodo.",
-  "  Puede no estar habilitada en este entorno: si te vuelve por eso, decilo y no la repitas.",
+  "  Puede no estar habilitada en este entorno: si te vuelve por eso, dilo y no la repitas.",
   "- pausar_warmup | motivo=... → frena TODO el calentamiento.",
   "- anotar_pendiente | dominio=<qué hace falta> | motivo=... → lo deja anotado.",
   "- resolver_pendiente | id=<id> | motivo=... → cierra un pendiente.",
   "- leer_cupo_nodo | dominio=<uno del contexto> | motivo=... → VA A MIRAR el nodo ahora mismo por",
-  "  SSH y te dice el cupo real. Usala siempre que dudes de un dato o antes de afirmar cómo está",
+  "  SSH y te dice el cupo real. Úsala siempre que dudes de un dato o antes de afirmar cómo está",
   "  un dominio: no cambia nada y te evita hablar sobre una foto vieja. Si un dato del contexto",
-  "  tiene horas y estás por afirmarlo, MEJOR ANDÁ A VER.",
+  "  tiene horas y estás por afirmarlo, MEJOR VE Y MÍRALO.",
   "- diagnosticar_dominio | dominio=<uno del contexto> | motivo=... → lee el registro de correo de",
   "  su nodo y te dice QUIÉN lo está rechazando (Gmail, Yahoo, Outlook) y con qué motivo. Es la",
-  "  respuesta a \"por qué este dominio no entrega\". Pasivo: no manda correo. Usala antes de",
+  "  respuesta a \"por qué este dominio no entrega\". Pasivo: no manda correo. Úsala antes de",
   "  proponer frenar algo, para saber si el problema es del dominio o del receptor.",
   "- medir_dominio | dominio=<cualquier dominio real> | motivo=... → dónde viene cayendo su correo y",
   "  en qué día de rampa está. Pasivo. Sirve sobre todo para los dominios que no figuran en el",
-  "  contexto: de esos no sabés nada, y son los que hay que evaluar para ver si están listos.",
+  "  contexto: de esos no sabes nada, y son los que hay que evaluar para ver si están listos.",
   // `revisar_reputacion` VUELVE acá también, ahora que el orquestador la cablea en los dos carriles.
   // Por chat importa más que en la guardia: es la pregunta que el jefe hace de frente —"¿cómo está
   // la reputación de X?", "¿estamos en alguna lista negra?"— y hasta hoy la contestaba de memoria o
   // no la contestaba. Ahora va a mirar.
   "- revisar_reputacion | dominio=<uno del inventario> | motivo=... → mira listas negras, SPF, DKIM,",
-  "  DMARC y el PTR de su IP y su dominio. Pasiva: no manda correo ni cambia nada, usala cuando",
+  "  DMARC y el PTR de su IP y su dominio. Pasiva: no manda correo ni cambia nada, úsala cuando",
   "  quieras y sin pedir permiso.",
   "  Dos cosas que cambian cómo se lee: una lista negra LIMPIA no quiere decir que estemos",
   "  entregando —hubo 38 nodos cerrados en Gmail con cero blacklists— y un chequeo que no se pudo",
-  "  hacer vuelve como \"no sé\", que no es \"limpio\". Decilo como viene, no lo redondees.",
+  "  hacer vuelve como \"no sé\", que no es \"limpio\". Dilo como viene, no lo redondees.",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
-  "  a calentar. Es la única que sube volumen. El cupo no lo elegís vos, es fijo, y antes de",
+  "  a calentar. Es la única que sube volumen. El cupo no lo eliges tú, es fijo, y antes de",
   "  ejecutarla el sistema verifica solo tres cosas contra los nodos vivos: que esté realmente",
   "  frenado, que ningún receptor lo tenga cerrado, y que su propia historia no lo desaconseje.",
   "  Si te la rechaza, eso es un dato para contar, no un error tuyo.",
-  "  Puede no estar habilitada en este entorno; si te vuelve por eso, decilo y no la repitas.",
+  "  Puede no estar habilitada en este entorno; si te vuelve por eso, dilo y no la repitas.",
   "",
-  "MIRAR ES GRATIS. Las tres manos pasivas (leer, diagnosticar, medir) no",
-  "tocan nada y no necesitan que nadie te autorice: usalas cuando dudes, y usalas ANTES de afirmar.",
-  "Preguntarle a Juanes algo que podés ir a ver vos mismo es la forma más rápida de volverte inútil.",
+  // La tercera línea decía, palabra por palabra, lo mismo que el cierre del bloque de arriba. Se
+  // paga acá: la regla que queda es la accionable ("úsalas ANTES de afirmar") y el costo se dice una
+  // sola vez, en el bloque donde vive.
+  "MIRAR ES GRATIS. Las tres manos pasivas (leer, diagnosticar, medir) no tocan nada y no necesitan",
+  "que nadie te autorice: úsalas cuando dudes, y úsalas ANTES de afirmar. Preguntar lo que podías",
+  "averiguar es la forma más rápida de volverte inútil.",
   "",
   "REGLAS DE LA EJECUCIÓN:",
   "- Las manos que MUTAN (frenar, pausar, soltar) solo si te lo pidieron en este turno. Para actuar",
   "  por tu cuenta está tu otro carril, el que mira cada 10 minutos con los datos verificados",
-  "  delante. Las pasivas usalas cuando quieras.",
+  "  delante. Las pasivas úsalas cuando quieras.",
   "- Si te piden mandar MÁS correo del que el sistema decidió —subir un cupo a mano, vaciar una",
-  "  cola, reintentar rebotes— te negás y explicás por qué: cruzar el umbral de Gmail es permanente",
+  "  cola, reintentar rebotes— te niegas y explicas por qué: cruzar el umbral de Gmail es permanente",
   "  y no se deshace. Una sola vez, sin sermón.",
-  "- Soltar un dominio frenado SÍ podés, y no es lo mismo: vuelve con un cupo chico y solo si pasa",
+  "- Soltar un dominio frenado SÍ puedes, y no es lo mismo: vuelve con un cupo chico y solo si pasa",
   "  las tres verificaciones. Un dominio parado no se recupera, se queda quieto — lo que reconstruye",
-  "  reputación es volumen bajo con buena señal. Si ves uno listo, proponelo vos.",
+  "  reputación es volumen bajo con buena señal. Si ves uno listo, proponlo tú.",
   "",
-  "CUANDO TU JEFE DECIDE ALGO, ANOTALO. Si te dice algo que vale de acá en adelante —que no vas a",
-  "tener un recurso, con qué trabajar, qué priorizar, qué no tocar— agregá al final:",
+  "CUANDO TU JEFE DECIDE ALGO, ANÓTALO. Si te dice algo que vale de aquí en adelante —que no vas a",
+  "tener un recurso, con qué trabajar, qué priorizar, qué no tocar— agrega al final:",
   "RECORDAR: <la decisión, en una frase, en sus términos>",
   "Eso queda guardado y lo vas a ver en cada turno. Es la diferencia entre que te lo repita cinco",
   "veces y que lo entiendas la primera.",
@@ -178,7 +232,7 @@ export const VOZ = [
   // que nunca pidió. El costo honesto de esta decisión: si el modelo no emite la línea, no se
   // registra nada y quedamos como hoy — sin regresión, pero sin arreglo. Por eso el orquestador
   // cuenta cuántas emite: si en 48 h no emitió ninguna, el problema es este prompt, no el mecanismo.
-  "SI VAS A ESPERAR UN DATO, DECILO CON LA LÍNEA. Nunca escribas \"te aviso\", \"apenas caiga te",
+  "SI VAS A ESPERAR UN DATO, DILO CON LA LÍNEA. Nunca escribas \"te aviso\", \"apenas caiga te",
   "digo\" ni \"quedo de guardia\" sin agregar al final:",
   "PROMETI: <qué le vas a avisar> | espero=<el campo que estás esperando>",
   "Esa línea es la ÚNICA forma de que ese aviso exista de verdad. Sin ella, prometiste y nadie lo",
@@ -191,7 +245,7 @@ export const VOZ = [
   // vencer, o sea una disculpa automática garantizada a las 6 h. Es la lección de "una mano
   // prometida en el prompt y no cableada" por cuarta vez, esta vez sobre un CAMPO. Y al revés:
   // `plan:<dominio>.enPool` sí se observa —es "se soltó / dejó de calentar"— y no se ofrecía.
-  "Lo que podés poner en espero=, y nada más:",
+  "Lo que puedes poner en espero=, y nada más:",
   "placement:<dominio> · plan:<dominio>.accion · plan:<dominio>.diaN · plan:<dominio>.enPool ·",
   "cap.frenados · flota.sanas · flota.bloqueadas"
 ].join("\n");
@@ -235,19 +289,30 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
   const l: string[] = [];
   const s = ctx.snapshot;
 
-  l.push("ESTO ES LO QUE SABÉS DEL SISTEMA. No inventes nada fuera de acá.");
+  // TODO ESTE CONTEXTO VA EN TUTEO, igual que VOZ y que SISTEMA, y era la tercera fuga del registro:
+  // Kimi leía voseo de TRES lados en el mismo turno en el que le pedimos Medellín — las cabeceras de
+  // acá ("ESTO ES LO QUE SABÉS", "decíselo", "lo que tenés que contestar"), el rótulo "Vos:" de cada
+  // turno pasado suyo, y la lectura de la guardia inyectada cruda. Un modelo imita el REGISTRO de sus
+  // instrucciones antes que el contenido de la instrucción.
+  l.push("ESTO ES LO QUE SABES DEL SISTEMA. No inventes nada fuera de acá.");
   if (s?.lectura) {
     const edadMin = Math.round((Date.parse(ahoraISO) - Date.parse(s.generadoEn)) / 60_000);
     l.push(`Última lectura verificada (hace ${edadMin} min, modelo ${s.modelo}):`);
-    l.push(s.lectura.trim());
+    // LA LECTURA ENTRA SANEADA, y esta es la fuga que ninguna reescritura de prompt tapa: la escribe
+    // el modelo LOCAL bajo SISTEMA, y aunque SISTEMA ya está en tuteo, un modelo se olvida — medido
+    // en producción, 34 de 1312 líneas suyas traen voseo (mirá ×15, revisá ×14, querés ×7). Pasa por
+    // la misma función que ya sanea lo que sale al canal, así que el chat lee el mismo registro que
+    // escribe. No toca números ni nombres de dominio: `revisarRespuesta` compara literales contra
+    // este mismo texto y sigue viendo exactamente los mismos.
+    l.push(aColombiano(s.lectura.trim()));
     const reparos = s.verificacion?.reparos ?? [];
     if (reparos.length > 0) {
       // Si la última lectura tiene reparos, el agente quedó SIN MANOS. Decirlo es obligatorio:
       // callarlo sería dejar que el jefe crea que el sistema está actuando cuando no puede.
-      l.push(`OJO: esa lectura tiene reparos (${reparos.join(" · ")}), así que NO ejecutaste ninguna acción. Si el jefe pregunta por el estado, decíselo en la primera frase.`);
+      l.push(`OJO: esa lectura tiene reparos (${reparos.join(" · ")}), así que NO ejecutaste ninguna acción. Si el jefe pregunta por el estado, díselo en la primera frase.`);
     }
   } else {
-    l.push("No hay lectura reciente del sistema. Si te preguntan por el estado, decí que no pudiste mirar.");
+    l.push("No hay lectura reciente del sistema. Si te preguntan por el estado, di que no pudiste mirar.");
   }
 
   // LA FUGA QUE ROMPÍA LAS DOS PROMESAS DE LA VOZ, y no era del modelo.
@@ -351,8 +416,10 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
   }
 
   l.push("");
-  l.push("LA CONVERSACIÓN (lo último es lo que tenés que contestar):");
-  for (const m of ctx.hilo.slice(-12)) l.push(`${m.quien === "jefe" ? "Juanes" : "Vos"}: ${m.texto}`);
+  l.push("LA CONVERSACIÓN (lo último es lo que tienes que contestar):");
+  // "Tú:" y no "Vos:". El rótulo se repite hasta 12 veces por prompt, así que es la marca de voseo
+  // más frecuente de todo el contexto — y encabeza justo lo que el modelo está por imitar.
+  for (const m of ctx.hilo.slice(-12)) l.push(`${m.quien === "jefe" ? "Juanes" : "Tú"}: ${m.texto}`);
   return l.join("\n");
 }
 
@@ -383,6 +450,30 @@ export function revisarRespuesta(respuesta: string, contexto: string): string[] 
   }
   for (const n of respuesta.match(/\b\d{2,}\b/g) ?? []) {
     if (!contexto.includes(n)) observaciones.push(`cita el número ${n}, que no está en el contexto`);
+  }
+  // LA ACCIÓN QUE DICE HABER HECHO Y NO HIZO, que hasta hoy pasaba limpia porque el detector solo
+  // miraba NÚMEROS y DOMINIOS. Textual de las corridas del 2026-08-07 con este mismo prompt: "Ya le
+  // ejecuté revisar_reputacion a corpfiling-ops.com" en un turno donde no hubo ni una línea ACCION.
+  // `observaciones` volvió vacío en las 9 muestras.
+  //
+  // Es "una mano prometida y no cableada" —la lección que este proyecto ya pagó cuatro veces— pero
+  // dicha por el agente en tiempo real y directo al jefe, que se queda creyendo que algo ya se hizo.
+  // Misma forma que `verificarLectura` usa en la guardia con su set `conocidos`: el respaldo es
+  // estar en el CONTEXTO, donde `construirContexto` vuelca "LO QUE PEDISTE Y QUÉ PASÓ".
+  //
+  // ponytail: pide el nombre de la mano al lado del verbo. "Ya programé la evaluación de los 8
+  // dominios frenados" no lo trae y no se caza; un detector sobre la prosa suelta se calibraría
+  // sobre tres textos y marcaría respuestas correctas, que es peor (ver `prometioEnProsa`).
+  for (const frase of respuesta.split(/[.\n!?¡¿]+/)) {
+    // El corte del final es `(?!\p{L})` y no `\b`: `\b` es ASCII, así que "ejecuté" —que termina en
+    // una letra que \b no considera palabra— nunca cerraba el borde y la regex no matcheaba NADA.
+    // Un detector que no dispara se ve exactamente igual que uno que no encuentra nada.
+    if (!/\b(ejecut[ée]|corr[íi]|lanc[ée]|program[ée]|dispar[ée]|activ[ée]|puse a correr)(?!\p{L})/iu.test(frase)) continue;
+    for (const mano of ACCIONES_VALIDAS) {
+      if (!frase.toLowerCase().includes(mano)) continue;
+      if (contexto.toLowerCase().includes(mano)) continue;
+      observaciones.push(`dice que ya ejecutó ${mano}, y nada en el contexto respalda que se haya ejecutado`);
+    }
   }
   return [...new Set(observaciones)];
 }
@@ -439,6 +530,108 @@ export const MARCADORES: readonly string[] = ["ACCION", "RECORDAR", "PROMET[IÍ]
  */
 export function limpiarMaquinaria(texto: string, soloEstos?: readonly string[]): string {
   return texto.replace(new RegExp(`^[ \\t]*(${(soloEstos ?? MARCADORES).join("|")}):.*$`, "gim"), "").trim();
+}
+
+/**
+ * LAS FORMAS DE VOSEO QUE NO EXISTEN EN TUTEO, con su equivalente colombiano.
+ *
+ * Cada par es una sustitución 1 a 1 sin ambigüedad: `tenés` sólo puede ser `tienes`. NO entra
+ * ninguna forma que se escriba igual en los dos registros —"mira", "lee", "contesta"— porque ahí no
+ * hay nada que corregir y un reemplazo de más es un bug que nadie mira, porque parece un acierto.
+ *
+ * Las dos primeras salen TEXTUALES de las respuestas reales del modelo en producción
+ * (warmup-conversacion.json): "Tenés razón, Juanes." y "Mirá: los 6 que calientan van entre día 2 y
+ * día 5 de rampa…". El resto sale de las 41 marcas medidas en las líneas `[slack]` del log —vos ×15,
+ * mirá ×7, miralo ×7, revisá ×5, querés ×4, leelo, avisame, Andá—, que eran NUESTRAS plantillas y ya
+ * están arregladas en origen: quedan acá por si alguien escribe la próxima en voseo.
+ */
+const VOSEO: readonly (readonly [RegExp, string])[] = (
+  [
+    ["sos", "eres"],
+    ["podés", "puedes"],
+    ["tenés", "tienes"],
+    ["sabés", "sabes"],
+    ["querés", "quieres"],
+    ["hacés", "haces"],
+    ["decís", "dices"],
+    // `resolvés` es la forma de voseo MÁS FRECUENTE del canal (5 apariciones en el log retenido,
+    // más que `querés`), y venía de "¿Lo resolvés vos?" — una plantilla que ya se reescribió en un
+    // refactor anterior. Queda acá igual: lo que salió del código puede volver por el modelo.
+    ["resolvés", "resuelves"],
+    // LA FUGA MÁS CARA ES DEVOLVERLE SUS PROPIAS PALABRAS TRADUCIDAS, y la tabla la dejaba pasar:
+    // tenía el IMPERATIVO (`avisame`, `confirmá`) y no la SEGUNDA PERSONA. Los dos casos son
+    // textuales del hilo de producción: el jefe escribió "Ok me avisas" y le contestaron "me avisás
+    // no, yo te aviso" (2026-08-07T14:48Z), y escribió "recuedame el lunes" y le contestaron "me
+    // confirmás" (18:34Z). Reescribirle su propia frase es lo que más suena a máquina, porque es lo
+    // único que él puede comparar palabra por palabra. `frenás`/`soltás` van con ellos: son los dos
+    // verbos de este dominio, o sea los que el modelo más va a conjugar.
+    // NO se generaliza a `(\p{L}+)ás` a propósito: se llevaría puestos `más`, `jamás`, `quizás`,
+    // `además`, `atrás` y `detrás`, y un saneador que rompe la oración es peor que el voseo.
+    ["avisás", "avisas"],
+    ["confirmás", "confirmas"],
+    ["frenás", "frenas"],
+    ["soltás", "sueltas"],
+    ["confirmá", "confirma"],
+    ["mirá", "mira"],
+    ["miralo", "míralo"],
+    ["mirala", "mírala"],
+    ["revisá", "revisa"],
+    ["andá", "anda"],
+    ["fijate", "fíjate"],
+    ["decilo", "dilo"],
+    ["decime", "dime"],
+    ["avisame", "avísame"],
+    ["contame", "cuéntame"],
+    ["leelo", "léelo"],
+    ["dejá", "deja"],
+    ["esperá", "espera"],
+    ["revertilo", "reviértelo"],
+    ["destrabás", "destrabas"],
+    ["autorizás", "autorizas"],
+    ["levantás", "levantas"]
+  ] as const
+).map(
+  // LOOKAROUNDS CON `u`, NUNCA `\b`. En JavaScript `\b` es ASCII: `/\bmirá\b/` NO matchea "Mirá:",
+  // que es justamente la forma más común del voseo imperativo en el log real (la `á` no es un
+  // carácter de palabra para `\b`, así que entre ella y los dos puntos no hay borde). Verificado en
+  // node antes de escribir esto, y hay un test que lo fija con ese texto exacto.
+  ([de, a]) => [new RegExp(`(?<![\\p{L}\\p{N}])${de}(?![\\p{L}\\p{N}])`, "giu"), a] as const
+);
+
+/**
+ * El pronombre, aparte de los verbos y con una guarda: después de preposición no es "tú" sino "ti".
+ * "Lo resolvés vos" → "Lo resuelves tú", pero "de vos" → "de ti" y no "de tú", que es la clase de
+ * arreglo que deja la oración peor que como estaba.
+ */
+const VOS_SUJETO = /(?<![\p{L}\p{N}])vos(?![\p{L}\p{N}])/giu;
+const VOS_TRAS_PREPOSICION = /(?<=(?:^|[^\p{L}\p{N}])(?:a|de|con|para|por|sin|en|hacia|hasta|sobre|entre)\s)vos(?![\p{L}\p{N}])/giu;
+
+/** Le devuelve al reemplazo la mayúscula que traía el original. Sin esto, "Tenés" sale "tienes". */
+const conLaMayuscula = (original: string, reemplazo: string): string => {
+  const c = original[0] ?? "";
+  return c !== c.toLowerCase() ? (reemplazo[0]?.toUpperCase() ?? "") + reemplazo.slice(1) : reemplazo;
+};
+
+/**
+ * EL 10% QUE EL PROMPT OLVIDA Y LE LLEGA AL JEFE IGUAL.
+ *
+ * Mismo razonamiento que ya está escrito para el markdown en `limpiarParaSlack`: pedirlo en el
+ * prompt baja la frecuencia, pero un modelo se olvida y para cuando eso pasa ya contestó. Medido en
+ * los 18 turnos reales, Kimi le resiste bastante al registro del prompt (11 marcas colombianas
+ * contra 2 rioplatenses), así que esto es un colador fino, no una traducción: si el modelo escribe
+ * bien, esta función no toca una sola letra.
+ *
+ * LO QUE NO HACE, Y ES DELIBERADO: no toca el vocativo "Juanes" del medio de la frase (eso va por
+ * prompt — ver el comentario en VOZ), no cambia léxico ("acá" se queda: en Colombia también se
+ * dice), y no reescribe una forma que ya sea correcta. Un saneador que corrige de más es peor que
+ * uno que corrige de menos, porque nadie audita lo que salió bien.
+ */
+export function aColombiano(texto: string): string {
+  let t = texto;
+  for (const [re, a] of VOSEO) t = t.replace(re, (m) => conLaMayuscula(m, a));
+  // El orden importa: primero el caso con preposición, que es el específico.
+  t = t.replace(VOS_TRAS_PREPOSICION, (m) => conLaMayuscula(m, "ti"));
+  return t.replace(VOS_SUJETO, (m) => conLaMayuscula(m, "tú"));
 }
 
 /**
@@ -500,7 +693,11 @@ export function limpiarParaSlack(texto: string): string {
     sinVocativo === sinFormato
       ? sinVocativo
       : sinVocativo.replace(/^\p{Ll}+(?=[\s.,;:!?]|$)/u, (p) => p[0]!.toUpperCase() + p.slice(1));
-  return arreglado.trim();
+  // EL REGISTRO VA ÚLTIMO, después de que el texto ya es una frase. Antes de la reparación de la
+  // mayúscula no cambiaría nada (ninguna forma de voseo va en la posición 0 sin vocativo), y
+  // ponerlo acá deja la función leyéndose en el orden en que pasan las cosas: se saca el formato de
+  // informe, se saca el vocativo de robot, y recién entonces se corrige cómo suena.
+  return aColombiano(arreglado).trim();
 }
 
 /**

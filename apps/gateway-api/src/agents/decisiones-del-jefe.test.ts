@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { esLaMisma, lineasParaPrompt, olvidar, recordar, vacias } from "./decisiones-del-jefe.ts";
+import { esLaMisma, lineasParaPrompt, marcarRecordadas, olvidar, recordar, vacias } from "./decisiones-del-jefe.ts";
 
 const T = "2026-08-06T00:00:00.000Z";
 
@@ -78,4 +78,27 @@ test("acota la lista: un prompt inflado es el problema que vino a evitar", () =>
   for (const t of temas) d = recordar(d, { que: t, origen: "s", cuando: T });
   assert.ok(d.items.length <= 12, `no infla el prompt (quedaron ${d.items.length})`);
   assert.match(d.items[d.items.length - 1]?.que ?? "", /no reinicies/, "conserva las más recientes");
+});
+
+test("marcarRecordadas: el contador que estaba declarado y nadie subía", () => {
+  // Las seis decisiones del archivo real de producción tienen `recordada: 0` desde que se
+  // escribieron. Sin este número no hay forma de leer si una memoria sirve: para contestar "¿la d-1
+  // funcionó?" hubo que grepear el log a mano y contar las líneas FALTA antes y después.
+  let d = recordar(null, { que: "trabajá con las dos semillas que hay, outlook y yahoo no van a llegar", origen: "slack", cuando: "2026-08-06T04:32:00.000Z" });
+  d = recordar(d, { que: "no toques el cupo de los nodos sin avisarme antes", origen: "slack", cuando: "2026-08-06T05:00:00.000Z" });
+  assert.deepEqual(d.items.map((x) => x.recordada), [0, 0]);
+
+  const primera = marcarRecordadas(d);
+  assert.deepEqual(primera.items.map((x) => x.recordada), [1, 1]);
+  assert.deepEqual(d.items.map((x) => x.recordada), [0, 0], "no muta la lista que recibe");
+  assert.deepEqual(marcarRecordadas(primera).items.map((x) => x.recordada), [2, 2]);
+
+  // Se cuentan TODAS porque `lineasParaPrompt` emite todas: si alguna vez filtra, este map filtra
+  // igual o el contador miente hacia arriba.
+  assert.equal(lineasParaPrompt(d).filter((l) => l.startsWith("- ")).length, d.items.length);
+
+  // Y un archivo viejo sin el campo no rompe el contador ni lo arranca en NaN.
+  const viejo = { version: 1 as const, items: [{ id: "d-1", que: "x", cuando: "", origen: "", recordada: undefined as unknown as number }] };
+  assert.equal(marcarRecordadas(viejo).items[0]?.recordada, 1);
+  assert.deepEqual(marcarRecordadas(null).items, []);
 });

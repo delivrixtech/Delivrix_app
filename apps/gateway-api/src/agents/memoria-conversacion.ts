@@ -79,10 +79,14 @@ export const MAX_INTERCAMBIOS = 40;
 export const MAX_TEMAS = 12;
 export const DIAS_VENTANA = 14;
 export const DIAS_VIDA = 30;
-/** Dos repeticiones el mismo día son una coincidencia, no una costumbre. */
+/**
+ * Dos repeticiones el mismo día son una coincidencia, no una costumbre.
+ *
+ * SIGUE EXPORTADA aunque `lineasParaPrompt` ya no la use: slack.ts la importa como `MUESTRA_MINIMA`
+ * y es el piso de la tabla de relevancia. Borrarla acá rompería el otro carril.
+ */
 export const MIN_VECES = 3;
 export const MS_REPETIDA = 600_000;
-export const MS_REACCION = 900_000;
 
 const DIA = 86_400_000;
 const MAX_TEXTO = 200;
@@ -219,15 +223,41 @@ const CIERRE = new Set([
  *
  * `conforme` es evidencia DÉBIL ("Ok!" puede ser "entendí" o "ya fue, dejalo"); `insiste` es
  * evidencia dura, volvió a preguntar. Por eso el prompt reporta insistencias y no conformes.
+ *
+ * UN PEDIDO QUE ARRANCA CORTÉS NO ES UN CONFORME, y este módulo ya lo había diagnosticado del otro
+ * lado sin aplicarlo acá: el comentario de `esTema` dice textual "EL CIERRE ES LA FRASE ENTERA, NO
+ * SU PRIMERA PALABRA". Medido sobre el warmup-conversacion.json real (sha256 c73203fb…, 18
+ * intercambios): 3 de los 8 `conforme` guardados son mensajes que `esTema()` marca como tema, y DOS
+ * de ellos —"Ok me avisas. También tú mismo puedes tomar la decisión de frenar o continuar…" y "Ok,
+ * recuérdame el lunes a las 5pm hora Colombia…"— se guardaron el MISMO turno como decisiones
+ * permanentes d-5 y d-6. Las dos memorias se contradecían sobre el mismo mensaje: una decía "me
+ * dio el visto bueno", la otra "me dio una orden nueva".
+ *
+ * El resultado es `null` y no otra etiqueta: un pedido nuevo no dice nada sobre cómo le cayó la
+ * respuesta anterior. Subestimar no inventa.
  */
 export function clasificarReaccion(
   preguntaPrevia: string,
   textoNuevo: string
 ): "conforme" | "insiste" | "corrige" | null {
   const n = norm(textoNuevo);
-  if (ARRANQUE_CORTES.test(n)) return "conforme";
+  if (ARRANQUE_CORTES.test(n) && !esTema(textoNuevo)) return "conforme";
   if (esPing(textoNuevo)) return "insiste";
   if (esLaMisma(preguntaPrevia, textoNuevo)) return "insiste";
+  // EL RECLAMO POR SILENCIO VA ANTES QUE `corrige`, y va porque la memoria estaba ENSEÑANDO AL REVÉS.
+  // Sobre el archivo real, "No me has dicho nada en toda la tarde ..." empieza con "no" y caía en la
+  // rama de abajo, así que etiquetaba `corrige` a la respuesta anterior — que era "Dale Juanes, aquí
+  // quedo de guardia. Apenas se mueva algo… te escribo de una". Esa respuesta estaba BIEN: lo que
+  // falló fue el silencio que vino después, no lo que dijo. Y `lineasParaPrompt` la citaba textual
+  // bajo "TE CORRIGIÓ DESPUÉS DE ESTO", o sea le enseñaba al modelo que prometer guardia se gana un
+  // reparo — lo contrario de lo que pasó.
+  //
+  // NO SE ARREGLA CON EL RELOJ, aunque el caso llegó 221,8 min después: el corte de 15 minutos es
+  // justo el que este módulo sacó a propósito, porque también tiraba "No entiendo, es decir ?" a los
+  // 19,9 min, que SÍ es una corrección de contenido. El reloj no distingue las dos cosas; el texto
+  // sí. Un reclamo por silencio es insistencia por definición: volvió a escribir porque no le
+  // contestaron, y ahí la evidencia es que insistió, no que la respuesta estuviera mal.
+  if (/^no (me )?(has |habias )?(dicho|escrito|avisado|respondido|contestado|dices|escribes|avisas|respondes|contestas)\b/.test(n)) return "insiste";
   if (/^(no|pero|como que|que no)\b/.test(n)) return "corrige";
   return null;
 }
@@ -383,6 +413,19 @@ function ultimaVista(t: Tema, porDefecto: number): number {
  * no un control. El día que entre el segundo, el dato queda mal y es imposible de reconstruir.
  * `quien` es opcional para no romper al llamador que todavía no lo pasa: sin él se comporta igual
  * que hoy, y eso se dice acá en vez de dejarlo como sorpresa.
+ *
+ * Y SIN RELOJ, que es la corrección que destapó el archivo real. Había un corte de 15 minutos
+ * (`MS_REACCION`) y tiraba DOS DE LAS TRES correcciones que el jefe hizo de verdad: sobre
+ * warmup-conversacion.json (sha256 c73203fb…) se perdieron "No entiendo, es decir ?" —que llegó
+ * 19,9 min después— y "No me has dicho nada en toda la tarde ..." —221,8 min—, y las dos son
+ * exactamente la evidencia DURA que este módulo existe para juntar. Las dos quedaron en `null`, que
+ * se lee como "no contestó nada".
+ *
+ * El reloj no aportaba identidad: el intercambio que se etiqueta lo elige el selector de arriba —el
+ * más reciente SIN reacción y del mismo autor— así que el siguiente mensaje del jefe es la etiqueta
+ * del anterior POR CONSTRUCCIÓN, tarde nueve minutos o cuatro horas. Lo único que se conserva es el
+ * orden (`t < mejor`): un mensaje anterior al intercambio no puede ser su reacción. El techo lo
+ * sigue poniendo `DIAS_VIDA`, que recorta el archivo.
  */
 export function anotarReaccion(
   mem: MemoriaConversacion | null,
@@ -404,7 +447,7 @@ export function anotarReaccion(
   }
   if (idx < 0) return base;
   const e = base.intercambios[idx] as Intercambio;
-  if (t - mejor > MS_REACCION || t < mejor) return base;
+  if (t < mejor) return base;
   base.intercambios[idx] = { ...e, reaccion: clasificarReaccion(e.pregunta, msg.texto) };
   return base;
 }
@@ -453,27 +496,76 @@ export function lineasParaPrompt(
     l.push(`- "${ultima.respuesta.slice(0, MAX_CITA)}"`);
   }
 
-  // B) Temas recurrentes. Piso de evidencia ≥3 veces DENTRO de la ventana: es la lección del
-  //    `placement-pause`, donde 4 muestras sueltas frenaron al único dominio que andaba bien y hubo
-  //    que poner muestra mínima.
-  const desde = ahora - DIAS_VENTANA * DIA;
-  const top = m.temas
-    .map((t) => ({
-      cita: String(t.cita ?? ""),
-      veces: (Array.isArray(t.vistas) ? t.vistas : []).filter((v) => msDe(v, 0) >= desde).length
-    }))
-    .filter((t) => t.veces >= MIN_VECES && t.cita !== "")
-    .sort((a, b) => b.veces - a.veces)
-    .slice(0, 2);
-  if (top.length > 0) {
-    l.push("LO QUE TE PREGUNTA SEGUIDO — contado en los últimos 14 días:");
-    // La cita va SIEMPRE entre comillas y recortada: un mensaje de Slack que vuelve al prompt en
-    // cada turno es un canal de persistencia para texto ajeno. Entra como texto CITADO, nunca como
-    // instrucción. Si una línea no puede citar un registro guardado, no se emite.
-    for (const t of top) l.push(`- "${t.cita.slice(0, MAX_CITA)}" · ${t.veces} veces`);
+  // B) SE BORRÓ EL BLOQUE DE TEMAS REPETIDOS, y no por "está vacío por ahora": era estructuralmente
+  //    inalcanzable. Pedía `MIN_VECES=3` vistas del MISMO tema contadas sobre 14 días, mientras el
+  //    archivo guarda `MAX_TEMAS=12` y el canal real produce 12,2 temas nuevos por día — o sea que
+  //    un tema sobrevive ~1 día en el archivo y necesita 3 apariciones en 14. Medido sobre el
+  //    warmup-conversacion.json de producción (sha256 c73203fb…): los 12 temas guardados tienen UNA
+  //    vista cada uno y `esLaMisma` no agrupó ni un par en 18 intercambios. La sección salía vacía
+  //    en todas las vueltas y por diseño iba a seguir así.
+  //
+  //    NO SE TOCARON LAS CONSTANTES a propósito: bajar MIN_VECES a 2 o subir MAX_TEMAS a 40 es
+  //    elegir un número para que el archivo se llene, que es fabricar la evidencia en vez de
+  //    medirla. Los temas se siguen ACUMULANDO (`anotar` los escribe y `resumen` los imprime en el
+  //    informe): lo que se saca es su entrada al prompt, que costaba 3 renglones de encabezado y
+  //    nunca dijo nada.
+
+  // C) LA EVIDENCIA DURA, CITADA. Es lo que el jefe pidió ("que aprenda de lo que yo le digo") y lo
+  //    único que ya se guardaba sin volver nunca: `Intercambio.reaccion` existe hace días y ninguna
+  //    línea del prompt la leía.
+  //
+  //    SOLO `corrige` e `insiste`. `conforme` queda afuera por dos motivos que este módulo ya
+  //    documenta: es evidencia DÉBIL ("Ok!" tanto puede ser "entendí" como "ya fue, dejalo"), y
+  //    desde el arreglo de `clasificarReaccion` sabemos que además venía CONTAMINADO con pedidos
+  //    nuevos que arrancaban corteses. Un prompt que premia conformes se gana diciendo cosas que
+  //    cierren la charla.
+  //
+  //    SE CITA LO QUE DIJO ÉL —el agente—, no lo que escribió el jefe. La frase del jefe es una
+  //    orden y su lugar es `decisiones-del-jefe.ts`, que la guarda con su autor y su fecha; traerla
+  //    acá la duplicaría en dos memorias y es el camino más corto a que un reclamo puntual se
+  //    convierta en regla permanente. Lo que esta memoria sabe y ninguna otra es QUÉ RESPUESTA suya
+  //    se ganó el reparo.
+  //
+  //    Entra como DATO: cita entre comillas, recortada, con contador, y sin un solo imperativo. Es
+  //    la regla de arriba, la misma que el comentario de esta función ya declara: un consejo el
+  //    modelo lo recicla como hallazgo propio.
+  const dura = m.intercambios.filter((i) => i.reaccion === "corrige" || i.reaccion === "insiste");
+  const ultimaDura = dura.at(-1);
+  if (ultimaDura && ultimaDura.respuesta !== "") {
+    const verbo = ultimaDura.reaccion === "corrige" ? "TE CORRIGIÓ" : "TE INSISTIÓ";
+    l.push(
+      `${verbo} DESPUÉS DE ESTO (${dura.length} ${dura.length === 1 ? "vez" : "veces"} en lo guardado): ` +
+        `"${ultimaDura.respuesta.slice(0, MAX_CITA)}"`
+    );
   }
 
   return l.slice(0, max);
+}
+
+/**
+ * SILENCIO DURO: después de este intercambio, el jefe NO VOLVIÓ A ESCRIBIR. Nada de etiquetas.
+ *
+ * Existe porque el índice usaba `reaccion === null` como "le habló y no le contestó nada", y eso se
+ * podía GANAR con un "Ok!": `clasificarReaccion` lo devuelve como `conforme`, el intercambio sale
+ * del balde de los nulos y el índice BAJA sin que la conversación haya mejorado en nada. Medido
+ * sobre el archivo real duplicado para pasar el piso de 30 (n=36): 24,1 ⇒ 7,4 (−69%) con solo
+ * convertir los silencios en conformes. El anti-gaming decía "conforme no entra al índice" y entraba
+ * por la puerta de al lado, con el signo invertido.
+ *
+ * Y de paso destapa que `sinReaccion` no medía silencio: en warmup-conversacion.json (18 registros,
+ * 9 nulos) OCHO de esos nueve TIENEN un mensaje posterior del jefe. El nulo es una etiqueta que
+ * `anotarReaccion` no llegó a poner —etiqueta un intercambio por mensaje— no una persona callada.
+ * O sea que el 50% del baseline mide al etiquetador, no al jefe. Se sigue reportando, con ese nombre.
+ *
+ * POR AUTOR, que es para lo que `quien` fue escrito: el día que entre Esaú, un mensaje suyo no puede
+ * contar como que Juanes contestó. Un intercambio del que existe otro POSTERIOR del mismo autor
+ * prueba que volvió a escribir; el de la punta es el único que puede quedar sin respuesta.
+ */
+function silencioDuro(es: readonly Intercambio[], e: Intercambio): boolean {
+  const t = msDe(e.cuando, 0);
+  // ponytail: O(n²) sobre un array topado en MAX_INTERCAMBIOS (40). Si alguna vez sube el techo, se
+  // precalcula el último `cuando` por autor en un Map y queda O(n).
+  return !es.some((o) => o !== e && o.quien === e.quien && msDe(o.cuando, 0) > t);
 }
 
 /** Aritmética sobre los arrays, sin criterio nuevo. Es lo que imprime informe-conversacion.ts. */
@@ -486,6 +578,7 @@ export function resumen(
   conforme: number;
   corrige: number;
   sinReaccion: number;
+  sinRespuesta: number;
   tasaInsiste: number;
   repetidas: number;
   inventadas: number;
@@ -526,6 +619,7 @@ export function resumen(
     conforme: cuenta("conforme"),
     corrige: cuenta("corrige"),
     sinReaccion: es.filter((e) => e.reaccion === null).length,
+    sinRespuesta: es.filter((e) => silencioDuro(es, e)).length,
     tasaInsiste: es.length === 0 ? 0 : redondear(cuenta("insiste") / es.length, 3),
     repetidas: es.filter((e) => e.repetida).length,
     inventadas: es.reduce((a, e) => a + (Number(e.inventadas) || 0), 0),

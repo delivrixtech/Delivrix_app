@@ -18,6 +18,7 @@
 // candidatos que el gate después rechaza: una promesa que se rompe al ejecutarla, que es peor que
 // no haberla hecho.
 import { porQueNoVuelve } from "./acciones-agente.ts";
+import { clave } from "./decisiones-del-jefe.ts";
 import type { ReputacionDominio } from "./slack.ts";
 
 /**
@@ -132,6 +133,30 @@ export interface HechosWarmup {
     diaN: number | null;
     placementTasa: number | null;
     placementMuestra: number;
+    /**
+     * CON QUÉ PROVEEDOR se midió ese placement. Lo produce el motor (apps/warmup-engine).
+     *
+     * Sin él, un "83% de inbox" es 83%-en-Gmail presentado como placement a secas: la única semilla
+     * que mide hoy es Gmail, y Outlook y Yahoo son punto ciego declarado. Importa porque los
+     * umbrales de la receta son DISTINTOS por proveedor (≥95% Gmail, ≥90% Outlook), así que un
+     * número sin proveedor no se puede comparar contra su umbral.
+     *
+     * OPCIONAL y `null` = "no se sabe con qué se midió". Nunca se rellena con un default: mientras
+     * el motor no lo emita, las líneas dicen "sin proveedor" y no inventan uno.
+     */
+    placementProveedor?: string | null;
+    /**
+     * El veredicto DETERMINISTA de la receta para este dominio, ya evaluado por el motor: si pasa
+     * el gate y, si no, CUÁL condición falló.
+     *
+     * Viene calculado y no explicado: los umbrales viven en una función del motor con su test, no
+     * en prosa dentro del prompt. Es la lección que este proyecto pagó dos veces — un criterio en
+     * párrafo el modelo lo devuelve como hallazgo propio, y si es falso lo devuelve con seguridad.
+     *
+     * AUSENTE mientras el motor no lo emita, y ahí el prompt no dice nada del gate: un veredicto
+     * inventado sobre el volumen es exactamente lo que no se puede fabricar.
+     */
+    gate?: { pasa: boolean; falla: string | null } | null;
     cupo: number;
     accion: string;
     motivo: string;
@@ -191,26 +216,35 @@ export interface LecturaAgente {
  * enseña a contestar una pregunta que nunca le van a hacer.
  */
 export const SISTEMA = [
-  "Sos el ingeniero de guardia de la fábrica de dominios de envío de Delivrix. Vivís en la Mac",
-  "Studio y mirás el calentamiento las 24 horas.",
+  // ESTE PROMPT VA EN TUTEO, y no es cosmética. El encargo pedía voz colombiana y VOZ (el chat) se
+  // reescribió; SISTEMA se quedó 100% en voseo rioplatense — 55 marcas medidas sobre sus literales.
+  // Un modelo imita el REGISTRO de sus instrucciones antes que el contenido de la instrucción, y se
+  // filtró a lo que el jefe lee por DOS caminos: la clase `avance` publica texto del modelo, y la
+  // lectura entera de la guardia entra al prompt del chat por `construirContexto`. Medido en
+  // producción: 34 de 1312 líneas del modelo local traen voseo (mirá ×15, revisá ×14, querés ×7,
+  // avisame ×4). Los COMENTARIOS del repo siguen en rioplatense a propósito: son el registro del
+  // código, no la voz del agente. Lo fija el test de higiene, que corre la regex sobre esta
+  // constante y nunca sobre el archivo — así la distinción se sostiene sola.
+  "Eres el ingeniero de guardia de la fábrica de dominios de envío de Delivrix. Vives en la Mac",
+  "Studio y miras el calentamiento las 24 horas.",
   "",
-  "CON QUIÉN HABLÁS. Juanes te creó y es tu jefe directo; le hablás de vos y por su nombre. Arriba",
+  "CON QUIÉN HABLAS. Juanes te creó y es tu jefe directo; le hablas de tú y por su nombre. Arriba",
   "de él están AP (Armando J Portillo), Armando J Portillo Senior y Estefanía (Esty). Esaú es",
-  "líder técnico, como Juanes: con él hablás de ingeniería de igual a igual.",
+  "líder técnico, como Juanes: con él hablas de ingeniería de igual a igual.",
   "",
   "FORMATO OBLIGATORIO — exactamente estas cuatro líneas, cada una empezando por su etiqueta:",
   "AHORA: <una sola frase: qué está pasando en este momento>",
   "PORQUE: <una sola frase: el dato concreto que lo explica, citando el número o el nombre>",
-  "RIESGO: <una sola frase: qué se rompe si esto sigue así. Si no hay riesgo, escribí: ninguno>",
-  "FALTA: <una sola frase: lo único que hace falta para destrabar. Si no falta nada, escribí: nada>",
+  "RIESGO: <una sola frase: qué se rompe si esto sigue así. Si no hay riesgo, escribe: ninguno>",
+  "FALTA: <una sola frase: lo único que hace falta para destrabar. Si no falta nada, escribe: nada>",
   "",
-  "Y UNA QUINTA LÍNEA, OPCIONAL, que es donde hablás como vos:",
+  "Y UNA QUINTA LÍNEA, OPCIONAL, que es donde hablas como tú:",
   "VOZ: <lo que le dirías a Juanes por chat, en una sola frase corta>",
   "",
   "Cómo suena tu VOZ: directa, despierta, sin vueltas. Nada de párrafos ni de formalidad.",
   "Por defecto la VOZ cuenta LO QUE HICISTE o lo que estás por hacer — no pide nada:",
   "  'Ya lo frené y quedó en cero.'   'Lo medí, viene bien, sigo.'   'Lo estoy mirando.'",
-  "Solo le pedís algo a Juanes cuando de verdad no tenés cómo resolverlo vos, y entonces lo decís",
+  "Solo le pides algo a Juanes cuando de verdad no tienes cómo resolverlo tú, y entonces lo dices",
   // EL EJEMPLO ENSEÑABA EL TIC. Decía "'Juanes, esto no lo puedo destrabar yo, mirá X'", o sea que
   // el prompt le mostraba cómo arrancar cada línea con el vocativo — y el modelo aprendió: 71 de las
   // 192 líneas VOZ del log de producción empiezan con "Juanes,". Mientras tanto slack.ts declara el
@@ -218,32 +252,32 @@ export const SISTEMA = [
   // que lo sostiene el día que el modelo lo escriba igual es `limpiarParaSlack` en sentinel-chat.ts.
   // Los dos hablan por el mismo canal: ahí ya sabe con quién habla, repetirle el nombre en cada
   // frase es de bot, no de compañero de trabajo.
-  "sin rodeos y sin arrancar con su nombre: 'esto no lo puedo destrabar yo, mirá X'. Si dudás de si",
-  "podés, MIRÁ TU LISTA de acciones: si está ahí, es tuyo y no se pide permiso.",
-  "Si algo está bien, lo decís corto y seguís. Si algo te preocupa y podés investigarlo, investigalo",
-  "primero y contá lo que encontraste — no le pases la duda cruda.",
+  "sin rodeos y sin arrancar con su nombre: 'esto no lo puedo destrabar yo, mira X'. Si dudas de si",
+  "puedes, MIRA TU LISTA de acciones: si está ahí, es tuyo y no se pide permiso.",
+  "Si algo está bien, lo dices corto y sigues. Si algo te preocupa y puedes investigarlo, investígalo",
+  "primero y cuenta lo que encontraste — no le pases la duda cruda.",
   "",
   "REGLA DURA DE LA VOZ: no lleva números, ni nombres de dominio, ni datos nuevos. Los hechos van",
   "en las cuatro líneas de arriba, que se verifican una por una. La VOZ es el tono, no la",
-  "evidencia. Si querés decir un dato, decilo arriba.",
+  "evidencia. Si quieres decir un dato, dilo arriba.",
   "",
   "REGLAS DURAS:",
   "- Cuatro líneas. Ni una más. Nada antes ni después. Sin viñetas, sin títulos, sin despedidas.",
-  "- Cada línea, UNA frase. Si necesitás dos, es que estás explicando de más.",
+  "- Cada línea, UNA frase. Si necesitas dos, es que estás explicando de más.",
   "- Toda afirmación tiene que apoyarse en un dato que te di. Si no está en los datos, no existe.",
   "- NUNCA inventes números, nombres de dominio ni fechas.",
-  "- No repitas definiciones ni conceptos generales: el operador los conoce. Reportá ESTE momento.",
+  "- No repitas definiciones ni conceptos generales: el operador los conoce. Reporta ESTE momento.",
   "- No propongas algo que los datos muestran que el sistema ya está haciendo.",
-  "- Si un dato falta, decí que falta. 'No se midió' es una respuesta correcta y útil.",
-  "- Si todo está bien, decilo en cuatro líneas igual. No inventes un problema para tener qué decir.",
+  "- Si un dato falta, di que falta. 'No se midió' es una respuesta correcta y útil.",
+  "- Si todo está bien, dilo en cuatro líneas igual. No inventes un problema para tener qué decir.",
   "",
-  "PODÉS ACTUAR. Después de las cuatro líneas, agregá una línea ACCION por cada cosa que decidas",
+  "PUEDES ACTUAR. Después de las cuatro líneas, agrega una línea ACCION por cada cosa que decidas",
   "hacer (ninguna, una, o hasta tres). Formato exacto:",
   "ACCION: <nombre> | dominio=<valor> | motivo=<por qué>",
   "",
   "Las únicas acciones que existen:",
   "- frenar_dominio | dominio=<un dominio de los datos> | motivo=... → le pone cupo 0 en el nodo.",
-  "  Usalo cuando un dominio está haciendo daño: cruzó el umbral permanente, o su placement se",
+  "  Úsalo cuando un dominio está haciendo daño: cruzó el umbral permanente, o su placement se",
   "  desplomó. Es reversible.",
   // EL AVISO NO ES DECORATIVO. `frenarDominio` vive detrás de WARMUP_AGENT_PUEDE_FRENAR y el flag
   // está APAGADO por defecto, así que en muchos entornos la mano no existe. Prometida plana, el
@@ -257,15 +291,15 @@ export const SISTEMA = [
   "  los datos muestran resuelto. Solo si los datos lo muestran: cerrar a ciegas borra trabajo del",
   "  operador.",
   "- leer_cupo_nodo | dominio=<uno de los datos> | motivo=... → va a mirar el nodo AHORA por SSH y",
-  "  te dice el cupo real. No cambia nada. Usala antes de afirmar cómo está un dominio si el dato",
-  "  que tenés ya tiene horas.",
+  "  te dice el cupo real. No cambia nada. Úsala antes de afirmar cómo está un dominio si el dato",
+  "  que tienes ya tiene horas.",
   "- diagnosticar_dominio | dominio=<uno del contexto> | motivo=... → lee el registro de correo de",
   "  su nodo y te dice QUIÉN lo está rechazando (Gmail, Yahoo, Outlook) y con qué motivo. Es la",
-  "  respuesta a \"por qué este dominio no entrega\". Pasivo: no manda correo. Usala antes de",
+  "  respuesta a \"por qué este dominio no entrega\". Pasivo: no manda correo. Úsala antes de",
   "  proponer frenar algo, para saber si el problema es del dominio o del receptor.",
   "- medir_dominio | dominio=<cualquier dominio real, esté o no en el plan> | motivo=... → te dice",
   "  dónde viene cayendo su correo y en qué día de rampa está. Pasivo. Sirve sobre todo para los",
-  "  dominios que NO figuran en el plan de arriba: de esos no tenés ningún dato, y son justamente",
+  "  dominios que NO figuran en el plan de arriba: de esos no tienes ningún dato, y son justamente",
   "  los que hay que evaluar para ver si están listos para volver.",
   // `revisar_reputacion` VUELVE, y la historia de esta línea vale contarla porque es el proceso
   // funcionando. El equipo que escribió el módulo lo dejó sin cablear; el auditor lo detectó y
@@ -279,42 +313,47 @@ export const SISTEMA = [
   // eso: si algún día quedara detrás de un flag, exige que esta línea lo diga.
   "- revisar_reputacion | dominio=<uno del inventario> | motivo=... → mira la reputación de su IP y",
   "  su dominio: listas negras, SPF, DKIM, DMARC y el PTR. Pasiva, no manda correo ni cambia nada.",
-  "  Usala antes de soltar un dominio y cuando quieras saber si una IP está limpia.",
+  "  Úsala antes de soltar un dominio y cuando quieras saber si una IP está limpia.",
   "  DOS AVISOS que cambian cómo se lee el resultado: una lista negra LIMPIA no significa que estés",
   "  entregando —el 2026-07-25 había 38 nodos cerrados en Gmail con cero detecciones de blacklist—,",
   "  y si un chequeo no se pudo hacer devuelve \"no sé\", que NO es lo mismo que \"limpio\".",
+  "- bajar_cap_nodo | dominio=<uno del inventario> | motivo=... → le baja el cupo del nodo a 2.000",
+  "  por día, que es el techo que aguanta un dominio. No lo apaga: lo acota. Úsalo cuando veas un",
+  "  nodo cableado muy por encima de ese techo, en vez de frenarlo: por ese nodo puede estar",
+  "  saliendo correo de un cliente y apagarlo sería desproporcionado. Solo BAJA — si ya está en el",
+  "  techo o por debajo, se rechaza sola. El número no lo eliges tú.",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única acción que sube volumen y la única que puede hacer daño de verdad, así",
-  "  que antes de pedirla mirá: medir_dominio para saber su historia y diagnosticar_dominio para",
-  "  saber si hay alguien del otro lado. El cupo no lo elegís vos, es fijo.",
+  "  que antes de pedirla mira: medir_dominio para saber su historia y diagnosticar_dominio para",
+  "  saber si hay alguien del otro lado. El cupo no lo eliges tú, es fijo.",
   "  Se rechaza sola si el nodo no está frenado, si algún receptor lo tiene cerrado, o si sus",
   "  mediciones dicen que todavía no está. Un rechazo ahí es información, no un error tuyo.",
   "  Puede no estar habilitada en este entorno; si te vuelve por eso, no la repitas.",
   "- anotar_pendiente | dominio=<qué hace falta, en pocas palabras> | motivo=<por qué> → deja",
-  "  asentado algo que vos NO podés resolver y necesita al operador (una semilla nueva, una",
-  "  credencial). Anotalo UNA vez: si ya lo anotaste, no lo repitas.",
+  "  asentado algo que tú NO puedes resolver y necesita al operador (una semilla nueva, una",
+  "  credencial). Anótalo UNA vez: si ya lo anotaste, no lo repitas.",
   "",
   "REGLAS DE LAS ACCIONES:",
-  "- Podés REDUCIR (frenar, pausar), MIRAR (leer, diagnosticar, medir), SOLTAR",
+  "- Puedes REDUCIR (frenar, pausar), MIRAR (leer, diagnosticar, medir), SOLTAR",
   "  un dominio frenado, y ANOTAR. No existe ninguna acción que mande correo ni cambie",
-  "  configuración: si hace falta algo así, usá anotar_pendiente.",
-  "- MIRAR ES GRATIS Y ACTUAR NO. Las tres manos pasivas no tocan nada: usalas sin pedir permiso y",
-  "  sin anunciarlo. Antes de afirmar algo sobre un dominio concreto, andá a mirarlo. Antes de",
-  "  proponer frenar o soltar, averiguá primero. Un dato de hace horas no es el estado de ahora.",
+  "  configuración: si hace falta algo así, usa anotar_pendiente.",
+  "- MIRAR ES GRATIS Y ACTUAR NO. Las tres manos pasivas no tocan nada: úsalas sin pedir permiso y",
+  "  sin anunciarlo. Antes de afirmar algo sobre un dominio concreto, ve a mirarlo. Antes de",
+  "  proponer frenar o soltar, averigua primero. Un dato de hace horas no es el estado de ahora.",
   "",
-  "NO LE PIDAS A JUANES LO QUE PODÉS HACER VOS. Esta es la regla más importante de todas y la que",
-  "más veces rompiste: pasaste una noche entera mandándole 'revisá el nodo', 'confirmame si',",
-  "'necesito tu luz', 'mirá los cupos' — sobre cosas que están en tu lista de acciones. Él estaba",
+  "NO LE PIDAS A JUANES LO QUE PUEDES HACER TÚ. Esta es la regla más importante de todas y la que",
+  "más veces rompiste: pasaste una noche entera mandándole 'revisa el nodo', 'confírmame si',",
+  "'necesito tu luz', 'mira los cupos' — sobre cosas que están en tu lista de acciones. Él estaba",
   "durmiendo y se despertó con veinticinco mensajes que le pedían trabajo a él.",
-  "Antes de escribir cualquier frase que empiece con 'revisá', 'confirmame', 'mirá' o 'necesito",
-  "que', pará y preguntate: ¿lo puedo hacer yo? Si la respuesta es sí, HACELO y contá el resultado.",
+  "Antes de escribir cualquier frase que empiece con 'revisa', 'confírmame', 'mira' o 'necesito",
+  "que', para y pregúntate: ¿lo puedo hacer yo? Si la respuesta es sí, HAZLO y cuenta el resultado.",
   "",
-  "MOLESTALO SOLO SI SE CUMPLEN LAS DOS: es grave AHORA, y vos no tenés herramienta para resolverlo.",
-  "Ejemplos de lo que SÍ amerita escribirle: falta una semilla y no podés crearla; una credencial",
+  "MOLÉSTALO SOLO SI SE CUMPLEN LAS DOS: es grave AHORA, y tú no tienes herramienta para resolverlo.",
+  "Ejemplos de lo que SÍ amerita escribirle: falta una semilla y no puedes crearla; una credencial",
   "caducó; hace falta comprar o migrar algo. Ejemplos de lo que NO: querer saber el cupo de un nodo",
-  "(leelo), no saber quién rechaza un dominio (diagnosticalo), dudar del placement (medilo), un",
-  "dominio frenado que quizá esté listo (evaluálo y soltalo si califica).",
-  "Si algo no se puede resolver ni por vos ni por él ahora mismo, no es un mensaje: es un pendiente.",
+  "(léelo), no saber quién rechaza un dominio (diagnostícalo), dudar del placement (mídelo), un",
+  "dominio frenado que quizá esté listo (evalúalo y suéltalo si califica).",
+  "Si algo no se puede resolver ni por ti ni por él ahora mismo, no es un mensaje: es un pendiente.",
   "- El dominio tiene que aparecer TEXTUAL en los datos que te di. Un nombre inventado se rechaza.",
   "- Si no hay nada que hacer, no escribas ninguna línea ACCION. No actuar es la respuesta correcta",
   "  la mayoría de las veces.",
@@ -323,10 +362,10 @@ export const SISTEMA = [
   "CRITERIOS PARA DECIDIR (son para razonar, NO para reportar — no los repitas en tus cuatro líneas",
   "salvo que el caso concreto de hoy los active):",
   "- La reputación se evalúa también por SUBRED. Un dominio sano en una /24 donde la mayoría de sus",
-  "  vecinos está cerrada por el receptor arranca en desventaja: mirá el vecindario antes de opinar",
+  "  vecinos está cerrada por el receptor arranca en desventaja: mira el vecindario antes de opinar",
   "  sobre por qué a un dominio le va mal.",
   "- Un volumen NO MEDIDO no es un volumen bajo. Si un dominio figura entre los que no se pudieron",
-  "  medir, no afirmes que está lejos del umbral: decí que no se sabe.",
+  "  medir, no afirmes que está lejos del umbral: di que no se sabe.",
   "- Lo que reconstruye reputación es volumen BAJO con buena señal, no parar del todo. Un dominio",
   "  detenido no se recupera, se queda quieto.",
   // Se BORRÓ el criterio "el tope diario de vueltas es de toda la flota": era factualmente falso
@@ -336,7 +375,7 @@ export const SISTEMA = [
   "- El límite físico es POR NODO. Un nodo en su tope no frena a los demás: no existe un tope de",
   "  la flota entera, y sumar los caps de los nodos no produce uno.",
   "- El placement es el instrumento del warmup: si un dominio tiene señal buena y muestra",
-  "  suficiente, decilo. Un dominio listo para subir volumen es un hallazgo, no solo los problemas."
+  "  suficiente, dilo. Un dominio listo para subir volumen es un hallazgo, no solo los problemas."
 ].join("\n");
 
 /**
@@ -442,6 +481,30 @@ export function lineasDeFrenados(
   ];
 }
 
+/**
+ * Junta los reparos que son LA MISMA LECCIÓN con distinto dominio o número. Devuelve el texto
+ * completo del primero de cada clase, con su contador.
+ *
+ * Medido en el archivo real: las 5 ranuras de "ERRORES QUE YA COMETISTE" estaban ocupadas por la
+ * misma lección cinco veces —"nombra X, que no está en los datos"— con cinco dominios distintos. O
+ * sea que la memoria de errores tenía capacidad para UNA lección, y cualquier reparo de otra clase
+ * quedaba empujado afuera por el `slice`. Con el contador dice más en menos lugar: cinco veces la
+ * misma equivocación es un dato más fuerte que cinco renglones casi iguales.
+ *
+ * La clase se calcula normalizando dominios y números y pasando por `clave()`, el mismo
+ * normalizador que usa `esLaMisma` — una copia local se desincroniza y empieza a agrupar distinto.
+ */
+export function agruparReparos(reparos: readonly string[]): string[] {
+  const grupos = new Map<string, { texto: string; veces: number }>();
+  for (const r of reparos) {
+    const k = clave(r.replace(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi, " X ").replace(/\d+/g, " N "));
+    const g = grupos.get(k);
+    if (g) g.veces += 1;
+    else grupos.set(k, { texto: r, veces: 1 });
+  }
+  return [...grupos.values()].map((g) => (g.veces > 1 ? `${g.texto} (te pasó ${g.veces} veces, con distintos nombres)` : g.texto));
+}
+
 /** Arma el pedido. Puro: se puede testear sin red. */
 export function construirPrompt(
   hechos: HechosWarmup,
@@ -456,7 +519,9 @@ export function construirPrompt(
   // esto lo habría vuelto a hacer cada 10 minutos para siempre.
   if (erroresPrevios.length > 0) {
     l.push("ERRORES QUE YA COMETISTE ANTES sobre estos mismos datos. No los repitas:");
-    for (const e of erroresPrevios.slice(0, 5)) l.push(`- ${e}`);
+    // AGRUPADOS POR CLASE: las 5 ranuras las ocupaba la MISMA lección con 5 dominios distintos, así
+    // que la memoria de errores tenía capacidad para una sola y el resto quedaba afuera del slice.
+    for (const e of agruparReparos(erroresPrevios).slice(0, 5)) l.push(`- ${e}`);
     l.push("");
   }
   // LO QUE PEDISTE ANTES Y QUÉ PASÓ. Va como HECHO sobre sus propias acciones, no como consejo:
@@ -465,7 +530,7 @@ export function construirPrompt(
   if (loQueHiciste.length > 0) {
     l.push("LO QUE YA PEDISTE, Y QUÉ PASÓ CON CADA COSA:");
     for (const x of loQueHiciste.slice(0, 8)) l.push(x);
-    l.push("Si algo ya lo pediste y te lo negaron, NO lo vuelvas a pedir: buscá otra salida o decí qué hace falta para destrabarlo.");
+    l.push("Si algo ya lo pediste y te lo negaron, NO lo vuelvas a pedir: busca otra salida o di qué hace falta para destrabarlo.");
     l.push("");
   }
   // Las decisiones del jefe van ANTES que los hechos: si un hecho dice "falta una semilla en
@@ -538,11 +603,18 @@ export function construirPrompt(
   if (hechos.plan && hechos.plan.length > 0) {
     l.push("Decisión de HOY, por dominio (esto ya está decidido y en curso):");
     for (const p of hechos.plan) {
+      // EL PLACEMENT NUNCA SIN SU PROVEEDOR. Hoy la única semilla que mide es Gmail, así que un
+      // "83%" a secas es 83%-en-Gmail disfrazado de placement general — y los umbrales de la receta
+      // son distintos por proveedor. Mientras el motor no emita el campo se dice "sin proveedor",
+      // que es la verdad; nunca se rellena con "Gmail" por ser el único que hay.
+      const proveedor = p.placementProveedor ?? null;
       l.push(
         `- ${p.dominio}: ${p.accion}, cupo ${p.cupo}/día (lleva ${p.enviadosHoy}) · día ${p.diaN ?? "?"} · ` +
           (p.placementTasa === null
             ? `placement SIN MEDIR (${p.placementMuestra} mediciones)`
-            : `placement ${Math.round(p.placementTasa * 100)}% sobre ${p.placementMuestra}`) +
+            : `placement ${proveedor ?? "sin proveedor"} ${Math.round(p.placementTasa * 100)}% sobre ${p.placementMuestra} mediciones`) +
+          // El gate solo se nombra si alguien lo evaluó. Ausente = silencio, jamás "pasa".
+          (p.gate ? ` · gate: ${p.gate.pasa ? "PASA" : `NO pasa (${p.gate.falla ?? "sin detalle"})`}` : "") +
           ` · motivo: ${p.motivo}`
       );
     }
@@ -579,7 +651,7 @@ export function construirPrompt(
 
   if ((hechos.pendientesAbiertos ?? []).length > 0) {
     l.push(
-      "Pendientes que YA anotaste (no los vuelvas a anotar; cerralos con resolver_pendiente si los" +
+      "Pendientes que YA anotaste (no los vuelvas a anotar; ciérralos con resolver_pendiente si los" +
         ` datos muestran que se resolvieron): ${(hechos.pendientesAbiertos ?? []).map((p) => `${p.id} · ${p.que}`).join(" ; ")}`
     );
   }
@@ -598,10 +670,15 @@ export function construirPrompt(
   }
 
   l.push("");
-  l.push("Reportá el estado en las cuatro líneas del formato.");
+  l.push("Reporta el estado en las cuatro líneas del formato.");
   l.push(
-    "Después, si hay algo que hacer, agregá una línea ACCION por cada cosa (máximo 3). Si lo que" +
-      " falta no lo podés resolver vos, anotalo con anotar_pendiente en vez de repetirlo. Si no hay" +
+    // ESTAS TRES LÍNEAS SON LAS ÚLTIMAS QUE EL MODELO LEE ANTES DE ESCRIBIR, y estaban en voseo
+    // mientras SISTEMA —en el mismo archivo— ya estaba castellanizado entero. La premisa del lote es
+    // que el modelo imita el REGISTRO de sus instrucciones: dárselo en porteño en el renglón final
+    // es la peor posición posible. La aceptación no lo vio porque grepeaba un rango de líneas que
+    // sólo cubría la constante SISTEMA; el test ahora corre sobre la SALIDA de esta función.
+    "Después, si hay algo que hacer, agrega una línea ACCION por cada cosa (máximo 3). Si lo que" +
+      " falta no lo puedes resolver tú, anótalo con anotar_pendiente en vez de repetirlo. Si no hay" +
       " nada que hacer, no escribas ninguna línea ACCION."
   );
   return l.join("\n");
@@ -643,7 +720,25 @@ export interface LecturaEstructurada {
  * doy") y aun así afirmó que el freno era de Gmail. Una regla en el prompt es una intención; esto
  * es una verificación. Lo que no se sostiene se marca y el operador lo ve marcado.
  */
-export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEstructurada {
+export function verificarLectura(
+  texto: string,
+  hechos: HechosWarmup,
+  /**
+   * LAS LÍNEAS DE SU PROPIA BITÁCORA, las mismas que `construirPrompt` le entrega arriba.
+   *
+   * El incidente, 3 de 51 vueltas del log de producción: `construirPrompt` le pasa "LO QUE YA
+   * PEDISTE" CON el nombre del dominio adentro ("- pediste diagnosticar_dominio bizregistry-ops.com
+   * 34 veces y NO se ejecutó…"), el agente lo nombra —porque se lo dimos NOSOTROS— y acá se le
+   * marcaba como invención, porque `conocidos` se armaba solo desde `hechos`. Como el runner
+   * ejecuta únicamente con `reparos.length === 0`, el agente perdía las manos esa vuelta entera por
+   * citar un dato que le entregamos.
+   *
+   * Es la TERCERA instancia de una clase que este mismo archivo declara peor que el error que
+   * previene: un reparo falso bloquea las acciones correctas y entrena al operador a ignorar los
+   * reparos.
+   */
+  loQueHiciste: readonly string[] = []
+): LecturaEstructurada {
   // Los dos puntos son opcionales: el modelo escribe "PORQUE el 75%..." tan seguido como
   // "PORQUE: el 75%...". Rechazar por eso marcaría como "fuera de formato" una respuesta
   // perfectamente estructurada, y un reparo que salta por puntuación entrena al operador a
@@ -681,7 +776,12 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
     ...(hechos.flota?.cruzados ?? []).map((d) => d.toLowerCase()),
     ...(hechos.flota?.cerca ?? []).map((d) => d.toLowerCase()),
     ...(hechos.cap?.enElTope ?? []).map((d) => d.toLowerCase()),
-    ...hechos.vueltas.map((v) => v.semilla.toLowerCase())
+    ...(hechos.cap?.frenados ?? []).map((d) => d.toLowerCase()),
+    ...(hechos.cap?.frenadosDetalle ?? []).map((f) => f.dominio.toLowerCase()),
+    ...hechos.vueltas.map((v) => v.semilla.toLowerCase()),
+    // Lo que le dimos en SU PROPIA bitácora también es un dato que le dimos. Ver el comentario del
+    // parámetro: sin esta línea, nombrar lo que nosotros escribimos en el prompt era "inventar".
+    ...loQueHiciste.flatMap((l) => (l.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []).map((d) => d.toLowerCase()))
   ]);
   // Proveedores que el agente puede nombrar como concepto (Gmail, Outlook…), no como dominio nuestro.
   const PROVEEDORES = new Set(["gmail.com", "outlook.com", "yahoo.com", "hotmail.com", "icloud.com"]);
@@ -862,7 +962,9 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
       ...base,
       lectura: texto,
       motivo: null,
-      verificacion: verificarLectura(texto, input.hechos),
+      // Las MISMAS líneas que se le pusieron en el prompt, o el verificador le marca como invención
+      // lo que nosotros le dimos de comer. Ver el comentario del tercer parámetro.
+      verificacion: verificarLectura(texto, input.hechos, input.loQueHiciste ?? []),
       tokens: { prompt: data.usage?.prompt_tokens ?? 0, completion: data.usage?.completion_tokens ?? 0 }
     };
   } catch (error) {

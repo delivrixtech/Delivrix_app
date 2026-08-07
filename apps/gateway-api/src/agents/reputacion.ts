@@ -295,6 +295,26 @@ export interface FilaReputacion {
   /** Las listas que lo detectaron. `[]` = consultado y limpio. `"no-se"` = NO consultado o falló. */
   listas: string[] | "no-se";
   /**
+   * POR QUÉ no hay veredicto de listas. Solo cuando `listas === "no-se"` y se preguntó de verdad.
+   *
+   * Medido en el barrido real: de 25 consultas, 13 se gastaron y volvieron SIN veredicto, y el
+   * motivo se descartaba. O sea que la cobertura real era 12 de 66 (18%) y el archivo la mostraba
+   * como 25 de 66 — y entre las 13 perdidas estaban 4 de los 6 dominios que HOY calientan, que son
+   * prioridad 0 del orden. Sin el motivo nadie puede decidir si conviene reintentar: no es lo mismo
+   * "la API no está configurada" que "esa IP no la conoce".
+   */
+  listasMotivo?: string;
+  /**
+   * Cómo trata el receptor a ese nodo HOY: `"cerrado"`, `"atascado"`, `"sano"`… Sale de
+   * sender-measurement, no de este módulo.
+   *
+   * Existe porque la regla d4 del canal —"listas limpias PERO el receptor cerrado", el modo de falla
+   * exacto del 2026-07-25 con 38 nodos cerrados en Gmail y cero detecciones de blacklist— LEE este
+   * campo y nadie lo escribía: media regla en código muerto, con 36 bandejas cerradas hoy para
+   * reproducirla. Ausente = "no se sabe", nunca "sano".
+   */
+  receptor?: string | null;
+  /**
    * `true` cuando el "no sé" es PORQUE NOSOTROS NO PREGUNTAMOS: se acabó el presupuesto del barrido.
    *
    * Los dos "no sé" son distintos y el archivo tiene que poder distinguirlos. Con 25 consultas sobre
@@ -354,6 +374,13 @@ export async function barridoDeReputacion(input: {
   orden: readonly string[];
   /** `revisarReputacionDe` cableado con sus adapters. `conListas:false` ⇒ no gasta cuota. */
   revisar: (dominio: string, conListas: boolean) => Promise<ReputacionLeida>;
+  /**
+   * Cómo está el receptor para ese dominio, de sender-measurement. `null`/ausente = no se sabe.
+   *
+   * Entra inyectado como todo lo demás: este módulo no lee un solo archivo. Es la mitad que le
+   * faltaba a la regla d4 del canal, que cruza "listas limpias" con "receptor cerrado".
+   */
+  receptorDe?: (dominio: string) => string | null;
   presupuesto?: number;
   now?: () => Date;
   log?: (linea: string) => void;
@@ -378,21 +405,34 @@ export async function barridoDeReputacion(input: {
       // "no sé", nunca un veredicto.
       const noSe: ChequeoReputacion = { estado: "no-se", detalle: e instanceof Error ? e.message : String(e) };
       dominios.push({
-        dominio, ip: null, listas: "no-se",
+        dominio, ip: null, listas: "no-se", listasMotivo: noSe.detalle,
+        receptor: input.receptorDe?.(dominio) ?? null,
         spf: noSe, dkim: noSe, dmarc: noSe, ptr: noSe, tls: noSe,
         medidoEn: ahora.toISOString()
       });
       input.log?.(`barrido-reputacion ${dominio}: no pude medirlo — ${noSe.detalle}`);
       continue;
     }
-    if (conListas) gastadas += 1;
+    // LA CUOTA SE GASTA CUANDO SE PREGUNTA, no cuando se intenta. Un dominio sin IP no produce
+    // ninguna consulta —`chequearBlacklist` sale antes de llamar a la API— y sin embargo se le
+    // descontaba una unidad del presupuesto: medido, hasta 7 de las 25 (28%) se iban en preguntas
+    // que nunca se formularon, y los dominios del final de la lista se quedaban sin medir por una
+    // cuota que nadie gastó.
+    const pregunto = conListas && r.ip !== null;
+    if (pregunto) gastadas += 1;
+    const listas = listasDe(r.blacklist, pregunto);
     dominios.push({
       dominio,
       ip: r.ip,
-      listas: listasDe(r.blacklist, conListas),
+      listas,
+      // EL MOTIVO DEL "NO SÉ", cuando preguntamos y no hubo veredicto. Es lo único que permite
+      // decidir si conviene reintentar; sin él, 13 de 25 consultas del barrido real se gastaron y
+      // no dejaron rastro de por qué.
+      ...(listas === "no-se" && pregunto ? { listasMotivo: r.blacklist.detalle } : {}),
       // La marca va sólo cuando el "no sé" lo decidimos nosotros. Si se consultó y falló, la fila
       // sale sin marca y ESA sí es una ceguera que interrumpe.
       ...(conListas ? {} : { porPresupuesto: true as const }),
+      receptor: input.receptorDe?.(dominio) ?? null,
       spf: r.spf, dkim: r.dkim, dmarc: r.dmarc, ptr: r.ptr, tls: r.tls,
       medidoEn: ahora.toISOString()
     });
@@ -410,6 +450,76 @@ export async function barridoDeReputacion(input: {
  * "limpio", y por eso está sola y con nombre: `ok` es la ÚNICA entrada que produce un array vacío,
  * y sólo cuando de verdad se consultó.
  */
+/**
+ * LA SONDA DEL CERTIFICADO — el único IO de este archivo, y no lo usa nadie de acá adentro.
+ *
+ * Existe porque `chequearTls` estaba escrito, testeado y CIEGO en los 66 dominios: el llamador
+ * nunca le pasaba `input.tls`, así que la señal salía "no sé" siempre. Y duele el doble porque
+ * `authRota` (plan-diario.ts) ya excluye del pool por `tls === "mal"` — o sea una válvula conectada
+ * a un dato que no podía valer "mal" ni cuando el certificado estaba caído. filing-ops.com, uno de
+ * los 7 candidatos a soltar, es justamente el dominio cuyo cert vencido motivó escribir el chequeo.
+ *
+ * Va acá y no en el orquestador para que cablearla sea UNA línea (`tls: sondaTlsDelNodo()`), y con
+ * `await import` para que el módulo siga sin traer red al importarse: los tests lo cargan entero sin
+ * abrir un socket.
+ *
+ * No cuesta cuota: es nuestra propia máquina por el 587, sin terceros. `rejectUnauthorized: false`
+ * es deliberado — se quiere LEER el certificado aunque esté vencido o mal firmado, que es
+ * exactamente el caso que hay que detectar; rechazar el handshake nos dejaría sin la fecha.
+ */
+export function sondaTlsDelNodo(timeoutMs = 8_000): (host: string) => Promise<{ vence: string | null; nombre: string | null } | null> {
+  return async (host: string) => {
+    const net = await import("node:net");
+    const tls = await import("node:tls");
+    const plano = net.connect(587, host);
+    // Un socket que nunca contesta cuelga la vuelta entera del agente. El plazo es propio y corta
+    // por las dos puntas: el `destroy` desata el `error` que rechaza la promesa de abajo.
+    const reloj = setTimeout(() => plano.destroy(new Error(`el 587 de ${host} no contestó en ${timeoutMs} ms`)), timeoutMs);
+    const leer = (s: NodeJS.ReadWriteStream): Promise<string> =>
+      new Promise((ok, mal) => {
+        let buf = "";
+        const onData = (c: Buffer | string): void => {
+          buf += c.toString();
+          const ultima = buf.split("\r\n").filter(Boolean).at(-1) ?? "";
+          if (/^\d{3} /.test(ultima)) {
+            s.removeListener("data", onData);
+            ok(ultima);
+          }
+        };
+        s.on("data", onData);
+        s.once("error", mal);
+      });
+    const decir = async (s: NodeJS.ReadWriteStream, linea: string): Promise<string> => {
+      s.write(`${linea}\r\n`);
+      return leer(s);
+    };
+    try {
+      await new Promise((ok, mal) => {
+        plano.once("connect", ok);
+        plano.once("error", mal);
+      });
+      await leer(plano);
+      await decir(plano, "EHLO sonda.delivrix");
+      const r = await decir(plano, "STARTTLS");
+      // El 587 contesta pero no ofrece TLS: eso NO es "no sé", es un problema real, y quien lo
+      // traduce a "mal" es `chequearTls` con su propia frase.
+      if (!r.startsWith("220")) return null;
+      const seguro = tls.connect({ socket: plano, servername: host, rejectUnauthorized: false });
+      await new Promise((ok, mal) => {
+        seguro.once("secure", ok);
+        seguro.once("error", mal);
+      });
+      const cert = seguro.getPeerCertificate();
+      seguro.destroy();
+      if (!cert || Object.keys(cert).length === 0) return null;
+      return { vence: cert.valid_to ?? null, nombre: cert.subject?.CN ?? null };
+    } finally {
+      clearTimeout(reloj);
+      plano.destroy();
+    }
+  };
+}
+
 function listasDe(c: ChequeoReputacion, conListas: boolean): string[] | "no-se" {
   if (!conListas || c.estado === "no-se") return "no-se";
   if (c.estado === "ok") return [];

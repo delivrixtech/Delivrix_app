@@ -6,12 +6,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cruzarEntregaConPlacement,
   decidirCupoDeHoy,
+  evaluarGate,
   medirPlacement,
+  medirPorProveedor,
+  textoPlacement,
+  textoPorProveedor,
   CUPO_ARRANQUE,
   MUESTRA_MINIMA,
   PISO_PARA_SUBIR,
-  TECHO_DURO_POR_DOMINIO
+  TECHO_DURO_POR_DOMINIO,
+  type FilaPlacement
 } from "./decision-diaria.ts";
 import { wilsonLowerBound } from "./placement.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
@@ -487,4 +493,309 @@ test("el gate de Wilson TIENE que ser alcanzable con la ventana de producción",
   );
   const d = decidirCupoDeHoy({ ...base, diaN: 5, placements: inbox(VENTANA_DE_PRODUCCION) });
   assert.equal(d.accion, "subir");
+});
+
+// ══ EL CLAMP ANTI-FIRMA VUELVE A TENER ENTRADA (§10) ═════════════════════════════════════════════
+
+test("clamp 3×/48h: el cupo AUTORIZADO de anteayer topa la rampa de hoy", () => {
+  // EL AGUJERO QUE ESTO CIERRA: `dailyQuota` implementa el clamp desde el diseño v1 y NUNCA tuvo
+  // entrada — el dato que pide (el cupo AUTORIZADO de hace dos días) no se persistía en ningún
+  // lado, y el comentario del código lo declaraba. Sin él, el día que un dominio junta su cuarta
+  // medición pasa de 2 a la rampa entera: 2 → 20 en 24 h, que es exactamente la firma que el clamp
+  // existe para evitar.
+  const conClamp = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 2 });
+  const sinClamp = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6) });
+  assert.equal(sinClamp.cupo, 20, "la rampa del día 10 con paso 2 son 20/día");
+  assert.equal(conClamp.cupo, 6, "3× lo autorizado hace 2 días, ni uno más");
+  assert.ok(conClamp.cupo < sinClamp.cupo, "el clamp SOLO puede bajar");
+});
+
+test("clamp: ausente o 0 NO clampea — el comportamiento de hoy, exacto", () => {
+  // Con `0` no se puede multiplicar (un dominio frenado anteayer no tendría por dónde recuperarse),
+  // y `dailyQuota` ya lo trata así desde el diseño v1. Se fija acá para que nadie lo "arregle"
+  // convirtiendo el 0 en un freno permanente: sería una trampa de la que un dominio no sale nunca.
+  const cero = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 0 });
+  const ausente = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6) });
+  assert.equal(cero.cupo, ausente.cupo);
+});
+
+test("el clamp NO se alimenta de los ENVÍOS: son dos datos distintos y se confundieron una vez", () => {
+  // `cupoHace2Dias` son correos que SALIERON, aplastados por el tope GLOBAL del daemon (14 vueltas
+  // para toda la flota): da 1-8 y casi siempre 2, sin relación con lo que el dominio tenía
+  // permitido. Usarlo como base del clamp frenaba a los sanos (corpfiling-infra.com mandó 1 el
+  // 05-ago ⇒ techo 3/día) y soltaba a los que no mandaron nada. Este test fija que los dos campos
+  // gobiernan cosas DISTINTAS y que nadie los vuelva a unir.
+  const soloEnvios = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoHace2Dias: 1 });
+  assert.equal(soloEnvios.cupo, 20, "lo que se mandó no puede topar la rampa: eso lo hace el AUTORIZADO");
+});
+
+test("días hábiles: la palanca existía en dailyQuota y estaba escrita a mano en `false`", () => {
+  // §3 del doc lista "días hábiles" entre los levers y `dailyQuota` lo soporta desde el diseño v1,
+  // pero los DOS llamadores lo tenían hardcodeado: no había forma de encenderlo sin tocar código.
+  // Sólo puede BAJAR el volumen (sábado y domingo dan 0), que es la única dirección que este lote
+  // tiene permitido mover.
+  const sabado = decidirCupoDeHoy({ ...base, isoWeekday: 6, diaN: 10, placements: inbox(6), soloDiasHabiles: true });
+  assert.equal(sabado.cupo, 0);
+  const martes = decidirCupoDeHoy({ ...base, isoWeekday: 2, diaN: 10, placements: inbox(6), soloDiasHabiles: true });
+  assert.equal(martes.cupo, 20, "de lunes a viernes no cambia nada");
+  const sinPalanca = decidirCupoDeHoy({ ...base, isoWeekday: 6, diaN: 10, placements: inbox(6) });
+  assert.equal(sinPalanca.cupo, 20, "y apagada, el sábado sigue mandando como hoy");
+});
+
+// ══ TODA CIFRA DE PLACEMENT LLEVA SU PROVEEDOR (B2) ══════════════════════════════════════════════
+
+const REGISTRO: Record<string, string> = {
+  "trazosvercel@gmail.com": "gmail",
+  "flomia33193@gmail.com": "gmail",
+  "alguien@outlook.com": "outlook"
+};
+const proveedorDe = (s: string): string | null => REGISTRO[s] ?? null;
+const fila = (placement: Placement, semilla: string): FilaPlacement => ({ placement, semilla });
+
+test("la cifra sale CON su receptor: nunca 'placement 70%' a secas", () => {
+  // El "83% inbox" que el jefe leyó era 83%-EN-GMAIL presentado como placement a secas. Verificado
+  // contra la Postgres de producción el 2026-08-07: las 24 filas `measured` de los últimos 10 días
+  // salen de dos semillas y las dos son Gmail.
+  const filas = [
+    ...Array.from({ length: 7 }, () => fila("INBOX", "trazosvercel@gmail.com")),
+    ...Array.from({ length: 3 }, () => fila("SPAM", "flomia33193@gmail.com"))
+  ];
+  const m = medirPorProveedor(filas, proveedorDe);
+  assert.equal(m.proveedor, "gmail");
+  assert.equal(m.muestra, 10);
+  assert.equal(textoPlacement(m), "placement Gmail 70% sobre 10 mediciones");
+  assert.doesNotMatch(textoPlacement(m), /^placement \d/, "una tasa sin receptor no puede salir del motor");
+});
+
+test("Outlook y Yahoo salen 'no sé', NUNCA 0% — 'no medido' y 'cero' no son lo mismo", () => {
+  // Es la confusión más cara del sistema. Un Outlook en 0% se lee como "todo nuestro correo va a
+  // spam en Outlook" y dispararía un freno sobre evidencia que no existe; un Outlook en `no sé`
+  // dice la verdad, que es que no tenemos semilla ahí.
+  const m = medirPorProveedor(inbox(4).map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  const outlook = m.porProveedor.find((p) => p.proveedor === "outlook")!;
+  const yahoo = m.porProveedor.find((p) => p.proveedor === "yahoo")!;
+  assert.equal(outlook.tasa, null, "no medido es null");
+  assert.equal(outlook.muestra, 0);
+  assert.notEqual(outlook.tasa, 0, "cero sería una medición, y no la hay");
+  assert.match(textoPorProveedor(outlook), /Outlook: no sé/);
+  assert.match(textoPorProveedor(yahoo), /Yahoo: no sé/);
+  assert.equal(textoPorProveedor(m.porProveedor.find((p) => p.proveedor === "gmail")!), "Gmail 100% sobre 4");
+});
+
+test("sin ninguna medición el proveedor es null, no un 'gmail' adivinado", () => {
+  const m = medirPorProveedor([], proveedorDe);
+  assert.equal(m.proveedor, null);
+  assert.equal(m.tasa, null);
+  assert.equal(textoPlacement(m), "placement no sé (todavía sin mediciones)");
+});
+
+test("una semilla fuera del registro cae en 'desconocido', no en gmail", () => {
+  // Con el default silencioso, borrar una semilla del registro habría movido sus mediciones al
+  // montón del proveedor equivocado sin que nada fallara.
+  const m = medirPorProveedor([fila("INBOX", "fantasma@nadie.com")], proveedorDe);
+  assert.equal(m.proveedor, "desconocido");
+});
+
+test("dos receptores distintos ⇒ 'varios', y la agregada sigue siendo la MISMA que decide", () => {
+  const filas = [fila("INBOX", "trazosvercel@gmail.com"), fila("SPAM", "alguien@outlook.com")];
+  const m = medirPorProveedor(filas, proveedorDe);
+  assert.equal(m.proveedor, "varios");
+  // La agregada no puede divergir de `medirPlacement`: el panel mostrando 75% sobre una decisión
+  // tomada con 100% es peor que no mostrar nada.
+  assert.equal(m.tasa, medirPlacement(filas.map((f) => f.placement)).tasa);
+});
+
+test("MISSING sale del denominador TAMBIÉN por proveedor", () => {
+  // Si la cuenta por receptor usara otra regla que la agregada, el panel diría un número y la
+  // decisión otro. Dos cuentas del mismo hecho es cómo se desincronizan.
+  const filas = [fila("INBOX", "trazosvercel@gmail.com"), fila("MISSING", "trazosvercel@gmail.com")];
+  const gmail = medirPorProveedor(filas, proveedorDe).porProveedor.find((p) => p.proveedor === "gmail")!;
+  assert.equal(gmail.muestra, 1);
+  assert.equal(gmail.tasa, 1);
+});
+
+// ══ EL GATE DE §3 COMO DATO EVALUADO (B1) ════════════════════════════════════════════════════════
+
+test("el gate aplica el umbral DEL PROVEEDOR QUE MIDIÓ, no un promedio", () => {
+  // §3 pide ≥95% en Gmail y ≥90% en Outlook. Un 92% pasa en Outlook y NO pasa en Gmail: sin el
+  // proveedor al lado, el mismo número da dos veredictos opuestos y no hay forma de saber cuál.
+  const enGmail = medirPorProveedor(
+    [...inbox(11).map((p) => fila(p, "trazosvercel@gmail.com")), fila("SPAM", "trazosvercel@gmail.com")],
+    proveedorDe
+  );
+  const g = evaluarGate({ placement: enGmail });
+  assert.equal(g.umbral, 0.95);
+  assert.equal(g.pasa, false);
+  assert.match(g.condicionQueFalla!, /placement Gmail 92% sobre 12 mediciones/);
+  assert.match(g.condicionQueFalla!, /§3 pide 95%/);
+
+  // EL MISMO 92%, otro receptor, veredicto OPUESTO. Sin el proveedor al lado, el número no se puede
+  // comparar contra ningún umbral: ésa es la razón por la que B2 tiene que existir antes que B1.
+  const enOutlook = medirPorProveedor(
+    [...inbox(11).map((p) => fila(p, "alguien@outlook.com")), fila("SPAM", "alguien@outlook.com")],
+    proveedorDe
+  );
+  const o = evaluarGate({ placement: enOutlook });
+  assert.equal(o.umbral, 0.9);
+  assert.equal(o.pasa, true, "92% pasa el umbral de Outlook aunque no pase el de Gmail");
+});
+
+test("con DOS receptores, cada uno pasa el SUYO: una tasa promediada daba PASA falso", () => {
+  // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO: el umbral se elegía por proveedor (`Math.max` sobre los
+  // que midieron) y se comparaba contra `placement.tasa`, que es la tasa AGREGADA de todos juntos.
+  // Gmail 9/10 (90%, por debajo de su propio 95%) + Outlook 10/10 (100%) ⇒ pooled 95% ⇒ pasa=true,
+  // cuando §3 evaluado sobre Gmail dice que no. Y un PASA falso alimenta la propuesta de SUBIR
+  // volumen, que es lo irreversible.
+  //
+  // Hoy no dispara en producción porque las dos semillas que miden son Gmail: está armado esperando
+  // a la primera semilla de Outlook.
+  const filas = [
+    ...inbox(9).map((p) => fila(p, "trazosvercel@gmail.com")),
+    fila("SPAM", "trazosvercel@gmail.com"),
+    ...inbox(10).map((p) => fila(p, "alguien@outlook.com"))
+  ];
+  const m = medirPorProveedor(filas, proveedorDe);
+  assert.equal(m.tasa, 0.95, "la agregada da justo el umbral de Gmail: por eso el defecto pasaba");
+  const g = evaluarGate({ placement: m, entregadosMta: 100, rechazadosMta: 0 });
+  assert.equal(g.pasa, false, "Gmail al 90% no pasa aunque Outlook esté al 100%");
+  assert.match(g.condicionQueFalla!, /placement Gmail 90% sobre 10 mediciones/, "y NOMBRA cuál falló");
+  assert.equal(g.proveedor, "gmail", "el proveedor que se reporta es el dueño del umbral aplicado");
+  assert.equal(g.umbral, 0.95);
+
+  // Y al revés: el que falla es Outlook y el mensaje tampoco puede decir "varios receptores 50%",
+  // que esconde de quién es el problema.
+  const alReves = medirPorProveedor(
+    [...inbox(10).map((p) => fila(p, "trazosvercel@gmail.com")), ...spam(10).map((p) => fila(p, "alguien@outlook.com"))],
+    proveedorDe
+  );
+  const o = evaluarGate({ placement: alReves, entregadosMta: 100, rechazadosMta: 0 });
+  assert.equal(o.pasa, false);
+  assert.match(o.condicionQueFalla!, /placement Outlook 0% sobre 10 mediciones/);
+  assert.doesNotMatch(o.condicionQueFalla!, /varios receptores/);
+
+  // Los dos por encima del suyo SÍ pasan: la regla es "todos el suyo", no "el más exigente sobre
+  // el promedio" ni "alguno alcanza".
+  const losDos = medirPorProveedor(
+    [...inbox(10).map((p) => fila(p, "trazosvercel@gmail.com")), ...inbox(10).map((p) => fila(p, "alguien@outlook.com"))],
+    proveedorDe
+  );
+  assert.equal(evaluarGate({ placement: losDos, entregadosMta: 100, rechazadosMta: 0 }).pasa, true);
+});
+
+test("el llamador SIN porProveedor se evalúa igual que antes: su tasa es de un receptor o de ninguno", () => {
+  // La firma permite pasar un placement pelado y hay que seguir sosteniéndolo: ahí agregada y por
+  // proveedor son el mismo número, así que comparar contra el umbral del proveedor es correcto.
+  const g = evaluarGate({ placement: { proveedor: "gmail", tasa: 0.9, muestra: 10 } });
+  assert.equal(g.pasa, false);
+  assert.match(g.condicionQueFalla!, /§3 pide 95% para Gmail/);
+});
+
+test("el gate PASA cuando la evidencia da: 24 de 24 en Gmail", () => {
+  const m = medirPorProveedor(inbox(24).map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  const g = evaluarGate({ placement: m });
+  assert.equal(g.pasa, true);
+  assert.equal(g.condicionQueFalla, null);
+});
+
+test("sin muestra el gate NO pasa, y lo dice: no sé ≠ está mal", () => {
+  const m = medirPorProveedor([fila("INBOX", "trazosvercel@gmail.com")], proveedorDe);
+  const g = evaluarGate({ placement: m });
+  assert.equal(g.pasa, false);
+  assert.match(g.condicionQueFalla!, /sin muestra suficiente: 1 de 4/);
+});
+
+test("cruzar el umbral permanente gana sobre cualquier placement", () => {
+  // Es irreversible: calentarlo no lo recupera, sólo gasta cupo. Va primero a propósito.
+  const m = medirPorProveedor(inbox(24).map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  const g = evaluarGate({ placement: m, cruzoUmbralPermanente: true });
+  assert.equal(g.pasa, false);
+  assert.match(g.condicionQueFalla!, /umbral permanente/);
+});
+
+test("rebotes por encima del 2% frenan el gate ANTES de mirar el placement", () => {
+  // §3: bounce <2%. Un dominio puede tener 100% de bandeja en la semilla y estar rebotando contra
+  // el resto del receptor — la semilla es una dirección, no el universo.
+  const m = medirPorProveedor(inbox(24).map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  const g = evaluarGate({ placement: m, entregadosMta: 90, rechazadosMta: 10 });
+  assert.equal(g.pasa, false);
+  assert.match(g.condicionQueFalla!, /rebotes 10% sobre 100 intentos/);
+});
+
+test("lo que el motor NO mide se DECLARA, nunca se asume bueno", () => {
+  // Ausencia de dato no es evidencia de que algo está bien. El gate dice, en su propia salida, qué
+  // umbrales de §3 no pudo evaluar: complaint rate (no hay ingesta de FBL), "sostenido 2-3 días"
+  // (la ventana es de N mediciones, no una serie diaria) y listas negras (el chequeo existe en
+  // checks/ip-network-checks.ts y ningún camino del plan lo llama).
+  const m = medirPorProveedor(inbox(24).map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  const g = evaluarGate({ placement: m });
+  assert.ok(g.sinInstrumento.some((s) => /complaint/.test(s)));
+  assert.ok(g.sinInstrumento.some((s) => /sostenido/.test(s)));
+  assert.ok(g.sinInstrumento.some((s) => /listas negras/.test(s)));
+  assert.ok(g.sinInstrumento.some((s) => /rebotes/.test(s)), "sin dato del MTA, los rebotes son 'no sé'");
+});
+
+test("EL GATE NO TOCA EL CUPO — sólo informa, y la distancia entre las dos varas es ENORME", () => {
+  // Cablearlo a una acción en el mismo commit cambiaría el comportamiento de la flota entera de
+  // golpe, y frenar de más es tan caro como frenar de menos: es el episodio del `placement-pause`,
+  // que paró al único dominio que calentaba bien. La decisión del día se toma SIN el gate.
+  //
+  // Y de paso fija la brecha que B1 vino a hacer visible: 4 de 6 en bandeja es 67%, una banda que
+  // §3 llama directamente "pausar" (<80%) y que el motor vigente responde con "bajar y seguir
+  // mandando". Las dos varas conviven a propósito; lo que no se puede es no saber que son dos.
+  const filas: Placement[] = [...inbox(4), ...spam(2)];
+  const delMotor = decidirCupoDeHoy({ ...base, diaN: 10, placements: filas });
+  const m = medirPorProveedor(filas.map((p) => fila(p, "trazosvercel@gmail.com")), proveedorDe);
+  assert.equal(evaluarGate({ placement: m }).pasa, false, "§3 lo rechaza: 67% está por debajo de su banda de pausa");
+  assert.equal(delMotor.accion, "bajar");
+  assert.ok(delMotor.cupo > 0, "y el motor vigente lo sigue mandando igual: son dos varas distintas");
+});
+
+// ══ EL CRUCE MTA × PLACEMENT ═════════════════════════════════════════════════════════════════════
+
+test("el MTA entregó y la semilla dice SPAM ⇒ es REPUTACIÓN, no bloqueo", () => {
+  // Los números REALES de producción el 2026-08-07 (corpfiling-infra.com), sobre los 5 días que
+  // cubre sender-measurement.json: el MTA entregó 20 a gmail.com y la semilla midió 12 (10 INBOX +
+  // 2 SPAM) ⇒ 2 casos de "entregado pero en SPAM" y 8 entregas que ninguna semilla vio.
+  //
+  // Con la ventana de PRODUCCIÓN (`WARMUP_LIVE_PLACEMENT_WINDOW=6`) el mismo dominio da 1 SPAM y 14
+  // sin medir, que es lo que corre de verdad. Las dos cifras son la misma medición vista con dos
+  // ventanas, y las dos están en el comentario de `cruzarEntregaConPlacement`.
+  const filas = [
+    ...Array.from({ length: 10 }, () => fila("INBOX", "trazosvercel@gmail.com")),
+    ...Array.from({ length: 2 }, () => fila("SPAM", "flomia33193@gmail.com"))
+  ];
+  const [c] = cruzarEntregaConPlacement({
+    filas,
+    porReceptor: [{ receptor: "gmail.com", entregados: 20, rechazados: 0, diferidos: 0 }],
+    atribuido: false
+  });
+  assert.equal(c!.receptor, "gmail.com");
+  assert.equal(c!.entregadosMta, 20);
+  assert.equal(c!.enSpam, 2);
+  assert.equal(c!.sinMedir, 8);
+  assert.match(c!.lectura, /es REPUTACIÓN, no bloqueo/);
+  assert.match(c!.lectura, /8 entrega\(s\) que ninguna semilla vio/);
+  // Los 58 nodos están en `atribucion.modo: "todo"`: el veredicto del MTA incluye el correo del
+  // otro inquilino y eso no se puede callar. Es la misma honestidad de la regla c4.
+  assert.match(c!.lectura, /TODO el correo del nodo/);
+});
+
+test("el MTA no entregó ⇒ es BLOQUEO y el placement no aplica", () => {
+  const [c] = cruzarEntregaConPlacement({
+    filas: [fila("SPAM", "trazosvercel@gmail.com")],
+    porReceptor: [{ receptor: "gmail.com", entregados: 0, rechazados: 40, diferidos: 3 }],
+    atribuido: true
+  });
+  assert.match(c!.lectura, /es BLOQUEO, el placement no aplica/);
+});
+
+test("sin dato del MTA el cruce dice 'no sé', no cero", () => {
+  // Medido: de los 6 dominios que calientan, CINCO tienen `porReceptor: []`, porque el escritor
+  // filtra los receptores con menos de 20 intentos y nuestro warmup manda ~2/día por dominio. El
+  // cruce vale hoy para UNO solo, y eso hay que decirlo en vez de mostrar un 0.
+  const [c] = cruzarEntregaConPlacement({ filas: [fila("INBOX", "trazosvercel@gmail.com")], porReceptor: [], atribuido: false });
+  assert.equal(c!.entregadosMta, null);
+  assert.equal(c!.sinMedir, null);
+  assert.match(c!.lectura, /no reporta gmail\.com en la ventana/);
+  assert.match(c!.lectura, /el cruce no se puede hacer/);
 });

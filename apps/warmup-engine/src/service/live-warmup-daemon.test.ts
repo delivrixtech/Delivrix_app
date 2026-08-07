@@ -10,6 +10,9 @@ import {
   lineaDeSemillas,
   elegirSemillaDelRegistro,
   puedeMedir,
+  intervaloConJitter,
+  dentroDeVentana,
+  instrumentoDeMedicion,
   type SeedDelDaemon
 } from "./live-warmup-daemon.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
@@ -606,6 +609,47 @@ test("CONTRATO: el cuerpo del loop usa la función compartida, no una copia de l
   );
 });
 
+test("CONTRATO: cada camino de envío DESCUENTA del cupo, y el gate del log mira el umbral permanente", async () => {
+  // POR QUÉ ES UN CONTRATO SOBRE LA FUENTE y no una corrida. Los dos defectos que fija están en el
+  // CUERPO del loop del daemon, que abre su propio Pool, sus mailers y su IMAP: cualquier test que
+  // "simule el for" sería una COPIA del loop, y una copia comparte el error con el original — es
+  // textual la lección que este repo ya pagó (el fixture escrito desde la suposición del wire de
+  // Bedrock escondió que `stop_reason` nunca se leía). Las reglas puras ya tienen sus tests
+  // (`puedeMandarTurno`, `evaluarGate`); lo que acá se fija es que el loop les dé el dato correcto.
+  const { readFile } = await import("node:fs/promises");
+  const fuente = await readFile("apps/warmup-engine/src/service/live-warmup-daemon.ts", "utf8");
+  const src = fuente
+    .split("\n")
+    .filter((l) => {
+      const t = l.trim();
+      return !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"));
+    })
+    .join("\n");
+  const veces = (re: RegExp): number => src.match(re)?.length ?? 0;
+
+  // 1. EL CONTADOR DEL DÍA SE ESCRIBE EN LOS DOS CAMINOS DE ENVÍO. El comentario del ciclo principal
+  //    declaraba cerrado el sobrepaso "con cupo 2 salían 3, todos los días", pero sólo cerró la pata
+  //    ciclo→continuación: adentro del `for (const hiloPrevio of abiertos)` el Map se LEÍA y nunca se
+  //    escribía, así que N hilos del MISMO dominio decidían contra la misma foto y salían N correos
+  //    reales por encima del cupo. Reproducido con la función real: cupo 6, `enviadosHoy` 5 y 4
+  //    hilos ⇒ los 4 dan permiso ⇒ 9 envíos. Y alcanzable hoy: en la Postgres de producción hay una
+  //    semilla con 8 hilos abiertos del mismo dominio. Era PRE-EXISTENTE, no de este lote.
+  assert.equal(
+    veces(/enviadosPorDominio\.set\(/g),
+    2,
+    "un camino de envío que no descuenta del cupo del día es un contador salteable: uno por el ciclo principal y otro por la continuación"
+  );
+
+  // 2. EL GATE DEL LOG MIRA LA CONDICIÓN IRREVERSIBLE. `evaluarGate` trata `cruzoUmbralPermanente`
+  //    como su PRIMERA condición, y el daemon la omitía: imprimía "gate §3: pasa" sobre un dominio
+  //    que ya cruzó el umbral permanente de bulk sender de Gmail, mientras `planDelDia` —que sí se lo
+  //    pasa— decía lo contrario del mismo dominio el mismo día. El dato ya estaba en scope.
+  assert.match(src, /cruzoUmbralPermanente: \(saludFlota/, "el gate del daemon lee la salud que ya tiene en la mano");
+  assert.equal(veces(/evaluarGate\(\{/g), 1, "un solo punto de llamada en el daemon: el veredicto no se arma dos veces");
+  // Y "pasa" se dice con lo que NO se pudo mirar: ausencia de dato no es evidencia de que algo está bien.
+  assert.match(src, /veredicto\.sinInstrumento\.length/, "el log dice cuántas condiciones de §3 quedaron sin instrumento");
+});
+
 test("CONTRATO: todos los Pool de pg del warmup registran listener de 'error'", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const f of ["apps/warmup-engine/src/service/live-warmup-daemon.ts", "scripts/ops/warmup-monitor.ts"]) {
@@ -687,4 +731,113 @@ test("sin lector no se inventa un veredicto: no se graba nada", async () => {
     enviado: ENVIADO, subject: "Re: algo", recorder, base: BASE_HILO, testId: "t-1", log: () => {}
   });
   assert.deepEqual(filas, [], "no medido y 'no llegó' no son lo mismo");
+});
+
+// ══ SE ROMPE EL METRÓNOMO (jitter) ═══════════════════════════════════════════════════════════════
+
+test("jitter: dos vueltas seguidas NO salen separadas por el mismo intervalo", () => {
+  // EL DEFECTO MEDIDO en el log de producción el 2026-08-07: los deltas entre vueltas son 91, 91,
+  // 91, 95, 92, 91, 92, 91 minutos. Un metrónomo de 91 minutos exactos, 24 h/día, todos los días.
+  // §3 del doc lista "cadencia de máquina" entre los errores que queman, y es la firma más barata
+  // de borrar que tiene el sistema.
+  const base = 90 * 60_000;
+  const muestras = Array.from({ length: 200 }, () => intervaloConJitter(base, Math.random()));
+  assert.ok(new Set(muestras).size > 100, "dos corridas no pueden dar el mismo delta");
+  assert.ok(Math.min(...muestras) >= base * 0.65, "el piso es -35%");
+  assert.ok(Math.max(...muestras) <= base * 1.35, "el techo es +35%");
+});
+
+test("jitter: NO cambia el volumen — la media es el intervalo configurado", () => {
+  // Es la propiedad que hace que esto no necesite autorización del operador: con las mismas vueltas
+  // sólo cambia CUÁNDO salen. `0,65 + azar·0,7` tiene media 1,0 exacta.
+  const base = 90 * 60_000;
+  const n = 20_000;
+  const media = Array.from({ length: n }, (_, i) => intervaloConJitter(base, (i + 0.5) / n)).reduce((a, b) => a + b, 0) / n;
+  assert.ok(Math.abs(media - base) / base < 0.01, `la media (${Math.round(media)}) tiene que dar el intervalo (${base})`);
+});
+
+test("jitter: un intervalo mínimo nunca cae por debajo de 1 s", () => {
+  assert.equal(intervaloConJitter(1000, 0), 1000);
+});
+
+test("CONTRATO: NINGUNA espera del loop usa el intervalo pelado", async () => {
+  // El intervalo estaba escrito SEIS veces en el cuerpo del loop: dejar una sola sin jitter alcanza
+  // para que el patrón vuelva a aparecer en el log, y es exactamente el modo en que este defecto se
+  // conservó tanto tiempo. Se lee el fuente sin comentarios, igual que el otro contrato de acá.
+  const { readFile } = await import("node:fs/promises");
+  const src = (await readFile("apps/warmup-engine/src/service/live-warmup-daemon.ts", "utf8"))
+    .split("\n")
+    .filter((l) => {
+      const t = l.trim();
+      return !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"));
+    })
+    .join("\n");
+  //
+  // SE CUENTAN LAS OCURRENCIAS, NO SE BUSCA UNA CADENA. El assert anterior era
+  // `doesNotMatch(/await sleep\(cfg\.intervalMs\)/)` y estaba VERDE con dos esperas peladas, porque
+  // ninguna de las dos escribía esa cadena literal: `await sleep(siguiente.box ?
+  // Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs)` y `await sleep(Math.min(cfg.intervalMs,
+  // 60_000))`. Cualquier envoltorio evade una cadena literal; lo que no se evade es que TODA
+  // aparición del intervalo dentro del loop esté adentro de `intervaloConJitter(`.
+  const loop = src.slice(src.indexOf("const dormirIntervalo"));
+  const total = [...loop.matchAll(/cfg\.intervalMs/g)].map((m) => m.index as number);
+  const conJitter = new Set([...loop.matchAll(/intervaloConJitter\(cfg\.intervalMs/g)].map((m) => (m.index as number) + "intervaloConJitter(".length));
+  const peladas = total.filter((i) => !conJitter.has(i));
+  assert.ok(total.length >= 3, `el barrido tiene que ver las esperas del loop, vio ${total.length}`);
+  assert.deepEqual(
+    peladas.map((i) => loop.slice(Math.max(0, i - 60), i + 20).split("\n").pop()),
+    [],
+    "una espera del loop usa el intervalo PELADO: 90 min clavados, sin el ±35%"
+  );
+});
+
+// ══ LA FRANJA HORARIA ════════════════════════════════════════════════════════════════════════════
+
+test("la ventana horaria por defecto son las 24 h: hoy no aparta una sola vuelta", () => {
+  assert.equal(resolveLiveDaemonConfig({} as NodeJS.ProcessEnv).ventanaUtc, null);
+  for (let h = 0; h < 24; h++) assert.equal(dentroDeVentana(h, null), true);
+});
+
+test("con franja configurada, la madrugada UTC queda afuera", () => {
+  // Medido: el 25% del volumen histórico caía entre las 00:00 y las 06:00 UTC, o sea de madrugada
+  // en el huso del receptor. La franja SÓLO puede bajar el volumen del día, nunca subirlo.
+  const v = resolveLiveDaemonConfig({ WARMUP_LIVE_VENTANA_UTC: "08-22" } as never).ventanaUtc;
+  assert.deepEqual(v, { desde: 8, hasta: 22 });
+  assert.equal(dentroDeVentana(3, v), false);
+  assert.equal(dentroDeVentana(8, v), true);
+  assert.equal(dentroDeVentana(21, v), true);
+  assert.equal(dentroDeVentana(22, v), false, "el borde superior es exclusivo");
+});
+
+test("una franja ilegible cae a las 24 h — FAIL-OPEN, y a propósito", () => {
+  // Al revés que el resto de la config. Una ventana rota interpretada como "no enviar nunca"
+  // apagaría el warmup entero por un typo y SIN ruido: el daemon seguiría vivo, girando y sin
+  // mandar. Caer a 24 h es exactamente el comportamiento de hoy.
+  for (const basura of ["", "  ", "de 8 a 22", "22-8", "8-99", "8-8", "-3-5"]) {
+    assert.equal(resolveLiveDaemonConfig({ WARMUP_LIVE_VENTANA_UTC: basura } as never).ventanaUtc, null, `con "${basura}"`);
+  }
+});
+
+// ══ EL INSTRUMENTO DE MEDICIÓN ═══════════════════════════════════════════════════════════════════
+
+const semilla = (address: string, auth: SeedDelDaemon["auth"]): SeedDelDaemon => ({
+  address, provider: "gmail", enabled: true, auth
+});
+
+test("el instrumento es determinista: la misma semilla en cada vuelta, o no sirve de nada", () => {
+  // Si rotara, todas las semillas terminarían entrenadas y no se ganaría nada. El orden del archivo
+  // no puede decidirlo: se ordena por dirección.
+  const a = [semilla("trazosvercel@gmail.com", "imap_password"), semilla("flomia33193@gmail.com", "imap_password")];
+  const b = [...a].reverse();
+  assert.equal(instrumentoDeMedicion(a), "flomia33193@gmail.com");
+  assert.equal(instrumentoDeMedicion(a), instrumentoDeMedicion(b), "no puede depender del orden del registro");
+});
+
+test("las semillas SOLO-DESTINO no pueden ser el instrumento: no miden nada", () => {
+  const seeds = [semilla("solodestino@gmail.com", "none"), semilla("mide@gmail.com", "imap_password")];
+  assert.equal(instrumentoDeMedicion(seeds), "mide@gmail.com");
+});
+
+test("sin ninguna semilla que mida no hay instrumento", () => {
+  assert.equal(instrumentoDeMedicion([semilla("solodestino@gmail.com", "none")]), null);
 });

@@ -10,7 +10,20 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { decidirCupoDeHoy, medirPlacement, rampaDesdeEnv, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import {
+  cruzarEntregaConPlacement,
+  decidirCupoDeHoy,
+  evaluarGate,
+  medirPlacement,
+  medirPorProveedor,
+  rampaDesdeEnv,
+  type CruceEntregaPlacement,
+  type DecisionDiaria,
+  type EntregaPorReceptor,
+  type FilaPlacement,
+  type GateDelDoc,
+  type PlacementDeProveedor
+} from "../domain/decision-diaria.ts";
 import { progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import type { IsoWeekday } from "../domain/ramp.ts";
 import type { PgClient } from "../store/pg-stores.ts";
@@ -118,6 +131,15 @@ export interface SaludDominio {
    * que NO es cero. Ausente = el archivo es de una medición vieja que todavía no traía el campo.
    */
   entregados?: number | null;
+  /**
+   * Entregados/rechazados/diferidos POR RECEPTOR, tal como los dejó el barrido del mail.log. Es la
+   * mitad "lo que dijo NUESTRO MTA" del cruce de `cruzarEntregaConPlacement`.
+   *
+   * Ausente o vacío es lo NORMAL hoy, no un error: el escritor filtra los receptores con menos de 20
+   * intentos en la ventana, y nuestro warmup manda ~2/día por dominio. Medido el 2026-08-07: de los
+   * 6 dominios que calientan, sólo corpfiling-infra.com tiene una fila (gmail.com, 20 entregados).
+   */
+  porReceptor?: readonly EntregaPorReceptor[];
 }
 
 /**
@@ -352,8 +374,23 @@ export async function placementsDeDominio(pg: PgClient, domain: string, ventana:
   // El campo ya viajaba en la fila (`detail.origen`), sólo faltaba la cláusula. `IS DISTINCT FROM`
   // y no `<>` a propósito: las filas del ciclo principal no tienen `origen` y `NULL <> 'x'` es NULL,
   // que las descartaría a TODAS y dejaría la rampa sin evidencia.
-  const { rows } = await pg.query<{ placement: string | null }>(
-    `SELECT placement FROM warmup_activity
+  return (await filasDePlacement(pg, domain, ventana)).map((f) => f.placement);
+}
+
+/**
+ * LA MISMA VENTANA, con la SEMILLA que produjo cada medición.
+ *
+ * Es una función nueva y `placementsDeDominio` pasó a ser un `.map()` sobre ella, en vez de dos
+ * consultas paralelas: la cláusula que excluye las continuaciones de hilo ya se escribió UNA vez y
+ * quedó afuera del otro lector (`recentPlacements`), y hay un test que existe sólo por eso. Dos SQL
+ * con la misma regla es exactamente cómo se abre esa divergencia; ésta es una sola.
+ *
+ * El campo `seed_inbox` ya estaba en cada fila desde el primer día. Derivar el proveedor de ahí es
+ * un LOOKUP contra el registro de semillas, no una migración.
+ */
+export async function filasDePlacement(pg: PgClient, domain: string, ventana: number): Promise<FilaPlacement[]> {
+  const { rows } = await pg.query<{ placement: string | null; seed_inbox: string | null }>(
+    `SELECT placement, seed_inbox FROM warmup_activity
       WHERE kind = 'measured' AND placement IS NOT NULL AND node_domain = $1
         AND (detail->>'origen') IS DISTINCT FROM 'continuación de hilo'
         AND occurred_at > now() - interval '${VENTANA_PLACEMENT_DIAS} days'
@@ -361,8 +398,10 @@ export async function placementsDeDominio(pg: PgClient, domain: string, ventana:
     [domain, ventana]
   );
   return rows
-    .map((r) => (r.placement ?? "").toUpperCase())
-    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER" || p === "MISSING");
+    .map((r) => ({ placement: (r.placement ?? "").toUpperCase(), semilla: (r.seed_inbox ?? "").toLowerCase() }))
+    .filter((f): f is FilaPlacement =>
+      f.placement === "INBOX" || f.placement === "SPAM" || f.placement === "PROMOTIONS" || f.placement === "OTHER" || f.placement === "MISSING"
+    );
 }
 
 /**
@@ -418,6 +457,88 @@ export async function enviosDelDia(pg: PgClient, diasAtras: number): Promise<Map
     [n]
   );
   return new Map(rows.map((r) => [r.node_domain, Number(r.n)]));
+}
+
+/**
+ * Cuánto se retrocede buscando el último cupo autorizado. 10 días es la misma ventana con la que ya
+ * se leen los placements: más atrás el dato deja de describir al dominio de hoy.
+ */
+export const VENTANA_CUPO_AUTORIZADO = 10;
+
+/**
+ * El ÚLTIMO CUPO AUTORIZADO CONOCIDO a partir de hace `diasAtras` días, por dominio. `2` = "lo que
+ * este dominio tenía autorizado anteayer, o el día anterior con dato si anteayer no mandó".
+ *
+ * LA AUSENCIA NO PUEDE SER PERMISO, y lo era: esto miraba UN día puntual y sólo devuelve dominios
+ * con una fila `sent` ESE día. Sin entrada, `dailyQuota` no clampea y sale la rampa entera — o sea
+ * que el dominio que estuvo QUIETO anteayer, que es justo el que puede pegar el salto, era el que
+ * se quedaba sin freno, y el que estuvo activo se llevaba el clamp. Es la MISMA asimetría que el
+ * comentario de abajo dice haber cerrado al dejar de usar `enviosDelDia` ("frenaba a los sanos y
+ * soltaba a los que no mandaron"), con otra fuente de datos.
+ *
+ * Medido contra la Postgres de producción (10 días de `warmup_activity`, kind `sent`): de los 17
+ * pares dominio-día con envíos, sólo 6 tienen envío dos días antes ⇒ el clamp faltaba el 65% de las
+ * veces. El 2026-08-06 mandaron 6 dominios y sólo uno había mandado el 08-04: 5 de 6 sin clamp.
+ * Con el tope GLOBAL de 14 vueltas para toda la flota, un día sin fila es lo normal, no el borde.
+ *
+ * ES OTRA COSA QUE `enviosDelDia`, y confundirlas es lo que dejó al clamp anti-firma del §10 sin
+ * entrada desde el diseño v1:
+ *   · `enviosDelDia`         cuenta FILAS: correos que salieron. Aplastado por el tope GLOBAL del
+ *     daemon (14 vueltas para toda la flota), da 1-8 por dominio y casi siempre 2.
+ *   · `cupoAutorizadoVigente` lee lo que la DECISIÓN autorizó, que es la magnitud que el §10
+ *     quiere acotar. El daemon lo graba en `detail.cupoDelDia` del evento `sent`.
+ *
+ * Lo más barato que funciona y no cuesta migración: `detail` ya es JSONB y ya se escribe en cada
+ * envío. No hay tabla nueva, no hay índice nuevo.
+ *
+ * MAX y no MIN ni el último: el cupo de un dominio puede cambiar DENTRO del día (junta su cuarta
+ * medición y pasa de `sostener 2` a la rampa). Con MIN, un `frenar` de la mañana dejaría el valor en
+ * 0 y `dailyQuota` no clampea con 0 — o sea que la única elección que apaga el clamp sería la de un
+ * día malo. MAX es el techo que el dominio tuvo autorizado, que es lo que el clamp acota.
+ *
+ * El `~ '^[0-9]+$'` no es paranoia decorativa: sin él, UNA fila con basura en ese campo hace que el
+ * cast reviente la consulta entera, y el llamador trata el fallo de lectura como "no mando esta
+ * vuelta". Un dato corrupto no puede apagar el warmup.
+ */
+export async function cupoAutorizadoVigente(pg: PgClient, diasAtras: number, ventanaDias = VENTANA_CUPO_AUTORIZADO): Promise<Map<string, number>> {
+  const n = Math.max(0, Math.floor(diasAtras));
+  const v = Math.max(n, Math.floor(ventanaDias));
+  const { rows } = await pg.query<{ node_domain: string; dia: string; cupo: string | number }>(
+    `SELECT node_domain, date_trunc('day', occurred_at, 'UTC') AS dia, MAX((detail->>'cupoDelDia')::int) AS cupo
+       FROM warmup_activity
+      WHERE kind = 'sent'
+        AND detail->>'cupoDelDia' ~ '^[0-9]+$'
+        AND occurred_at >= date_trunc('day', now(), 'UTC') - make_interval(days => $2::int)
+        AND occurred_at <  date_trunc('day', now(), 'UTC') - make_interval(days => $1::int - 1)
+      GROUP BY node_domain, date_trunc('day', occurred_at, 'UTC')`,
+    [n, v]
+  );
+  return ultimoAutorizado(rows);
+}
+
+/**
+ * De una fila por dominio y día, el cupo del DÍA MÁS RECIENTE de cada dominio. Pura: acá vive el
+ * arrastre, así que se puede fijar con un test sin una Postgres al lado.
+ *
+ * El más reciente y no el MÁXIMO de la ventana: en una rampa hacia abajo el máximo es el valor
+ * ANTIGUO, y clampear con él es casi no clampear. Dentro de un mismo día sigue mandando el MAX,
+ * que lo resuelve el `GROUP BY` de la consulta y por el motivo de siempre (un `frenar` de la mañana
+ * dejaría el día en 0, y con 0 el clamp no actúa).
+ */
+export function ultimoAutorizado(filas: ReadonlyArray<{ node_domain: string; dia?: string; cupo: string | number }>): Map<string, number> {
+  const mejor = new Map<string, { dia: number; cupo: number }>();
+  for (const f of filas) {
+    const cupo = Number(f.cupo);
+    if (!Number.isFinite(cupo)) continue;
+    // Una fecha ilegible entra como la más vieja en vez de tirar la fila: perder el dato haría que
+    // el dominio quede SIN clamp, que es justo el fallo que este arreglo viene a cerrar.
+    const t = Date.parse(String(f.dia ?? ""));
+    const dia = Number.isFinite(t) ? t : 0;
+    const previo = mejor.get(f.node_domain);
+    if (previo !== undefined && previo.dia >= dia) continue;
+    mejor.set(f.node_domain, { dia, cupo });
+  }
+  return new Map([...mejor].map(([k, v]) => [k, v.cupo]));
 }
 
 /**
@@ -481,12 +602,21 @@ export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio>
         estado?: string;
         cruzados?: string[];
         entregados?: number | null;
+        porReceptor?: EntregaPorReceptor[];
         atribucion?: { modo?: "nuestro" | "todo" };
       }>;
     };
     const m = new Map<string, SaludDominio>();
     for (const b of j.bandejas ?? []) {
-      if (b.domain) m.set(b.domain, { estado: b.estado, cruzados: b.cruzados, entregados: b.entregados, modo: b.atribucion?.modo });
+      if (b.domain) {
+        m.set(b.domain, {
+          estado: b.estado,
+          cruzados: b.cruzados,
+          entregados: b.entregados,
+          porReceptor: b.porReceptor,
+          modo: b.atribucion?.modo
+        });
+      }
     }
     return m.size > 0 ? m : undefined;
   } catch {
@@ -514,6 +644,26 @@ export async function leerReputacion(ruta: string): Promise<Map<string, AuthDomi
   }
 }
 
+/**
+ * El PROVEEDOR de cada semilla, del registro (warmup-seeds.json). Sólo se leen `address` y
+ * `provider`: el archivo tiene además el app password cifrado y eso no sale de acá ni por error.
+ *
+ * Ausente o roto ⇒ `undefined` ⇒ cada medición sale con proveedor `desconocido`, que es la verdad.
+ * NO se cae a "gmail": suponer el proveedor es la mentira por omisión que este dato vino a cerrar.
+ */
+export async function leerProveedoresDeSemillas(ruta: string): Promise<Map<string, string> | undefined> {
+  try {
+    const j = JSON.parse(await readFile(ruta, "utf8")) as { seeds?: Array<{ address?: string; provider?: string }> };
+    const m = new Map<string, string>();
+    for (const s of j.seeds ?? []) {
+      if (s.address && s.provider) m.set(s.address.trim().toLowerCase(), s.provider);
+    }
+    return m.size > 0 ? m : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── El plan ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface PlanDeDominio {
@@ -532,12 +682,32 @@ export interface PlanDeDominio {
      * operador toma por bueno un dato que nunca existió.
      */
     error: string | null;
+    /**
+     * QUIÉN MIDIÓ. `null` = nadie. `"varios"` = más de un receptor.
+     *
+     * Sin este campo, `tasa` mentía por omisión: las dos únicas semillas que miden son Gmail, así
+     * que "83% inbox" era 83%-EN-GMAIL presentado como placement a secas. Es el campo que
+     * `artefactos.ts` tiene que ver no-nulo a las 24 h del despliegue.
+     */
+    proveedor: string | null;
+    /** Uno por receptor, con los que NO midieron en `tasa: null`. Nunca 0% por ausencia. */
+    porProveedor: PlacementDeProveedor[];
   };
   cupoFisico: number | null;
   enviadosHoy: number;
   /** `true` si el nodo ya rebotó hoy por cupo: el daemon lo saltea. */
   rebotoHoy: boolean;
   decision: DecisionDiaria;
+  /**
+   * El veredicto de §3 del doc de auditoría, evaluado por código. SOLO INFORMA: no frena, no suelta
+   * y no cambia ningún cupo — `decidirCupoDeHoy` ni lo mira. Al modelo le llega esto, no el criterio.
+   */
+  gate: GateDelDoc;
+  /**
+   * Lo que dijo NUESTRO MTA contra dónde cayó, por receptor. El dato que un servicio comprado no
+   * puede dar, porque no tiene el MTA. Vacío cuando no hay con qué cruzar, nunca inventado.
+   */
+  cruce: CruceEntregaPlacement[];
 }
 
 export interface PlanDelDia {
@@ -563,6 +733,16 @@ export interface PlanInput {
   saludFile?: string;
   /** Foto de autenticación de la flota (warmup-reputacion.json). Opcional: sin ella no excluye nada. */
   reputacionFile?: string;
+  /**
+   * Registro de semillas (warmup-seeds.json). De ahí sale el PROVEEDOR de cada medición.
+   *
+   * TIENE DEFAULT, y ésa es la diferencia con `saludFile` y `reputacionFile`. Los llamadores vivos
+   * de `planDelDia` (scripts/ops/warmup-monitor.ts, o sea lo que el agente le reporta al jefe) NO
+   * pasan los archivos opcionales: con este campo opcional-sin-default, `placement.proveedor` habría
+   * salido `desconocido` en producción para siempre y el lote entero sería otra mano prometida y no
+   * cableada. El default es la MISMA ruta que ya usa el daemon.
+   */
+  seedsFile?: string;
   /** Pool configurado, usado solo si la medición del cupo está vencida. */
   poolConfigurado: readonly string[];
   ventanaPlacement: number;
@@ -583,6 +763,8 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
   const cupos = await leerCuposFisicos(input.capFile, ahora);
   const salud = input.saludFile ? await leerSalud(input.saludFile) : undefined;
   const auth = input.reputacionFile ? await leerReputacion(input.reputacionFile) : undefined;
+  const proveedores = await leerProveedoresDeSemillas(input.seedsFile ?? rutaInventario("warmup-seeds.json"));
+  const proveedorDe = (semilla: string): string | null => proveedores?.get(semilla.trim().toLowerCase()) ?? null;
   const pool = elegirPool(cupos, input.poolConfigurado, salud, auth);
 
   const lecturasFallidas: string[] = [];
@@ -591,15 +773,19 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
     return null;
   };
 
-  const [historial, enviados, rebotados, primerEnvio, hace2Dias] = await Promise.all([
+  const [historial, enviados, rebotados, primerEnvio, hace2Dias, cupoHace2Dias] = await Promise.all([
     historialDeEnvios(input.pg).catch(anotar("historial de envíos")),
     enviosDeHoy(input.pg).catch(anotar("envíos de hoy")),
     boxesSinCupoHoy(input.pg).catch(anotar("nodos que rebotaron hoy")),
     primerEnvioPorDominio(input.pg).catch(anotar("primer envío por dominio")),
-    // La entrada del clamp 3×/48h. Si falla se declara y se decide sin ella: el clamp sólo puede
-    // BAJAR el cupo, así que perderlo no abre ninguna puerta que estuviera cerrada — al revés de
-    // las otras cuatro lecturas, donde un fallo sí sería fail-open.
-    enviosDelDia(input.pg, 2).catch(anotar("envíos de hace 2 días"))
+    // El piso del "sostener": lo que el dominio REALMENTE mandó hace dos días. Va topado por la
+    // rampa, así que no puede inflar nada.
+    enviosDelDia(input.pg, 2).catch(anotar("envíos de hace 2 días")),
+    // La entrada del clamp 3×/48h, que hasta este cambio no existía en ningún lado. Si falla se
+    // declara y se decide sin ella: el clamp sólo puede BAJAR el cupo, así que perderlo no abre
+    // ninguna puerta que estuviera cerrada — al revés de las otras cuatro lecturas, donde un fallo
+    // sí sería fail-open.
+    cupoAutorizadoVigente(input.pg, 2).catch(anotar("cupo autorizado de hace 2 días"))
   ]);
 
   // ISO weekday del receptor: 1 = lunes … 7 = domingo. `getUTCDay()` da 0 = domingo.
@@ -615,11 +801,12 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
   const dominios: PlanDeDominio[] = [];
   for (const dominio of pool.boxes) {
     let errorPlacement: string | null = null;
-    const placements = await placementsDeDominio(input.pg, dominio, input.ventanaPlacement).catch((e: unknown) => {
+    const filas = await filasDePlacement(input.pg, dominio, input.ventanaPlacement).catch((e: unknown) => {
       errorPlacement = e instanceof Error ? e.message : String(e);
       lecturasFallidas.push(`placement de ${dominio}: ${errorPlacement}`);
-      return [] as Placement[];
+      return [] as FilaPlacement[];
     });
+    const placements: Placement[] = filas.map((f) => f.placement);
     // El día sale del PRIMER ENVÍO REAL (agregado en la base), no del historial recortado. Si esa
     // lectura falló, se cae al historial: peor, pero mejor que perder el día entero.
     const desdeReal = primerEnvio?.get(dominio);
@@ -640,9 +827,32 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       // cupo distinto del que se ejecuta — la divergencia que ya se pagó con las dos palancas de la
       // rampa.
       ...(hace2Dias?.get(dominio) !== undefined ? { cupoHace2Dias: hace2Dias.get(dominio)! } : {}),
+      // La entrada del clamp anti-firma. El MISMO dato que el daemon, por la misma razón que las
+      // palancas de la rampa: si el plan decidiera sin él, el panel volvería a anunciar un cupo
+      // distinto del que se ejecuta.
+      ...(cupoHace2Dias?.get(dominio) !== undefined ? { cupoAutorizadoHace2Dias: cupoHace2Dias.get(dominio)! } : {}),
       isoWeekday,
       limiteDiario: rampa.limiteDiario,
-      pasoPorDia: rampa.pasoPorDia
+      pasoPorDia: rampa.pasoPorDia,
+      soloDiasHabiles: rampa.soloDiasHabiles
+    });
+    // El placement CON su receptor, y el veredicto de §3 evaluado por código. Los dos son LECTURA:
+    // `decidirCupoDeHoy` ya decidió arriba y ninguno de los dos lo toca.
+    const porProveedor = medirPorProveedor(filas, proveedorDe);
+    const saludDelDominio = salud?.get(dominio);
+    const cruce = cruzarEntregaConPlacement({
+      filas,
+      porReceptor: saludDelDominio?.porReceptor,
+      atribuido: saludDelDominio?.modo === "nuestro"
+    });
+    // El gate mira los rebotes DEL RECEPTOR que midió, no el total del nodo: un dominio puede estar
+    // entregando perfecto en Gmail y rebotando en Yahoo, y §3 razona por proveedor.
+    const rebotesDelQueMidio = cruce.find((c) => c.medidos > 0);
+    const gate = evaluarGate({
+      placement: porProveedor,
+      entregadosMta: rebotesDelQueMidio?.entregadosMta ?? null,
+      rechazadosMta: rebotesDelQueMidio?.rechazadosMta ?? null,
+      cruzoUmbralPermanente: (saludDelDominio?.cruzados ?? []).length > 0
     });
     dominios.push({
       dominio,
@@ -656,12 +866,18 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       placement: {
         tasa: medirPlacement(placements).tasa,
         muestra: medirPlacement(placements).muestra,
-        error: errorPlacement
+        error: errorPlacement,
+        // `medirPorProveedor` agrega con la MISMA `medirPlacement` de arriba, así que `tasa` y
+        // `muestra` no pueden divergir de la cuenta que tomó la decisión.
+        proveedor: porProveedor.proveedor,
+        porProveedor: porProveedor.porProveedor
       },
       cupoFisico,
       enviadosHoy: enviados?.get(dominio) ?? 0,
       rebotoHoy: rebotados?.has(dominio) ?? false,
-      decision
+      decision,
+      gate,
+      cruce
     });
   }
 

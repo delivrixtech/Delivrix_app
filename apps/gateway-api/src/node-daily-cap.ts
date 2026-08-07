@@ -411,15 +411,38 @@ export interface CapFlota {
 export function porEncimaDelTecho(input: {
   /** Dominios que la medición de la flota marcó cerca del umbral permanente y que NO lo cruzaron. */
   cerca: readonly string[];
+  /**
+   * LOS QUE YA CRUZARON, y por qué tienen que entrar acá.
+   *
+   * `flota.cerca` EXCLUYE a los cruzados por diseño (ver el comentario de `HechosWarmup.flota.cerca`:
+   * estar en las dos listas hacía contar el mismo dominio dos veces). La consecuencia no buscada es
+   * que esta función quedaba ciega justo en los nodos MÁS CARGADOS de la flota — los únicos que ya
+   * demostraron que su volumen alcanza para cruzar un umbral permanente.
+   *
+   * Medido el 2026-08-07 sobre la flota real: 9 dominios con el nodo cableado a 15.000/día (3× el
+   * umbral permanente de Gmail) moviendo entre 9.910 y 11.025 mensajes por día, y 8 de esos 9
+   * figuran `cerca=["yahoo_aol"]` en su bandeja. O sea: ya perdieron Gmail para siempre y están
+   * caminando hacia un SEGUNDO umbral permanente con el freno puesto siete veces más arriba de lo
+   * que hay que frenar — y ninguna regla del canal los miraba, porque el llamador los descartaba
+   * antes de llegar hasta acá.
+   *
+   * Cruzar uno no es razón para dejar de vigilar el siguiente: es exactamente al revés.
+   */
+  cruzados?: readonly string[];
   /** La última lectura del cap por nodo. */
   nodos: readonly { domain: string; cap: number | null }[];
 }): Array<{ dominio: string; cap: number }> {
   const capDe = new Map(input.nodos.map((n) => [n.domain.toLowerCase(), n.cap]));
+  // Dedupe por nombre normalizado: si el llamador manda un dominio en las dos listas (o dos veces
+  // con distinta capitalización), sale UNA fila. Con dos, la firma del hecho de la regla d2 cambia
+  // sola y el aviso se repite sin que nada haya cambiado.
+  const candidatos = new Map<string, string>();
+  for (const d of [...input.cerca, ...(input.cruzados ?? [])]) if (!candidatos.has(d.toLowerCase())) candidatos.set(d.toLowerCase(), d);
   // SALE EL CAP AL LADO DEL NOMBRE. Con la lista de nombres sola, el aviso de daño decía "tiene el
   // cupo del nodo por encima del techo que aguanta el dominio" y la respuesta textual del jefe fue
   // "No entiendo, es decir ?". Los dos números —15.000 cableado y 2.000 de techo— son lo único que
   // convierte ese mensaje en una acción.
-  return input.cerca
+  return [...candidatos.values()]
     .flatMap((d) => {
       const cap = capDe.get(d.toLowerCase());
       return typeof cap === "number" && cap > TECHO_DURO_POR_DOMINIO ? [{ dominio: d, cap }] : [];

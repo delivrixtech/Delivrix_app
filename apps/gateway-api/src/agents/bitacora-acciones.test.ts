@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bitacoraVacia, idDe, juzgar, lineasParaPrompt, registrar, type Veredicto } from "./bitacora-acciones.ts";
+import { bitacoraVacia, daLoMismo, idDe, juzgar, lineasParaPrompt, registrar, type Bitacora, type Veredicto } from "./bitacora-acciones.ts";
 
 const T = (n: number): string => `2026-08-0${n}T10:00:00.000Z`;
 
@@ -86,4 +86,97 @@ test("la rotación nunca tira una acción sin veredicto", () => {
   b = registrar(b, { accion: "frenar_dominio", objetivo: "sin-juzgar.com", motivo: "m", estado: "ejecutada", cuando: T(3) });
   assert.ok(b.entradas.length <= 41, "acota el archivo");
   assert.ok(b.entradas.some((e) => e.objetivo === "sin-juzgar.com"), "conserva la que falta juzgar");
+});
+
+test("LA PODA CUMPLE EL TOPE AUNQUE NADIE HAYA JUZGADO NADA", () => {
+  // Medido en warmup-acciones.json de la Mac Studio: 54 entradas contra un tope de 40 (135%), con 0
+  // veredictos. El recorte solo descartaba entradas CON veredicto, y `juzgar` corre únicamente
+  // sobre `frenar_dominio` — de la que no hay UNA sola entrada en el archivo. O sea que MAX_ENTRADAS
+  // estaba muerta por construcción y el JSON crecía sin techo, en un archivo que se lee, parsea,
+  // re-serializa y reescribe ENTERO bajo lock en cada vuelta.
+  let b = bitacoraVacia();
+  for (let i = 0; i < 45; i++) {
+    b = registrar(b, { accion: "diagnosticar_dominio", objetivo: `d${i}.com`, motivo: "m", estado: "ejecutada", cuando: `2026-08-07T10:${String(i).padStart(2, "0")}:00.000Z` });
+  }
+  assert.ok(b.entradas.length <= 40, `el tope se cumple sin un solo veredicto (fueron ${b.entradas.length})`);
+  // Y lo que sobrevive es lo más RECIENTE: una entrada que nadie tocó en horas ya no corta ningún bucle.
+  assert.ok(b.entradas.some((e) => e.objetivo === "d44.com"));
+  assert.ok(!b.entradas.some((e) => e.objetivo === "d0.com"));
+});
+
+test("las juzgadas se tiran PRIMERO: de esas ya se aprendió lo que había", () => {
+  let b = bitacoraVacia();
+  for (let i = 0; i < 40; i++) {
+    b = registrar(b, { accion: "medir_dominio", objetivo: `d${i}.com`, motivo: "m", estado: "ejecutada", antes: { muestra: 0 }, cuando: `2026-08-07T${String(10 + Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00.000Z` });
+  }
+  // La más VIEJA con veredicto es la primera candidata, aunque haya otras más viejas sin él.
+  b = juzgar(b, idDe("medir_dominio", "d5.com"), { cuando: "2026-08-07T12:00:00.000Z", datos: { muestra: 3 } }, () => ({ cuando: "", resultado: "sirvio", medido: "3 mediciones nuevas" }));
+  b = registrar(b, { accion: "medir_dominio", objetivo: "nuevo.com", motivo: "m", estado: "ejecutada", cuando: "2026-08-07T13:00:00.000Z" });
+  assert.ok(!b.entradas.some((e) => e.objetivo === "d5.com"), "la juzgada se va antes que las viejas sin juzgar");
+  assert.ok(b.entradas.some((e) => e.objetivo === "d0.com"), "y la vieja SIN juzgar se queda: falta juzgarla");
+});
+
+test("daLoMismo: dos resultados IDÉNTICOS seguidos son un bucle; uno distinto lo resetea", () => {
+  // `diagnosticar_dominio bizregistry-ops.com` se pidió 34 veces y devolvió 34 veces lo mismo.
+  const igual = { accion: "diagnosticar_dominio", objetivo: "bizregistry-ops.com", motivo: "m", estado: "ejecutada" as const, detalle: "sin datos en el log" };
+  let b = registrar(null, { ...igual, cuando: T(1) });
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), null, "la primera vez no es un bucle");
+  b = registrar(b, { ...igual, cuando: T(2) });
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), 2, "las últimas dos dieron lo mismo");
+
+  // Un resultado distinto es información nueva: el bucle se corta solo y volver a preguntar deja de
+  // ser repetir.
+  b = registrar(b, { ...igual, detalle: "ahora sí: CERRADO en Gmail", cuando: T(3) });
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), null);
+
+  // Y una acción que nunca se pidió no tiene bucle que cortar.
+  assert.equal(daLoMismo(b, "medir_dominio", "otro.com"), null);
+  assert.equal(daLoMismo(null, "medir_dominio", "otro.com"), null);
+});
+
+test("los registros VIEJOS sin detalleIgualSeguidas no cortan nada", () => {
+  // El archivo de producción tiene 54 entradas escritas antes de que el campo existiera. Ausente
+  // cuenta como "primera vez", que es la dirección segura: no frena una consulta legítima.
+  const viejo: Bitacora = { version: 1, entradas: [{ id: idDe("medir_dominio", "x.com"), accion: "medir_dominio", objetivo: "x.com", motivo: "m", estado: "ejecutada", detalle: "igual", primeraVez: T(1), ultimaVez: T(2), veces: 34, antes: null, veredicto: null }] };
+  assert.equal(daLoMismo(viejo, "medir_dominio", "x.com"), null);
+});
+
+test("EL CAMINO DE PRODUCCIÓN: una acción EJECUTADA guarda su resultado en `motivo`, y el corte igual funciona", () => {
+  // Esta es la forma EXACTA con la que escribe el único llamador real (scripts/ops/warmup-monitor.ts):
+  //   motivo: a.detalle, detalle: a.ejecutada ? null : a.detalle
+  // O sea que en una acción ejecutada —el caso medido, `diagnosticar_dominio bizregistry-ops.com`
+  // 34 veces con la misma respuesta— el texto del resultado viaja en `motivo` y `detalle` llega en
+  // `null`. Comparando solo `detalle`, el contador nunca se movía para las manos que SÍ se ejecutan:
+  // el corte habría quedado escrito y apagado. Es la lección de "verificar por el camino de
+  // producción": un fixture escrito desde mi suposición del wire ya escondió un bug entero acá.
+  const comoEnProduccion = (texto: string, cuando: string) => ({
+    accion: "diagnosticar_dominio",
+    objetivo: "bizregistry-ops.com",
+    motivo: texto,
+    estado: "ejecutada" as const,
+    detalle: null,
+    cuando
+  });
+  let b = registrar(null, comoEnProduccion("bizregistry-ops.com: healthy, 0 entregados / 0 rechazados.", T(1)));
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), null);
+  b = registrar(b, comoEnProduccion("bizregistry-ops.com: healthy, 0 entregados / 0 rechazados.", T(2)));
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), 2, "el bucle se ve aunque el texto viaje en motivo");
+
+  // Y si el nodo empieza a contestar distinto, deja de ser un bucle.
+  b = registrar(b, comoEnProduccion("bizregistry-ops.com: blocked_by_provider, CERRADO en: Gmail.", T(3)));
+  assert.equal(daLoMismo(b, "diagnosticar_dominio", "bizregistry-ops.com"), null);
+});
+
+test("el corte NO puede volverse permanente: después de la negativa, la mano puede volver a mirar", () => {
+  // Sin esto, la propia negativa queda escrita en la entrada, en la vuelta siguiente se lee igual a
+  // sí misma y la mano queda cerrada PARA SIEMPRE sobre ese objetivo — incluso cuando el mundo
+  // cambie. Un agente ciego es peor que uno repetitivo: estas cuatro manos no mutan nada.
+  const ejecutada = (cuando: string) => ({ accion: "medir_dominio", objetivo: "x.com", motivo: "x.com: todavía no se midió nunca", estado: "ejecutada" as const, detalle: null, cuando });
+  let b = registrar(null, ejecutada(T(1)));
+  b = registrar(b, ejecutada(T(2)));
+  assert.equal(daLoMismo(b, "medir_dominio", "x.com"), 2, "acá corta");
+
+  // Y así es como el orquestador registra la negativa del propio corte: rechazada, con su texto.
+  b = registrar(b, { accion: "medir_dominio", objetivo: "x.com", motivo: "rechazada: ya lo pediste 2 veces…", estado: "rechazada", detalle: "rechazada: ya lo pediste 2 veces…", cuando: T(3) });
+  assert.equal(daLoMismo(b, "medir_dominio", "x.com"), null, "la vuelta siguiente puede volver a mirar");
 });

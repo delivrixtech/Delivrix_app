@@ -139,3 +139,84 @@ test("el resultado distingue DÓNDE CAYÓ de dónde quedó tras la señal", asyn
   assert.equal(res.placement, "INBOX", "y nuestra señal lo movió, que es lo que calienta");
   assert.equal(events.find((e) => e.kind === "measured")?.placement, "SPAM");
 });
+
+// ══ EL INSTRUMENTO NO SE ENTRENA A SÍ MISMO (R-02) ═══════════════════════════════════════════════
+
+test("la semilla que MIDIÓ no recibe señal: `modifyLabels` no se llama", async () => {
+  // EL DEFECTO QUE CIERRA (R-02, §0/§4 del doc de auditoría): cada vuelta medía el placement y acto
+  // seguido hacía `not_spam+important` SOBRE LA MISMA SEMILLA que acababa de medir, con la misma
+  // conexión. Gmail aprende POR DESTINATARIO: medido en producción, 32 engaged sobre 51 enviados y
+  // 7 de las 34 mediciones eran un SPAM rescatado a mano. Con ~25 rescates por semilla, la bandeja
+  // deja de reportar dónde caería nuestro correo en una bandeja FRESCA — que es exactamente
+  // convertirse en el "health score interno del pool" que §6 pone como ventaja de Instantly y
+  // desventaja nuestra.
+  const { rec, events } = recorder();
+  const sink: any = {};
+  const res = await runLiveCycle({
+    cycleId: "ci1", testId: "ti1", boxDomain: "box.com", fromAddress: "mailer@box.com",
+    seedInbox: "instrumento@g.com", conversation: convo, subject: "Asunto [ti1]",
+    mailer: fakeMailer(), gmail: fakeGmail({ gmailId: "gi1", threadId: "thi1", labelIds: ["SPAM"] }, sink),
+    engagear: false,
+    recorder: rec, sleep: noSleep, pollAttempts: 1, pollDelayMs: 0
+  });
+  assert.equal(sink.modified, undefined, "a la que mide NO se le tocan las etiquetas");
+  // La medición queda intacta: no hubo señal, así que no hay nada que mover. Antes esta misma
+  // vuelta terminaba reportando INBOX sobre un correo que había caído en SPAM.
+  assert.equal(res.placementMedido, "SPAM");
+  assert.equal(res.placement, "SPAM");
+  // El evento se graba igual: sin la fila, "no engageé a propósito" se vería idéntico a "el engage
+  // falló" y el feed del panel perdería un paso de la vuelta.
+  const engaged = events.find((e) => e.kind === "engaged")!;
+  assert.equal(engaged.detail!.action, "ninguna");
+  assert.match(String(engaged.detail!.motivo), /instrumento/);
+  // Y la vuelta SIGUE: la respuesta desde la semilla es señal bidireccional, no manipulación de
+  // etiquetas. Lo que R-02 manda retirar es lo segundo.
+  assert.deepEqual(events.map((e) => e.kind), ["sent", "measured", "engaged", "replied"]);
+  assert.equal(res.completed, true);
+});
+
+test("la OTRA semilla sí conserva el lift: con dos, una mide limpio y la otra entrena", async () => {
+  // Es lo que hace que esto se pueda encender hoy: producción tiene DOS semillas que miden. Con una
+  // sola, `instrumentoDeMedicion` la elige a ella y esto degrada a no engagear nunca — el techo
+  // está marcado con `ponytail:` en el daemon.
+  const sink: any = {};
+  await runLiveCycle({
+    cycleId: "ci2", testId: "ti2", boxDomain: "box.com", fromAddress: "mailer@box.com",
+    seedInbox: "laotra@g.com", conversation: convo, subject: "Asunto [ti2]",
+    mailer: fakeMailer(), gmail: fakeGmail({ gmailId: "gi2", threadId: "thi2", labelIds: ["SPAM"] }, sink),
+    engagear: true,
+    recorder: recorder().rec, sleep: noSleep, pollAttempts: 1, pollDelayMs: 0
+  });
+  assert.deepEqual(sink.modified.change, { add: ["INBOX", "IMPORTANT"], remove: ["SPAM", "CATEGORY_PROMOTIONS"] });
+});
+
+// ══ LA ENTRADA DEL CLAMP ANTI-FIRMA ══════════════════════════════════════════════════════════════
+
+test("el `sent` graba el CUPO AUTORIZADO del día: sin esto el clamp del §10 no tiene dato", async () => {
+  // `dailyQuota` implementa el clamp 3×/48h desde el diseño v1 y nunca tuvo entrada: el cupo
+  // autorizado de hace dos días no se persistía en ningún lado. `detail` ya es JSONB y ya se
+  // escribe en cada envío, así que esto no cuesta migración ni tabla nueva.
+  const { rec, events } = recorder();
+  await runLiveCycle({
+    cycleId: "cc1", testId: "tc1", boxDomain: "box.com", fromAddress: "mailer@box.com", seedInbox: "seed@g.com",
+    conversation: convo, subject: "Asunto [tc1]",
+    mailer: fakeMailer(), gmail: fakeGmail({ gmailId: "gc1", threadId: "thc1", labelIds: ["INBOX"] }),
+    cupoDelDia: 6,
+    recorder: rec, sleep: noSleep, pollAttempts: 1, pollDelayMs: 0
+  });
+  assert.equal(events.find((e) => e.kind === "sent")!.detail!.cupoDelDia, 6);
+});
+
+test("sin cupo declarado la clave NO se escribe — ausente y 0 no son lo mismo", async () => {
+  // Un `cupoDelDia: 0` escrito por defecto haría que `cupoAutorizadoVigente` devolviera 0 para ese
+  // día, y `dailyQuota` NO clampea con 0. O sea: la ausencia se leería como "no clampear", igual
+  // que hoy — pero encima habría una fila afirmando un cupo que nadie autorizó.
+  const { rec, events } = recorder();
+  await runLiveCycle({
+    cycleId: "cc2", testId: "tc2", boxDomain: "box.com", fromAddress: "mailer@box.com", seedInbox: "seed@g.com",
+    conversation: convo, subject: "Asunto [tc2]",
+    mailer: fakeMailer(), gmail: fakeGmail({ gmailId: "gc2", threadId: "thc2", labelIds: ["INBOX"] }),
+    recorder: rec, sleep: noSleep, pollAttempts: 1, pollDelayMs: 0
+  });
+  assert.equal("cupoDelDia" in events.find((e) => e.kind === "sent")!.detail!, false);
+});

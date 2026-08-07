@@ -30,6 +30,10 @@
 // anotarPromesa(actual ?? [], …))`. La carrera se resuelve por diseño y a costo cero.
 
 import { mismoPendiente } from "./acciones-agente.ts";
+// El mapa de etiquetas y el embudo de la voz viven en slack.ts y son los MISMOS que usa el otro
+// carril. Copiarlos acá los desincroniza: una clave nueva del retrato quedaría traducida en un lado
+// y cruda en el otro, que es exactamente el estado del que se sale con este cambio.
+import { claveLegible, enCastellano } from "./slack.ts";
 
 export interface Promesa {
   id: string;
@@ -165,7 +169,29 @@ export function anotarPromesa(
   // de…"— comparten todos los términos, así que dos promesas sobre dominios distintos colapsaban en
   // UNA: quedaba el disparador de la segunda y la primera ya no podía cumplirse ni vencer. La
   // promesa que se evapora, o sea la queja 1 reconstruida adentro del arreglo de la queja 1.
-  const i = base.findIndex((x) => !x.cerradaEn && mismoPendiente(x.que, que) && (x.esperando ?? null) === esperando);
+  // EL DISPARADOR ES LA IDENTIDAD, y el texto solo hace falta cuando no hay disparador.
+  //
+  // Medido en warmup-promesas.json de producción: los 4 pendientes son DOS promesas. pm-1 y pm-2
+  // esperan `placement:filing-ops.com` en el mismo hilo con un minuto de diferencia ("resultados de
+  // medición/diagnóstico de los frenados evaluados" y "resultados de la medición de filing-ops.com
+  // y qué decisión tomé con él"); pm-3 y pm-4 esperan `cap.frenados`, también en el mismo hilo. El
+  // predicado exigía además solapamiento del TEXTO —`mismoPendiente`— y el modelo reformula, que es
+  // lo que hacen los modelos. Resultado: el jefe recibe DOS avisos por cada cosa que le prometieron
+  // una vez, y el segundo no le agrega un solo dato.
+  //
+  // Dos promesas que esperan el MISMO campo en el MISMO hilo se cumplen con el mismo dato y se
+  // vencen con el mismo silencio: no hay heurístico que discutir. El hilo entra en la identidad
+  // porque prometer lo mismo en dos conversaciones distintas sí son dos avisos distintos — el jefe
+  // está leyendo dos hilos.
+  //
+  // Sin disparador (`esperando === null`) manda el texto, como antes: si no, todas las promesas
+  // genéricas del canal suelto colapsarían en una sola.
+  const i = base.findIndex((x) =>
+    !x.cerradaEn &&
+    (esperando !== null
+      ? (x.esperando ?? null) === esperando && (x.hilo ?? null) === (p.hilo ?? null)
+      : mismoPendiente(x.que, que) && (x.esperando ?? null) === null)
+  );
   if (i >= 0) {
     const previa = base[i] as Promesa;
     base[i] = {
@@ -312,8 +338,13 @@ export function revisarPromesas(
   const sinSnapshotPrevio = Object.keys(previos).length === 0;
   const previosMs = previosDe ? Date.parse(previosDe) : NaN;
 
-  const cumplidas: Array<{ p: Promesa; linea: string }> = [];
-  const vencidas: Array<{ i: number; p: Promesa; linea: string }> = [];
+  // `dato` ES LA CLAVE DE DEDUPE, y no es un adorno: las promesas abiertas en producción el
+  // 2026-08-07 eran DOS FORMAS DE PEDIR LO MISMO —"reporte de cómo va la evaluación de los frenados"
+  // y "avisar cuando cambie el conteo de dominios frenados"— las dos con `espero=cap.frenados`. Con
+  // el mismo dato se cumplen las dos, pero el jefe lee DOS renglones que dicen la misma novedad. Dos
+  // promesas que esperan el mismo campo cumplen con el mismo dato, no con dos.
+  const cumplidas: Array<{ p: Promesa; linea: string; dato: string }> = [];
+  const vencidas: Array<{ i: number; p: Promesa; linea: string; dato: string }> = [];
   // El reloj de las disculpas sale de la propia lista, que ya se persiste: cero estado nuevo del
   // lado de quien cablea, y sobrevive a los reinicios (17 en 29 h el 2026-08-06).
   const ultimoAnuncio = ultimoAnuncioDe(base);
@@ -336,7 +367,16 @@ export function revisarPromesas(
     if (!sinSnapshotPrevio && datoPosterior && k && valorAhora !== null && valorAhora !== normalizar(previos[k])) {
       cumplidas.push({
         p,
-        linea: `Te dije que te avisaba de ${p.que} — ${k} pasó de ${comoTexto(normalizar(previos[k]))} a ${comoTexto(valorAhora)}.`
+        // LA CLAVE VA TRADUCIDA. Salía cruda —"placement:filing-ops.com pasó de sin medir a INBOX",
+        // "cap.frenados pasó de 8 a 7"— o sea la clave de máquina, en el canal, en el estreno de
+        // esta función. `claveLegible` reusa el mapa `ETIQUETA` que slack.ts ya tenía escrito.
+        linea:
+          `Te dije que te avisaba de ${p.que} — ${claveLegible(k)} ` +
+          // El verbo concuerda con la etiqueta, que puede ser plural ("los dominios frenados", "las
+          // bandejas sanas"). Sale del artículo con el que `ETIQUETA` ya las escribe: es un dato del
+          // texto, no una tabla nueva que se desincronice.
+          `${/^(los|las) /.test(claveLegible(k)) ? "pasaron" : "pasó"} de ${comoTexto(normalizar(previos[k]))} a ${comoTexto(valorAhora)}.`,
+        dato: `${k}=${String(valorAhora)}`
       });
       // Una cumplida SIEMPRE sale (el freno de abajo solo actúa cuando no hay ninguna), así que se
       // cierra y se marca anunciada acá mismo.
@@ -366,7 +406,8 @@ export function revisarPromesas(
         p,
         linea: medible
           ? `Te dije que te avisaba de ${p.que} y no se movió en ${HORAS_PARA_VENCER} h, así que lo cierro.`
-          : `Te dije que te avisaba de ${p.que} y resulta que nadie está midiendo eso${k ? ` (${k})` : ""}: no lo voy a poder cumplir.`
+          : `Te dije que te avisaba de ${p.que} y resulta que nadie está midiendo ${k ? claveLegible(k) : "eso"}: no lo voy a poder cumplir.`,
+        dato: `${medible ? "quieta" : "sin-instrumento"}:${k ?? ""}`
       });
     }
   }
@@ -382,7 +423,21 @@ export function revisarPromesas(
 
   for (const v of vencidas) base[v.i] = { ...v.p, cerradaEn: ahoraISO, comoCerro: "vencida", anuncioEn: ahoraISO };
 
-  const lineas = [...cumplidas.map((c) => c.linea), ...vencidas.map((v) => v.linea)];
+  // UN RENGLÓN POR DATO. Las promesas se cierran TODAS (arriba y abajo): lo que se deduplica es lo
+  // que el jefe lee, no el registro. Cuatro renglones con dos repetidos no informan el doble.
+  const unaPorDato = <T extends { dato: string }>(xs: readonly T[]): T[] => {
+    const vistos = new Set<string>();
+    return xs.filter((x) => {
+      if (vistos.has(x.dato)) return false;
+      vistos.add(x.dato);
+      return true;
+    });
+  };
+  // Y PASAN POR EL EMBUDO DE LA VOZ, que este camino se estaba salteando: el orquestador publica
+  // este aviso con `mandarASlack` directo, sin `enCastellano` ni `limpiarParaSlack`, así que un
+  // `snake_case` o una flecha de diff salían crudos. Se sanea DONDE SE ARMA el texto, que es lo
+  // único que no depende de que el próximo llamador se acuerde.
+  const lineas = [...unaPorDato(cumplidas).map((c) => c.linea), ...unaPorDato(vencidas).map((v) => v.linea)].map(enCastellano);
   const visibles = lineas.slice(0, MAX_LINEAS);
   if (lineas.length > visibles.length) visibles.push(`(y ${lineas.length - visibles.length} promesa(s) más que cierro igual, sin dato.)`);
 

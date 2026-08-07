@@ -20,16 +20,22 @@ import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "..
 import {
   decidirCupoDeHoy,
   esInbox,
+  evaluarGate,
+  medirPorProveedor,
   puedeMandarTurno,
   rampaDesdeEnv,
   TECHO_DURO_POR_DOMINIO,
-  type DecisionDiaria
+  textoPlacement,
+  type DecisionDiaria,
+  type FilaPlacement
 } from "../domain/decision-diaria.ts";
 import {
   boxesSinCupoHoy,
+  cupoAutorizadoVigente,
   elegirPool,
   enviosDeHoy,
   enviosDelDia,
+  filasDePlacement,
   historialDeEnvios,
   leerCuposFisicos,
   leerReputacion,
@@ -110,6 +116,20 @@ export interface LiveDaemonConfig {
    */
   limiteDiario: number;
   pasoPorDia: number;
+  /** ¿La rampa da 0 el fin de semana? Sale de `rampaDesdeEnv` para no divergir del panel. */
+  soloDiasHabiles: boolean;
+  /**
+   * Franja horaria UTC en la que se permite enviar (`"08-22"`). `null` = las 24 h, que es lo de hoy.
+   *
+   * §3 del doc lista "spread horario" entre los levers y "cadencia de máquina" entre los errores que
+   * queman. Medido en producción: el 25% del volumen histórico cae entre las 00:00 y las 06:00 UTC,
+   * o sea de madrugada en el huso del receptor.
+   *
+   * OJO CON LA DIRECCIÓN: la ventana sólo puede BAJAR el volumen (si el día no alcanza, salen menos
+   * vueltas), nunca subirlo. Por eso puede venir configurada sin pasar por el operador; el jitter de
+   * abajo tampoco cambia cuántas salen, sólo cuándo.
+   */
+  ventanaUtc: { desde: number; hasta: number } | null;
 }
 
 /**
@@ -175,8 +195,67 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     // Resueltas por `rampaDesdeEnv` (domain/decision-diaria.ts) y NO acá con `intEnv`: son las
     // únicas dos palancas que también necesita `planDelDia` —el panel y lo que el agente le reporta
     // al jefe— y tenerlas en dos lados es justo cómo se abrió la divergencia que esto cierra.
-    ...rampaDesdeEnv(env)
+    ...rampaDesdeEnv(env),
+    ventanaUtc: ventanaDesdeEnv(env.WARMUP_LIVE_VENTANA_UTC)
   };
+}
+
+/**
+ * La franja horaria UTC de envío, de `"08-22"`. Pura y FAIL-OPEN a las 24 h.
+ *
+ * Fail-open y no fail-closed a propósito, al revés que el resto de la config: una ventana ilegible
+ * que se interpretara como "no enviar nunca" apagaría el warmup entero por un typo, y sin ruido —
+ * el daemon seguiría vivo, girando y sin mandar. La consecuencia de caer a 24 h es exactamente el
+ * comportamiento de hoy.
+ */
+export function ventanaDesdeEnv(raw: string | undefined): { desde: number; hasta: number } | null {
+  const m = /^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$/.exec(raw ?? "");
+  if (!m) return null;
+  const desde = Number(m[1]);
+  const hasta = Number(m[2]);
+  if (!Number.isInteger(desde) || !Number.isInteger(hasta) || desde < 0 || hasta > 24 || desde >= hasta) return null;
+  return { desde, hasta };
+}
+
+/** ¿Esta hora UTC cae dentro de la ventana? Sin ventana, siempre sí. */
+export function dentroDeVentana(horaUtc: number, v: { desde: number; hasta: number } | null): boolean {
+  return v === null || (horaUtc >= v.desde && horaUtc < v.hasta);
+}
+
+/**
+ * El intervalo REAL de esta vuelta: el configurado ±35%. Puro — el azar entra por parámetro.
+ *
+ * El correo salía con metrónomo de 91 minutos EXACTOS, 24 h/día, todos los días: los deltas medidos
+ * en el log de producción el 2026-08-07 son 91, 91, 91, 95, 92, 91, 92, 91. §3 del doc lista
+ * "cadencia de máquina" entre los errores que queman, y es la firma más barata de borrar que tiene
+ * el sistema: una línea.
+ *
+ * NO CAMBIA EL VOLUMEN. La media de `0,65 + azar·0,7` es 1,0, así que con las mismas vueltas sólo
+ * cambia CUÁNDO salen. El piso de 1 s es el mismo mínimo que ya exige `intEnv` para el intervalo.
+ */
+export function intervaloConJitter(baseMs: number, azar: number): number {
+  return Math.max(1000, Math.round(baseMs * (0.65 + azar * 0.7)));
+}
+
+/**
+ * La semilla INSTRUMENTO: la que mide y a la que NUNCA se le aplica señal.
+ *
+ * Determinista (la primera por dirección, ordenada) para que no dependa del orden del archivo: si
+ * cambiara de vuelta en vuelta, todas las semillas terminarían entrenadas y no se ganaría nada.
+ *
+ * ponytail: con UNA sola semilla capaz de medir, esto degrada a NO ENGAGEAR NUNCA — la medición
+ * queda limpia y se pierde el lift entero. Hoy producción tiene dos (trazosvercel@gmail.com y
+ * flomia33193@gmail.com, verificado en warmup-seeds.json), así que una mide limpio y la otra
+ * conserva la señal. El techo real es que la segunda SÍ se entrena y sus filas siguen entrando a la
+ * ventana de placement: separarlas exigiría excluir sus mediciones, y eso parte la muestra al medio
+ * — un dominio nuevo necesita 4 mediciones para avanzar la rampa, así que es una decisión de
+ * VOLUMEN y va al operador, no acá. Upgrade: una tercera semilla de sólo-medición.
+ */
+export function instrumentoDeMedicion(semillas: readonly SeedBase[]): string | null {
+  const miden = semillasMedibles([...semillas])
+    .map((s) => s.address.trim().toLowerCase())
+    .sort();
+  return miden[0] ?? null;
 }
 
 /**
@@ -188,7 +267,8 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
  * no ve nada distinto, y se queda creyendo que aumentó el volumen. Pura: se testea sin arrancar nada.
  */
 export function lineaDeArranque(
-  cfg: Pick<LiveDaemonConfig, "maxPerDay" | "intervalMs" | "placementFloor" | "seedInbox" | "limiteDiario" | "pasoPorDia">
+  cfg: Pick<LiveDaemonConfig, "maxPerDay" | "intervalMs" | "placementFloor" | "seedInbox" | "limiteDiario" | "pasoPorDia"> &
+    Partial<Pick<LiveDaemonConfig, "ventanaUtc" | "soloDiasHabiles">>
 ): string {
   const ciclosPosibles = Math.floor(86_400_000 / cfg.intervalMs);
   const aviso =
@@ -196,9 +276,13 @@ export function lineaDeArranque(
       ? ` — OJO: el tope de ${cfg.maxPerDay} NO se puede alcanzar, el intervalo solo permite ${ciclosPosibles}:` +
         " subirlo sin bajar el intervalo no agrega un correo"
       : "";
+  // El intervalo lleva jitter ±35%, y hay que DECIRLO acá: sin esta frase, el operador que mire dos
+  // vueltas separadas por 62 min y otras dos por 118 va a creer que el daemon se colgó.
+  const franja = cfg.ventanaUtc ? ` · sólo entre las ${cfg.ventanaUtc.desde}:00 y las ${cfg.ventanaUtc.hasta}:00 UTC` : " · las 24h";
+  const habiles = cfg.soloDiasHabiles ? " · sólo días hábiles (fin de semana en 0)" : "";
   return (
-    `ARRANCA — tope ${cfg.maxPerDay} vueltas/día · intervalo ${Math.round(cfg.intervalMs / 60000)}min ⇒ ` +
-    `${ciclosPosibles} ciclos/día posibles${aviso}` +
+    `ARRANCA — tope ${cfg.maxPerDay} vueltas/día · intervalo ${Math.round(cfg.intervalMs / 60000)}min ±35% (jitter) ⇒ ` +
+    `${ciclosPosibles} ciclos/día posibles${aviso}${franja}${habiles}` +
     ` · rampa por dominio hasta ${cfg.limiteDiario}/día (+${cfg.pasoPorDia}/día), techo duro ${TECHO_DURO_POR_DOMINIO}/día` +
     ` · piso placement ${(cfg.placementFloor * 100).toFixed(0)}% · seed ${cfg.seedInbox} (el pool se decide en cada vuelta)`
   );
@@ -997,6 +1081,23 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   const agotados = new Set<string>();
   let diaDeAgotados = "";
 
+  // EL METRÓNOMO SE ROMPE ACÁ. Todas las esperas del intervalo pasan por esta función: dejar una
+  // sola con `sleep(cfg.intervalMs)` alcanzaría para que el patrón vuelva a aparecer en el log, que
+  // es justo el modo en que este bug se conservó tanto tiempo (el intervalo estaba escrito seis
+  // veces). Ver `intervaloConJitter`: no cambia el volumen, sólo cuándo sale.
+  const dormirIntervalo = async (): Promise<void> => sleep(intervaloConJitter(cfg.intervalMs, Math.random()));
+
+  // EL PROVEEDOR DE CADA SEMILLA, del mismo registro que ya está cargado. Es todo lo que hace falta
+  // para que ninguna cifra de placement salga sin decir en qué receptor se midió.
+  const proveedorDeSemilla = new Map(semillas.map((s) => [s.address.trim().toLowerCase(), s.provider]));
+  // LA SEMILLA QUE MIDE Y NO SE ENTRENA. Ver `instrumentoDeMedicion`.
+  const instrumento = instrumentoDeMedicion(semillas);
+  log(
+    instrumento
+      ? `instrumento de medición: ${instrumento} — a esa semilla NO se le aplica señal (no se entrena la que mide)`
+      : "sin semilla que mida: no hay instrumento y no hay placement"
+  );
+
   try {
     for (;;) {
       // UNA VUELTA FALLIDA NO MATA EL DAEMON. Sin este try, cualquier excepción —un hipo de
@@ -1069,13 +1170,23 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // se evaluó y la flota está bien" de "el corte de catástrofe no se puede evaluar" — y hasta
         // acá las dos se veían igual: silencio. Ver decideDaemonAction.
         log(`gate: ${reason}`);
+        // LA FRANJA HORARIA. Con `WARMUP_LIVE_VENTANA_UTC` vacío —el estado de hoy— esto no aparta
+        // una sola vuelta. Con franja, el correo deja de salir de madrugada en el huso del receptor:
+        // medido, el 25% del volumen histórico caía entre las 00:00 y las 06:00 UTC. Sólo puede
+        // BAJAR el volumen del día, nunca subirlo, y por eso no necesita autorización.
+        if (!dentroDeVentana(new Date().getUTCHours(), cfg.ventanaUtc)) {
+          log(`fuera de la franja de envío (${cfg.ventanaUtc!.desde}:00-${cfg.ventanaUtc!.hasta}:00 UTC) — espero`);
+          if (once) break;
+          await dormirIntervalo();
+          continue;
+        }
         if (poolElegido.boxes.length === 0) {
           // ESPERA, no `return`. Salir mataba el proceso sin supervisor que lo levante, y el caso
           // que lo dispara es transitorio: alguien frenó la flota entera y la va a soltar. El
           // daemon tiene que seguir vivo para enterarse.
           log("nada que calentar: ningún nodo con cupo. Espero la próxima medición.");
           if (once) break;
-          await sleep(cfg.intervalMs);
+          await dormirIntervalo();
           continue;
         }
 
@@ -1099,34 +1210,38 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // o un cambio de esquema que rompe una sola query. Ese último es silencioso y permanente.
         let frenados: ReadonlySet<string>;
         let enviadosPorDominio: Map<string, number>;
-        // LA ENTRADA DEL CLAMP 3×/48h, que nunca tuvo llamador vivo. `dailyQuota` lo implementa
-        // desde el diseño v1 (§10) y `decidirCupoDeHoy` se lo pasaba siempre en `undefined`, así
-        // que no clampeaba nada. Medido corriendo el código: el día que un dominio junta su cuarta
-        // medición el cupo salta de 2 a 8/10/12/14/16 — ×4 a ×8 en 24 h, la firma exacta que el
-        // clamp existe para evitar.
-        //
-        // Va en el MISMO Promise.all que las otras cuatro, pero por la razón opuesta: las otras
-        // abortan la vuelta porque su fallo es fail-OPEN sobre el volumen. Ésta sólo puede BAJAR el
-        // cupo, así que su fallo no abre ninguna puerta — igual aborta, porque decidir volumen con
-        // media foto es cómo se cuelan estos bugs.
+        // El piso del "sostener": lo que el dominio REALMENTE mandó hace dos días. Va topado por la
+        // rampa, así que no puede inflar nada.
         let mandadoHace2Dias: Map<string, number>;
+        // LA ENTRADA DEL CLAMP 3×/48h, que hasta este cambio NO EXISTÍA. `dailyQuota` lo implementa
+        // desde el diseño v1 (§10) y nunca recibió el dato que pide —el cupo AUTORIZADO de hace dos
+        // días— porque no se persistía en ningún lado. El proxy que se usó (los envíos reales) mide
+        // otra cosa: está aplastado por el tope GLOBAL del daemon, así que frenaba a los sanos y
+        // soltaba a los que no mandaron. Ahora el `sent` graba `detail.cupoDelDia` y esto lo lee.
+        //
+        // Va en el MISMO Promise.all que las otras, pero por la razón opuesta: las otras abortan la
+        // vuelta porque su fallo es fail-OPEN sobre el volumen. Ésta sólo puede BAJAR el cupo, así
+        // que su fallo no abre ninguna puerta — igual aborta, porque decidir volumen con media foto
+        // es cómo se cuelan estos bugs.
+        let cupoAutorizadoHace2Dias: Map<string, number>;
         let historial: UsoPrevio[];
         // El día de rampa sale del PRIMER ENVÍO REAL, no del historial recortado a 400 filas: ese
         // recorte hace que el día dependa del volumen de TODA la flota, y que RETROCEDA cuando
         // otros dominios mandan más.
         let primerEnvio: Map<string, string>;
         try {
-          [frenados, enviadosPorDominio, historial, primerEnvio, mandadoHace2Dias] = await Promise.all([
+          [frenados, enviadosPorDominio, historial, primerEnvio, mandadoHace2Dias, cupoAutorizadoHace2Dias] = await Promise.all([
             boxesSinCupoHoy(pg),
             enviosDeHoy(pg),
             historialDeEnvios(pg),
             primerEnvioPorDominio(pg),
-            enviosDelDia(pg, 2)
+            enviosDelDia(pg, 2),
+            cupoAutorizadoVigente(pg, 2)
           ]);
         } catch (err) {
           log(`no pude leer el estado del día (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
           if (once) break;
-          await sleep(cfg.intervalMs);
+          await dormirIntervalo();
           continue;
         }
 
@@ -1139,7 +1254,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         if (elegido.box === null) {
           log(`PAUSA — los ${poolElegido.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
           if (once) break;
-          await sleep(cfg.intervalMs);
+          await dormirIntervalo();
           continue;
         }
         // Solo los del POOL: listar dominios que ni siquiera se están calentando es ruido que
@@ -1162,7 +1277,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // cuando el estado real podía ser "frenar 0". Un error de lectura no puede transformar un
         // dominio frenado en uno que manda.
         let delDia: DecisionDiaria;
+        let filasDelBox: FilaPlacement[];
         try {
+          filasDelBox = await filasDePlacement(pg, box, cfg.placementWindow);
           delDia = decidirCupoDeHoy({
             diaN:
               progresoDeCalentamiento(
@@ -1172,21 +1289,52 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 box,
                 null
               )?.diasCorridos ?? 0,
-            placements: await placementsDeDominio(pg, box, cfg.placementWindow),
+            placements: filasDelBox.map((f) => f.placement),
             cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
             ...(mandadoHace2Dias.has(box) ? { cupoHace2Dias: mandadoHace2Dias.get(box)! } : {}),
+            ...(cupoAutorizadoHace2Dias.has(box) ? { cupoAutorizadoHace2Dias: cupoAutorizadoHace2Dias.get(box)! } : {}),
             isoWeekday,
             limiteDiario: cfg.limiteDiario,
-            pasoPorDia: cfg.pasoPorDia
+            pasoPorDia: cfg.pasoPorDia,
+            soloDiasHabiles: cfg.soloDiasHabiles
           });
         } catch (err) {
           log(`no pude leer el placement de ${box} (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
           if (once) break;
-          await sleep(cfg.intervalMs);
+          await dormirIntervalo();
           continue;
         }
         const enviadosHoyBox = enviadosPorDominio.get(box) ?? 0;
-        log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
+        // LA CIFRA DE PLACEMENT SALE CON SU RECEPTOR, y el veredicto de §3 al lado. El log del
+        // daemon es lo que el jefe lee: sin el proveedor, "83% inbox" es 83%-EN-GMAIL presentado
+        // como placement a secas, con Outlook y Yahoo en punto ciego.
+        //
+        // EL GATE SOLO INFORMA. No entra a `decidirCupoDeHoy` ni cambia un cupo: el motor vigente
+        // sigue decidiendo con `PISO_SANO`/`PISO_CRITICO`, y esta línea es la que hace visible la
+        // distancia entre las dos varas.
+        const evidencia = medirPorProveedor(filasDelBox, (s) => proveedorDeSemilla.get(s) ?? null);
+        // `cruzoUmbralPermanente` NO ES OPCIONAL ACÁ, y el dato ya estaba en scope 170 líneas arriba
+        // (`saludFlota`). Sin él, `evaluarGate` se salteaba su PRIMERA condición —la irreversible— y
+        // este log imprimía "gate §3: pasa" sobre un dominio que ya cruzó el umbral permanente de
+        // bulk sender de Gmail. `planDelDia` sí se lo pasa (plan-diario.ts), así que el mismo
+        // dominio el mismo día tenía DOS veredictos opuestos en los dos lugares que el jefe lee, y
+        // el que se equivocaba era éste. Reproducido con las funciones reales: 6 filas INBOX de
+        // semilla Gmail dan "pasa" por este camino y "NO pasa (cruzó el umbral permanente…)" por el
+        // del plan.
+        const veredicto = evaluarGate({
+          placement: evidencia,
+          cruzoUmbralPermanente: (saludFlota?.get(box)?.cruzados ?? []).length > 0
+        });
+        // Y "pasa" SE DICE CON LO QUE NO SE MIRÓ. `sinInstrumento` son las condiciones de §3 que el
+        // motor no puede evaluar (complaint rate, sostenido 2-3 días, listas negras, y los rebotes
+        // cuando el MTA no reporta al receptor). Un "pasa" a secas habiendo dejado cuatro sin mirar
+        // es exactamente "ausencia de dato = está bien", la confusión que este repo dice haber
+        // cerrado. Sigue siendo informativo —no cambia un cupo— pero se lee como veredicto.
+        log(
+          `${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}` +
+            ` · ${textoPlacement(evidencia)} · gate §3: ${veredicto.pasa ? "pasa" : `NO pasa (${veredicto.condicionQueFalla})`}` +
+            (veredicto.sinInstrumento.length > 0 ? ` · ${veredicto.sinInstrumento.length} condiciones de §3 sin instrumento` : "")
+        );
         if (enviadosHoyBox >= delDia.cupo) {
           seq += 1;
           // SE RECUERDA. Sin esto la rotación lo volvía a elegir cada 60 s hasta el cambio de día.
@@ -1208,7 +1356,12 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
             seq
           });
           log(`${box} ya cumplió su cupo de hoy — se salta${siguiente.box ? "" : " (ningún box con cupo: espero el intervalo)"}`);
-          await sleep(siguiente.box ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
+          // LAS DOS RAMAS CON JITTER. La de la derecha dormía `cfg.intervalMs` PELADO —90 min
+          // clavados, sin el ±35%— y encima es la rama que DOMINA en producción: en el log hay 317
+          // líneas "ya cumplió su cupo de hoy — se salta" contra 46 "vuelta #". O sea que el
+          // metrónomo que `dormirIntervalo` existe para romper marcaba el compás justo antes de cada
+          // ventana de envío, y §3 lista la cadencia de máquina entre los errores que queman.
+          await sleep(Math.min(intervaloConJitter(cfg.intervalMs, Math.random()), siguiente.box ? 60_000 : Infinity));
           continue;
         }
         // La conversación la escribe el MODELO. El banco de 14 textos fijos repartidos entre 58
@@ -1254,7 +1407,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           log(`box ${box} sin credencial usable (${err instanceof Error ? err.message : String(err)}) — salto`);
           seq += 1;
           if (once) break;
-          await sleep(Math.min(cfg.intervalMs, 60_000));
+          await sleep(Math.min(intervaloConJitter(cfg.intervalMs, Math.random()), 60_000));
           continue;
         }
         // Las ops de medición dependen de CÓMO mide esta semilla: por IMAP (cualquier proveedor,
@@ -1282,6 +1435,13 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           cycleId, testId, boxDomain: box, fromAddress: "mailer@" + box, seedInbox: semilla.address,
           conversation, subject, mailer,
           gmail: opsMedicion,
+          // La ENTRADA del clamp anti-firma: se graba en el `detail` del `sent` y la lee
+          // `cupoAutorizadoVigente`. Sin esta línea el clamp del §10 sigue sin dato de entrada.
+          cupoDelDia: delDia.cupo,
+          // EL INSTRUMENTO NO SE ENTRENA. Con las dos semillas de producción, una mide limpio y la
+          // otra conserva la señal; con una sola, esto degrada a no engagear (ver
+          // `instrumentoDeMedicion`).
+          engagear: semilla.address.trim().toLowerCase() !== instrumento,
           recorder, sleep,
           pollAttempts: cfg.pollAttempts, pollDelayMs: cfg.pollDelayMs,
           logger: { info: (m) => log(m), warn: (m) => log("WARN " + m) }
@@ -1340,9 +1500,16 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                   ...(mandadoHace2Dias.has(hiloPrevio.nodeDomain)
                     ? { cupoHace2Dias: mandadoHace2Dias.get(hiloPrevio.nodeDomain)! }
                     : {}),
+                  // El MISMO clamp que el ciclo principal. Omitirlo acá dejaría un camino de envío
+                  // con una barrera menos, que es exactamente la forma del agujero que este bloque
+                  // ya tuvo dos veces (la decisión del día y la exclusión por salud).
+                  ...(cupoAutorizadoHace2Dias.has(hiloPrevio.nodeDomain)
+                    ? { cupoAutorizadoHace2Dias: cupoAutorizadoHace2Dias.get(hiloPrevio.nodeDomain)! }
+                    : {}),
                   isoWeekday,
                   limiteDiario: cfg.limiteDiario,
-                  pasoPorDia: cfg.pasoPorDia
+                  pasoPorDia: cfg.pasoPorDia,
+                  soloDiasHabiles: cfg.soloDiasHabiles
                 });
               } catch (err) {
                 log(`hilo ${marca}: no pude leer el estado de ${hiloPrevio.nodeDomain}, no mando — ${err instanceof Error ? err.message : String(err)}`);
@@ -1450,7 +1617,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 // (corpfiling-infra.com, 6 de 19). Mismo bug de forma que ya pasó dos veces en este
                 // loop: un segundo camino de envío que no replica lo que hace el primero
                 // (warmup-live-cycle.ts, ① SEND).
-                detail: { smtp: enviado.response, turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local" }
+                // `cupoDelDia` también acá: `cupoAutorizadoVigente` toma el MAX del día, así que con
+                // el campo sólo en el ciclo principal un día que arrancara por una continuación
+                // dejaría al clamp sin dato — y sin dato no clampea. Un camino de envío que no
+                // replica lo que hace el otro es el mismo bug de forma que ya pasó tres veces acá.
+                detail: { smtp: enviado.response, turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local", cupoDelDia: cupoDelHilo.cupo }
               });
               } catch (err) {
                 const nota = err instanceof Error ? err.message : String(err);
@@ -1466,6 +1637,22 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 log(`hilo ${marca}: el turno rebotó — ${nota.slice(0, 120)}`);
                 break;
               }
+              // ESTE TURNO TAMBIÉN GASTÓ CUPO — y la pata que faltaba era continuación→continuación.
+              //
+              // El comentario de arriba (el del `set` del ciclo principal) declara cerrado el
+              // sobrepaso "con cupo 2 salían 3, todos los días", pero solo cerró ciclo→continuación:
+              // adentro de este `for` el Map se LEÍA (`enviadosPorDominio.get(...)` en la llamada a
+              // `puedeMandarTurno`) y nunca se escribía. Con N hilos abiertos del MISMO dominio, los
+              // N decidían contra la misma foto vieja y salían N correos reales por encima del cupo
+              // del día. Reproducido con la función real: cupo 6, `enviadosHoy` 5 y 4 hilos ⇒ los 4
+              // dan permiso ("tiene 1 de cupo libre hoy" cuatro veces) ⇒ 9 envíos contra cupo 6.
+              // Y era alcanzable hoy: en la Postgres de producción hay una semilla con 8 hilos
+              // abiertos del mismo dominio (trazosvercel@gmail.com / corpfiling-infra.com).
+              //
+              // VA DESPUÉS DEL SEND y antes de medir, con el mismo criterio que el ciclo principal:
+              // solo cuenta lo que de verdad salió. El camino de error de arriba hace `break`, así
+              // que acá el envío ya está grabado.
+              enviadosPorDominio.set(hiloPrevio.nodeDomain, (enviadosPorDominio.get(hiloPrevio.nodeDomain) ?? 0) + 1);
               log(`hilo ${marca}: turno ${turnos.length + 1} enviado — "${turno.texto.slice(0, 60)}…"`);
               // ── Y SE MIDE, con el mismo lector que ya está abierto tres líneas más arriba ─────
               //
@@ -1524,7 +1711,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // rechazando escrituras (disco lleno, failover parcial), el correo SALE y la fila `sent` no
         // se escribe: el contador del día no avanza y reintentar cada minuto convertiría un
         // parpadeo en cientos de envíos. Una barrera degradada no puede enviar más rápido que la sana.
-        await sleep(cfg.intervalMs);
+        await dormirIntervalo();
         continue;
       } finally {
         // El cierre del IMAP vive acá y no en el camino feliz: antes, cualquier `continue` del
@@ -1539,7 +1726,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       }
 
       if (once) break;
-      await sleep(cfg.intervalMs);
+      await dormirIntervalo();
     }
   } finally {
     // El cliente del lock vive fuera del pool, así que hay que cerrarlo aparte o el proceso no

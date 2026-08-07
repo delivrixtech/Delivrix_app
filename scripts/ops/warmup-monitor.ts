@@ -187,6 +187,23 @@ async function frenarNodo(dominio: string, motivo: string): Promise<void> {
 }
 
 /**
+ * BAJA el cap del nodo a un valor seguro, por el MISMO camino del operador a mano
+ * (`limite-fisico.ts --domain=X --cap=N --apply`). El valor NO lo elige el modelo: viene de
+ * `CAP_SEGURO_POR_DOMINIO`, y `acciones-agente.ts` ya verificó contra el nodo vivo que el cap
+ * actual esté POR ENCIMA — o sea que esto solo puede bajar, nunca subir.
+ */
+async function bajarCapDelNodo(dominio: string, cap: number, motivo: string): Promise<void> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  await promisify(execFile)(
+    process.execPath,
+    ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/limite-fisico.ts", `--domain=${dominio}`, `--cap=${cap}`, "--apply"],
+    { cwd: process.cwd(), timeout: 120_000 }
+  );
+  console.log(`[agente] bajó el cap de ${dominio} a ${cap}: ${motivo}`);
+}
+
+/**
  * ¿El agente puede SOLTAR nodos por sí solo?
  *
  * Separado de `PUEDE_FRENAR` a propósito, y no por simetría: frenar solo REDUCE, soltar AUMENTA
@@ -756,7 +773,19 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         // tampoco está calentando. Frenar ahí solo puede ayudar. Frenar un dominio SANO cuesta
         // calentamiento real y es una decisión del operador — para eso está anotar_pendiente.
         frenablesConDanio: [
-          ...new Set([...(hechos.flota?.cruzados ?? []), ...(hechos.cap?.enElTope ?? [])])
+          ...new Set([
+            ...(hechos.flota?.cruzados ?? []),
+            ...(hechos.cap?.enElTope ?? []),
+            // ESTAR EN UNA LISTA NEGRA ES DAÑO CONSUMADO IGUAL. El alcance eran solo los que
+            // cruzaron el umbral o llegaron a su tope, así que cuando el barrido encontró a
+            // corp-delivery.com en RATS Dyna el agente NO pudo tocarlo y se lo pasó a Juanes:
+            // "figura en 1 lista negra. Ese nodo hay que bajarlo o retirarlo". Le estaba pidiendo
+            // permiso para una reducción sobre un nodo ya dañado, que es justo lo que este alcance
+            // existe para permitir.
+            ...(hechos.reputacion ?? [])
+              .filter((r) => Array.isArray(r.listas) && r.listas.length > 0)
+              .map((r) => r.dominio)
+          ])
         ],
         // Leer el nodo NO muta nada: va habilitado siempre, sin flag. Es la mano que le permite
         // dejar de opinar sobre una foto y pasar a mirar.
@@ -801,6 +830,14 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
                 const antes = await capAntesDeTocar(workspace, dominio);
                 await frenarNodo(dominio, motivo);
                 return { antes, despues: 0 };
+              },
+              // BAJAR el cap va detrás del MISMO flag que frenar: las dos tocan la flota por SSH.
+              // Pero es estrictamente menos destructiva —acota el envío en vez de quitarlo— y por
+              // eso no lleva el alcance de `frenablesConDanio`.
+              bajarCapNodo: async (dominio: string, cap: number, motivo: string) => {
+                const antes = await capAntesDeTocar(workspace, dominio);
+                await bajarCapDelNodo(dominio, cap, motivo);
+                return { antes, despues: cap };
               }
             }
           : {}),
@@ -1311,7 +1348,14 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
         // es una regla, es un hecho del mundo. Sin esta línea, el mismo dominio que el carril
         // automático rechaza se podría soltar pidiéndoselo por Slack.
         frenablesConDanio: [
-          ...new Set([...(snapshot?.hechos?.flota?.cruzados ?? []), ...(snapshot?.hechos?.cap?.enElTope ?? [])])
+          ...new Set([
+            ...(snapshot?.hechos?.flota?.cruzados ?? []),
+            ...(snapshot?.hechos?.cap?.enElTope ?? []),
+            // Mismo criterio que en la guardia: un dominio listado es daño consumado.
+            ...(snapshot?.hechos?.reputacion ?? [])
+              .filter((r) => Array.isArray(r.listas) && r.listas.length > 0)
+              .map((r) => r.dominio)
+          ])
         ],
         // IR A MIRAR: ninguna muta nada, así que van siempre disponibles.
         leerCupoNodo: leerCupoDelNodo,
@@ -1337,6 +1381,14 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
                 const antes = await capAntesDeTocar(workspace, dominio);
                 await frenarNodo(dominio, motivo);
                 return { antes, despues: 0 };
+              },
+              // BAJAR el cap va detrás del MISMO flag que frenar: las dos tocan la flota por SSH.
+              // Pero es estrictamente menos destructiva —acota el envío en vez de quitarlo— y por
+              // eso no lleva el alcance de `frenablesConDanio`.
+              bajarCapNodo: async (dominio: string, cap: number, motivo: string) => {
+                const antes = await capAntesDeTocar(workspace, dominio);
+                await bajarCapDelNodo(dominio, cap, motivo);
+                return { antes, despues: cap };
               }
             }
           : {}),

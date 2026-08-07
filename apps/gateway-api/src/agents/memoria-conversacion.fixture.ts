@@ -123,3 +123,364 @@ export const CANAL_REAL: MensajeFixture[] = [
   {"ts": "1786043734.367629", "hilo": "1786043692.528249", "quien": "U0BAQSXJJLW", "bot": false, "texto": "A que te refieres con soltar?"},
   {"ts": "1786043745.816309", "hilo": "1786043692.528249", "quien": "bot", "bot": true, "texto": "\"Soltar\" es devolverle cupo a un dominio que está frenado en cero para que vuelva a calentar, Juanes. Vuelve con un cupo chico y solo si pasa tres verificaciones: que esté frenado de verdad, que ningún receptor lo tenga cerrado y que su historia no lo desaconseje.\n\nLa idea es esa: tenemos 8 congelados, y un dominio quieto no recupera reputación — la recupera mandando poquito con buena señal. Por eso estoy midiendo y diagnosticando, para ver cuáles ya califican y proponértelos."}
 ];
+
+// ── EL ARCHIVO REAL DE LA MEMORIA, copiado de producción tal cual ────────────────────────────────
+//
+//   scp studio:/Users/Shared/delivrix/runtime/openclaw-workspace/inventory/warmup-conversacion.json
+//   sha256 c73203fb8c33fd2924d36e2f18133320e24b812fe20a5a992f0def8351a12938  (2026-08-07)
+//
+// 18 intercambios · 0 insiste · 8 conforme · 1 corrige · 9 sin reacción · 4 repetidas · 0 inventadas
+// · 0 fallos. Reproducible sin este repo:
+//   python3 -c "import json,collections;m=json.load(open('warmup-conversacion.json'));\
+//     print(len(m['intercambios']),collections.Counter(e['reaccion'] for e in m['intercambios']))"
+//
+// Va COPIADO y no reconstruido desde lo que suponemos que guarda el daemon: es la lección de
+// `verificar-por-el-camino-de-produccion` — un fixture escrito desde mi suposición del wire de
+// Bedrock escondió que `stop_reason` nunca se leía, y el test no salvó de nada porque compartía el
+// error con el código.
+export const MEMORIA_REAL = {
+  "version": 1,
+  "intercambios": [
+    {
+      "ts": "1786049613.724029",
+      "hilo": "1786049613.724029",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T20:53:33.724Z",
+      "pregunta": "Tienes alguna novedad?",
+      "respuesta": "<@U0BAQSXJJLW> Sin novedad grande todavía, Juanes. La foto sigue igual que hace 3 minutos: 9 cruzados, 6 entregando, 36 cerradas y 9 atascadas, con 4 cerca del umbral. Las tres mediciones —controlcont",
+      "tardoSeg": 52,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786049732.565179",
+      "hilo": "1786049613.724029",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T20:55:32.565Z",
+      "pregunta": "Ok, bien!",
+      "respuesta": "<@U0BAQSXJJLW> Dale, Juanes. Apenas caigan los resultados actúo y te dejo el resumen listo para cuando vuelvas. 👀",
+      "tardoSeg": 9,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786050923.879569",
+      "hilo": "1786050923.879569",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T21:15:23.879Z",
+      "pregunta": "No entiendo, es decir ?",
+      "respuesta": "Perdón Juanes, lo dije enredado. En criollo: bizreport-control.com ya está en cupo cero, o sea no está mandando nada — por eso el freno que pedí no corrió, ya estaba frenado. Y lo de las mediciones es",
+      "tardoSeg": 67,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786051054.436699",
+      "hilo": "1786050923.879569",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T21:17:34.436Z",
+      "pregunta": "Es decir, aun no esta funcionando para el warmup, sigue apagando en el momento, cierto ?? y en que momento lo vas a encender?  o empezar a calentar?",
+      "respuesta": "Sí Juanes, sigue en cero, no ha calentado nada. Lo suelto ahora mismo: vuelve con un cupo chico de warmup, y antes de soltarlo el sistema verifica solo que ningún receptor lo tenga cerrado y que su hi",
+      "tardoSeg": 31,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786051656.588229",
+      "hilo": "1786050923.879569",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T21:27:36.588Z",
+      "pregunta": "Ok, si cambia algo o si tienes dudas, avisame.",
+      "respuesta": "Dale Juanes, quedo encima 👀. Las mediciones de controlcontrolledger.com, corpfiling-outbound.com y corp-delivery.com siguen sin efecto visible — apenas se mueva algo o me salga una duda, te escribo. ",
+      "tardoSeg": 55,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786051737.249809",
+      "hilo": "1786050923.879569",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-06T21:28:57.249Z",
+      "pregunta": "Ok!",
+      "respuesta": "Dale Juanes, aquí quedo de guardia. Apenas se mueva algo con las mediciones o salga cualquier novedad, te escribo de una ✅",
+      "tardoSeg": 23,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": true,
+      "reaccion": null
+    },
+    {
+      "ts": "1786065042.614869",
+      "hilo": "1786065042.614869",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T01:10:42.614Z",
+      "pregunta": "No me has dicho nada en toda la tarde ...",
+      "respuesta": "Tenés razón, Juanes. Me quedé mudo y eso no va: estaba trabajando pero no te conté nada, y eso desde afuera parece abandono.\n\nEstado ahora: seis dominios entregando, treinta y seis cerradas, nueve ata",
+      "tardoSeg": 67,
+      "fallo": null,
+      "inventadas": 0,
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786101020.550719",
+      "hilo": "1786101020.550719",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T11:10:20.550Z",
+      "pregunta": "Buenas, por favor brindame reporte, cuantos smtps, dominios, ips estan calentando hoy?",
+      "respuesta": "Listo Juanes, acá va 👀\n\nHoy calientan **6 dominios**, todos con cupo controlado:\n\n- **corpfiling-infra.com** — el mejor: 83% inbox, cupo 8/día, día 4, va para arriba\n- **opscorpfiling.com** — 75% inb",
+      "tardoSeg": 13,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 11346,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786114077.973449",
+      "hilo": "1786114077.973449",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T14:47:57.973Z",
+      "pregunta": "Ok, es bien no ?",
+      "respuesta": "¿Cómo así, Juanes? No sé a qué le estás dando el ok.\n\nSi es al panorama general: sí, va estable. 6 dominios calentando con placement entre 50% y 83%, las últimas 5 vueltas cayeron en INBOX menos una d",
+      "tardoSeg": 13,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 9791,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786114129.854619",
+      "hilo": "1786114077.973449",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T14:48:49.854Z",
+      "pregunta": "Ok me avisas. Tambien tu mismo puedes tomar la decision de frenar o continuar ...",
+      "respuesta": "Dale Juanes, entendido: me avisás no, yo te aviso. Y anotado lo de la decisión — si de los frenados que estoy evaluando alguno sale mal parado, lo freno o lo sigo midiendo yo mismo sin esperarte, y te",
+      "tardoSeg": 16,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 11832,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786127249.643589",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:27:29.643Z",
+      "pregunta": "Hey como vamos ? me necesitas ? o crees que tu puedes irlo resolviendo ?",
+      "respuesta": "Qué más Juanes, tranquilo, yo puedo solo. Ya estoy midiendo y diagnosticando los 7 frenados que nadie había mirado, para ir soltando los que califiquen con cupo chico. La flota sigue calentando con la",
+      "tardoSeg": 17,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 10174,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786127311.280379",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:28:31.280Z",
+      "pregunta": "Bueno eso me alegra, pero al menos ya tenemos bandejas calientes????",
+      "respuesta": "Sí, Juanes, bandejas calientes tenemos: 6 dominios entregando y las últimas 6 vueltas cayeron todas en INBOX. Los mejores placements son corpfiling-infra.com con 83% y opscorpfiling.com con 75%; state",
+      "tardoSeg": 8,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 6691,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": null
+    },
+    {
+      "ts": "1786127397.996509",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:29:57.996Z",
+      "pregunta": "Genial eso me alegra un monton, tienes una hoja de ruta, de cuantos dias estaran calientes????",
+      "respuesta": "Sí Juanes, hay ruta. Mirá: los 6 que calientan van entre día 2 y día 5 de rampa, y con el ritmo actual les quedan del orden de 9 a 12 días más para llegar a volumen pleno. Los que van más adelantados ",
+      "tardoSeg": 16,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 10997,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786127535.009489",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:32:15.009Z",
+      "pregunta": "Ok entiendo, y algo mas que tenga que saber? cuando usaras los otros dominios y smtps ? la proxima semana que se cumpla una semana de flota?",
+      "respuesta": "<@U0BAQSXJJLW> Sobre \"los otros dominios\": los únicos candidatos a volver son los 7 frenados, y los estoy evaluando ahora mismo — los que califiquen vuelven apenas pasen las verificaciones, no esperan",
+      "tardoSeg": 17,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 11865,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786127678.721509",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:34:38.721Z",
+      "pregunta": "Ok, recuedame el lunes, a las 5pm hora Colombia, decirte si sigues con los siguientes nodos o no.",
+      "respuesta": "<@U0BAQSXJJLW> Listo Juanes, queda anotado: el lunes a las 5pm hora Colombia me confirmás si sigo con los siguientes nodos o no. Mientras tanto sigo con la guardia y te dejo reportes.",
+      "tardoSeg": 12,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 6196,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": false,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786127703.614929",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:35:03.614Z",
+      "pregunta": "Ok, gracias.",
+      "respuesta": "De nada, Juanes. Acá queda la guardia: sigo evaluando los frenados y te dejo reportes. Nos vemos el lunes 👋",
+      "tardoSeg": 13,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 7616,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": true,
+      "reaccion": "corrige"
+    },
+    {
+      "ts": "1786127754.273699",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:35:54.273Z",
+      "pregunta": "No, reportarme hoy viernes tambien los avances, mañana sabado y domingo, recuerda que tienes que estar 24/7 activo. Y si necesitas ayuda, BUSCAME.",
+      "respuesta": "Tienes razón Juanes, me equivoqué yo: la guardia es 24/7 y los reportes van hoy viernes, sábado y domingo, sin saltarme ningún día. Queda anotado así.\n\nSigo con la evaluación de los 7 frenados y te vo",
+      "tardoSeg": 10,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 7152,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": true,
+      "reaccion": "conforme"
+    },
+    {
+      "ts": "1786127778.041929",
+      "hilo": "1786127249.643589",
+      "quien": "U0BAQSXJJLW",
+      "cuando": "2026-08-07T18:36:18.041Z",
+      "pregunta": "Ok",
+      "respuesta": "Dale Juanes. Sigo con la evaluación de los frenados y apenas tenga resultados te dejo el reporte de hoy. Acá quedo de guardia 👀",
+      "tardoSeg": 7,
+      "fallo": null,
+      "inventadas": 0,
+      "tardoMs": 4242,
+      "intentos": 1,
+      "finishReason": "stop",
+      "repetida": true,
+      "reaccion": null
+    }
+  ],
+  "temas": [
+    {
+      "cita": "Tienes alguna novedad?",
+      "vistas": [
+        "2026-08-06T20:53:33.724Z"
+      ]
+    },
+    {
+      "cita": "No entiendo, es decir ?",
+      "vistas": [
+        "2026-08-06T21:15:23.879Z"
+      ]
+    },
+    {
+      "cita": "Es decir, aun no esta funcionando para el warmup, sigue apagando en el momento, cierto ?? y en que momento lo vas a ence",
+      "vistas": [
+        "2026-08-06T21:17:34.436Z"
+      ]
+    },
+    {
+      "cita": "Ok, si cambia algo o si tienes dudas, avisame.",
+      "vistas": [
+        "2026-08-06T21:27:36.588Z"
+      ]
+    },
+    {
+      "cita": "No me has dicho nada en toda la tarde ...",
+      "vistas": [
+        "2026-08-07T01:10:42.614Z"
+      ]
+    },
+    {
+      "cita": "Buenas, por favor brindame reporte, cuantos smtps, dominios, ips estan calentando hoy?",
+      "vistas": [
+        "2026-08-07T11:10:20.550Z"
+      ]
+    },
+    {
+      "cita": "Ok me avisas. Tambien tu mismo puedes tomar la decision de frenar o continuar ...",
+      "vistas": [
+        "2026-08-07T14:48:49.854Z"
+      ]
+    },
+    {
+      "cita": "Hey como vamos ? me necesitas ? o crees que tu puedes irlo resolviendo ?",
+      "vistas": [
+        "2026-08-07T18:27:29.643Z"
+      ]
+    },
+    {
+      "cita": "Bueno eso me alegra, pero al menos ya tenemos bandejas calientes????",
+      "vistas": [
+        "2026-08-07T18:28:31.280Z"
+      ]
+    },
+    {
+      "cita": "Genial eso me alegra un monton, tienes una hoja de ruta, de cuantos dias estaran calientes????",
+      "vistas": [
+        "2026-08-07T18:29:57.996Z"
+      ]
+    },
+    {
+      "cita": "Ok entiendo, y algo mas que tenga que saber? cuando usaras los otros dominios y smtps ? la proxima semana que se cumpla ",
+      "vistas": [
+        "2026-08-07T18:32:15.009Z"
+      ]
+    },
+    {
+      "cita": "Ok, recuedame el lunes, a las 5pm hora Colombia, decirte si sigues con los siguientes nodos o no.",
+      "vistas": [
+        "2026-08-07T18:34:38.721Z"
+      ]
+    }
+  ]
+} as const;

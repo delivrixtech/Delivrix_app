@@ -141,6 +141,27 @@ export interface ReputacionDominio {
   porPresupuesto?: boolean;
   /** Cómo trata el receptor a esa IP hoy: `"cerrado"` es la señal que se cruza con las listas. */
   receptor?: string | null;
+  /**
+   * LAS TRES SEÑALES DE AUTENTICACIÓN, que el barrido YA MIDE y que nadie leía.
+   *
+   * `barrerReputacion` escribe spf/dkim/dmarc/ptr/tls por dominio desde hace días (reputacion.ts:396)
+   * y este tipo declaraba sólo `listas`, así que el archivo traía el dato y ninguna regla lo miraba.
+   * Medido sobre el archivo de producción del 2026-08-07 (66 dominios): DOS filas en "mal" —
+   * corpfiling-ops.com con `ptr: "193.180.211.182 no tiene PTR"` y nfcfilings.com con
+   * `spf: "el dominio no publica SPF"`— y nadie lo dijo nunca en el canal.
+   *
+   * Van OPCIONALES, como el resto: sin el campo el predicado da falso y el resultado es SILENCIO,
+   * jamás "la autenticación está bien". Es la misma disciplina que `listas`.
+   *
+   * DMARC y TLS quedan AFUERA a propósito. `dmarc` en "mal" es una decisión de política (p=none
+   * frente a p=quarantine) y no rompe la entrega del primer correo; `tls` está en "no-se" en los 66
+   * dominios del archivo real porque el llamador nunca le pasa la sonda, así que una regla sobre él
+   * no podría dispararse nunca — prometer una vigilancia que el dato no puede sostener es
+   * exactamente lo que este repo ya pagó cuatro veces.
+   */
+  spf?: { estado?: string; detalle?: string } | null;
+  dkim?: { estado?: string; detalle?: string } | null;
+  ptr?: { estado?: string; detalle?: string } | null;
   medidoEn?: string | null;
 }
 
@@ -454,6 +475,24 @@ export function camposObservables(
   return m;
 }
 
+/**
+ * LA CLAVE DEL RETRATO, DICHA COMO SE DICE. `placement:filing-ops.com` → "el placement de
+ * filing-ops.com"; `cap.frenados` → "los dominios frenados".
+ *
+ * Existe exportada porque `promesas.ts` armaba sus líneas con la clave CRUDA y le mandaba al jefe
+ * "placement:filing-ops.com pasó de sin medir a INBOX" — la clave de máquina, en el canal, en el
+ * estreno de esa función. El mapa `ETIQUETA` ya estaba escrito acá y a un import de distancia.
+ *
+ * Sin plantilla cae al OBJETO pelado (el dominio) y no a la clave: un campo que nadie tradujo se
+ * dice a medias, no en jerga.
+ */
+export function claveLegible(clave: string): string {
+  const { campo, objeto } = parteClave(clave);
+  const etiqueta = ETIQUETA[campo];
+  if (etiqueta === undefined) return objeto || clave;
+  return objeto ? `${etiqueta} de ${objeto}` : etiqueta;
+}
+
 /** Separa la clave en (campo legible, objeto). Los dominios tienen puntos: por eso no se parte por el primero. */
 function parteClave(clave: string): { campo: string; objeto: string } {
   // `placement:` no lleva sufijo de campo, y partir por el último punto le comería el TLD
@@ -646,7 +685,16 @@ function fraseHumana(campo: string, objeto: string, antes: string, despues: stri
     const n = Number(despues);
     const m = Number(antes);
     if (!Number.isFinite(n) || !Number.isFinite(m)) return null;
-    return n > m ? `quedaron ${n} dominios frenados (eran ${m}).` : `ya son ${n} los dominios sueltos que estaban frenados (eran ${m}).`;
+    // LA RAMA QUE BAJA DECÍA LO CONTRARIO DE SU PROPIO NÚMERO. `cap.frenados` es la cantidad de
+    // FRENADOS (`camposObservables`: `m["cap.frenados"] = hechos.cap.frenados.length`), así que
+    // 8 → 7 es "se soltó UNO y quedan 7 frenados". Salía "ya son 7 los dominios sueltos que estaban
+    // frenados": presentaba los 7 que SIGUEN frenados como los liberados — inflado 7×, y justo en la
+    // dirección del volumen, que es la única irreversible. Y no era teórico: hay promesas abiertas
+    // esperando exactamente esta clave, así que iba a disparar sola.
+    // Los soltados se dicen por DIFERENCIA (`m - n`), que es lo único que el dato prueba.
+    return n > m
+      ? `quedaron ${n} dominios frenados (eran ${m}).`
+      : `soltaron ${m - n}: quedan ${n} dominios frenados (eran ${m}).`;
   }
 
   if (campo === "flota.sanas") return `las bandejas sanas pasaron de ${antes} a ${despues}.`;
@@ -841,6 +889,72 @@ const medicionDelCupoVigente = (e: EstadoParaSlack): boolean => {
 /** Lo que el `detalle` del ejecutor afirma sobre el cupo del nodo, y que el snapshot no puede probar. */
 const AFIRMA_QUE_NO_PEGO = /sigue con cupo[^.]*|no quedó puesto|no pegó|no se aplicó/gi;
 
+/**
+ * POR QUÉ NO PUDO, DICHO PARA UNA PERSONA. El `detalle` crudo NO SALE MÁS AL CANAL.
+ *
+ * La regla dec3 interpolaba `a.detalle` verbatim, y esa mano toca infraestructura: el mensaje va con
+ * `pide: true`, o sea que le suena el móvil al jefe para leer un renglón de log. Textual de lo que
+ * salió en producción: "no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432", 'rechazada:
+ * "medir_dominio_controlcontrolledger.com" no es una acción permitida'. Eso no es una frase de
+ * persona: es un stack trace con un prefijo en castellano.
+ *
+ * Los cuatro motivos salen del log real del 2026-08-07, con su frecuencia medida ahí:
+ *   · 26 — "rechazada: frenar no está habilitado en este entorno" (el flag lo puso él)
+ *   ·  3 — "no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432" (Postgres caído)
+ *   ·      credencial y SSH, los dos modos de falla del camino al nodo
+ * El dato exacto NO se pierde: sigue entero en runtime/logs/warmup-monitor.log, que es donde se
+ * mira un error. Lo que cambia es qué le vibra el bolsillo a las 3 de la mañana.
+ */
+const MOTIVOS: readonly (readonly [RegExp, string])[] = [
+  // Va PRIMERO por frecuencia y porque es el único que no es una falla: es una decisión suya.
+  [/no est[áa] habilitad[oa]/i, "esa mano está apagada en este entorno"],
+  // LOS DOS GUARDS PROPIOS DE `frenar_dominio`, que caían al default y salían MINTIENDO. Son 2 de
+  // los 4 `detalle` reales de esa mano (acciones-agente.ts, los `rechazada:` de frenar), y el
+  // default los describía como "el motivo es técnico": no lo es. El primero es una regla de negocio
+  // —frenar un dominio sano cuesta calentamiento y lo decide el operador— y el segundo es no tener
+  // el dato. Peor todavía, la frase completa terminaba en "Eso lo destrabas tú" sobre algo que no
+  // está trabado. Antes de este lote el `detalle` crudo salía feo pero VERDADERO; la naturalidad se
+  // comió la precisión, que es el péndulo que este archivo ya declara vigilar.
+  [/lo decide el operador|dominio sano/i, "frenar un dominio sano no lo decido yo, lo decide el operador"],
+  [/no s[eé] si .* tiene daño|no se pudo leer la medici[óo]n/i, "la medición de la flota no se pudo leer, así que no sé si tiene daño y no freno a ciegas"],
+  [/ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ECONNRESET|socket hang up|connect /i, "se me cayó la conexión con la máquina"],
+  [/permission denied|authentication failed|credencial|credential|unauthorized|no autorizado|\b40[13]\b/i, "la credencial que uso no alcanza"],
+  [/\bssh\b|host key|known.hosts|port 22/i, "no pude entrar al nodo por SSH"]
+];
+
+/**
+ * El motivo legible de una mano que falló. Puro.
+ *
+ * El caso del cupo va PRIMERO y sale con su texto entero: "sigue con cupo 255: el freno no quedó
+ * puesto" ya está escrito para una persona —lo escribimos nosotros— y el 255 es el dato que hace
+ * accionable el mensaje. Se le respeta el candado anti-falsedad de siempre: si la medición directa
+ * del nodo venció, la afirmación se cambia por un "no sé", que es lo que de verdad sabemos.
+ *
+ * NO SE USA `.test()` SOBRE `AFIRMA_QUE_NO_PEGO`: lleva la bandera `g`, así que arrastra `lastIndex`
+ * y devuelve falso una llamada de cada dos sobre el MISMO texto. `replace` es idempotente y la
+ * comparación contra el original hace de test sin ese estado escondido.
+ *
+ * EL REEMPLAZO ES UN ESPACIO Y NUNCA UN BYTE DE CONTROL, y esto costó por lo tonto que es: acá vivía
+ * un `\0` LITERAL, así que `grep` clasificaba slack.ts entero como binario y lo salteaba EN SILENCIO.
+ * El comando de aceptación del lote —el grep de voseo sobre este archivo— devolvía cero líneas por
+ * ceguera y no por limpieza; `grep -n "EL CANAL" slack.ts` tampoco encontraba la línea 1. Toda
+ * verificación por grep sobre el archivo que decide qué le llega al jefe estuvo muerta y nadie se
+ * enteró. El `!==` contra el original es todo lo que hace falta: un centinela raro no aporta nada.
+ * Lo fija `SIN BYTES DE CONTROL` en slack.test.ts, que barre el repo entero.
+ */
+export function porQueNoPudo(detalle: string, medicionVigente: boolean): string {
+  const sinLaAfirmacion = detalle.replace(AFIRMA_QUE_NO_PEGO, " ");
+  if (sinLaAfirmacion !== detalle) {
+    return medicionVigente
+      ? detalle
+      : `no sé si quedó puesto, porque la última medición directa del nodo es de hace más de ${HORAS_MEDICION_VIGENTE} horas`;
+  }
+  // EL DEFAULT NO AFIRMA LA CAUSA. Decía "no pude y el motivo es técnico" y eso es una afirmación
+  // que este código no puede sostener: cae acá todo lo que no matcheó, incluidas las reglas de
+  // negocio del propio agente. Y repetía "no pude" dentro de "Quise frenar X y no pude: no pude…".
+  return MOTIVOS.find(([re]) => re.test(detalle))?.[1] ?? "no pude, y el motivo quedó en el log";
+}
+
 /** El dominio de la primera reputación que cumple una condición. Para los textos de d4/c3. */
 const reputacionDonde = (e: EstadoParaSlack, cond: (r: ReputacionDominio) => boolean): ReputacionDominio | undefined =>
   (e.hechos?.reputacion ?? []).find(cond);
@@ -868,6 +982,49 @@ const bandejas = (e: EstadoParaSlack): number | null => {
 const miles = (n: number): string => n.toLocaleString("es-AR");
 
 /**
+ * Los nodos con el tope por encima del techo, marcando cuáles YA cruzaron el umbral permanente.
+ *
+ * El cruce se lee de `flota.cruzados`, que es la MISMA lista que alimenta a d1: no hay una fuente
+ * nueva ni un campo nuevo que alguien tenga que acordarse de llenar. Lo único que cambió es que
+ * `porEncimaDelTecho` dejó de ser ciega a los cruzados (ver node-daily-cap.ts).
+ */
+function porEncima(e: EstadoParaSlack): Array<{ dominio: string; cap: number; yaCruzo: boolean }> {
+  const cruzados = new Set((e.hechos?.flota?.cruzados ?? []).map((d) => d.toLowerCase()));
+  return (e.hechos?.cap?.porEncimaDelTecho ?? []).map((x) => ({ ...x, yaCruzo: cruzados.has(x.dominio.toLowerCase()) }));
+}
+
+/** Las tres señales de autenticación que rompen la entrega por sí solas. Ver `ReputacionDominio`. */
+const SENALES_AUTH = [
+  ["spf", "el SPF"],
+  ["dkim", "la firma DKIM"],
+  ["ptr", "el PTR de su IP"]
+] as const;
+
+/**
+ * Los dominios con la autenticación ROTA, no con la autenticación sin medir.
+ *
+ * `estado === "mal"` es la ÚNICA entrada. `"no-se"` no cuenta: el barrido escribe "no sé" cuando la
+ * consulta falló o cuando no había con qué mirar, y tratarlo como roto sería el error simétrico del
+ * que costó el mes de julio (leer un cero como "está limpio"). Acá el fail es al silencio.
+ */
+function authRota(e: EstadoParaSlack): Array<{ dominio: string; que: string; detalle: string }> {
+  return (e.hechos?.reputacion ?? []).flatMap((r) => {
+    const rotas = SENALES_AUTH.filter(([campo]) => r[campo]?.estado === "mal");
+    if (rotas.length === 0) return [];
+    return [
+      {
+        dominio: r.dominio,
+        que: rotas.map(([, comoSeDice]) => comoSeDice).join(" y "),
+        // El detalle del barrido ya viene escrito para una persona ("193.180.211.182 no tiene PTR",
+        // "el dominio no publica SPF"): es el único caso de este archivo donde el texto de la
+        // máquina se puede citar tal cual, y por eso se cita.
+        detalle: rotas.map(([campo]) => r[campo]?.detalle).find(Boolean) ?? ""
+      }
+    ];
+  });
+}
+
+/**
  * LA LISTA CERRADA DE RAZONES PARA INTERRUMPIR A JUANES.
  *
  * El orden es el orden de salida: DANO antes que CEGUERA antes que DECISION, y dentro de cada clase
@@ -892,7 +1049,7 @@ export const REGLAS: readonly Regla[] = [
     predicado: (e) => cruzadosNuevos(e).length > 0,
     texto: (e) => {
       const nuevos = cruzadosNuevos(e);
-      return `${nuevos.join(", ")} ${nuevos.length === 1 ? "cruzó" : "cruzaron"} el umbral de volumen de Gmail. Eso no se revierte: ${nuevos.length === 1 ? "ese dominio queda" : "esos dominios quedan"} marcado para siempre. Decime si lo mato acá o si seguimos.`;
+      return `${nuevos.join(", ")} ${nuevos.length === 1 ? "cruzó" : "cruzaron"} el umbral de volumen de Gmail. Eso no se revierte: ${nuevos.length === 1 ? "ese dominio queda" : "esos dominios quedan"} marcado para siempre. Dime si lo mato aquí o si seguimos.`;
     }
   },
   {
@@ -912,10 +1069,10 @@ export const REGLAS: readonly Regla[] = [
       const sanas = salto(e, "flota.sanas");
       const bloq = salto(e, "flota.bloqueadas");
       if (sanas && sanas.antes - sanas.despues >= 3) {
-        return `Se cayeron ${sanas.antes - sanas.despues} bandejas de golpe: quedan ${sanas.despues} sanas de las ${sanas.antes} que había. Mirá si hay que bajar un nodo.`;
+        return `Se cayeron ${sanas.antes - sanas.despues} bandejas de golpe: quedan ${sanas.despues} sanas de las ${sanas.antes} que había. Mira si hay que bajar un nodo.`;
       }
       const b = bloq ?? { antes: 0, despues: 0 };
-      return `Se bloquearon ${b.despues - b.antes} bandejas más de golpe: ya son ${b.despues}. Mirá si hay que retirar un nodo.`;
+      return `Se bloquearon ${b.despues - b.antes} bandejas más de golpe: ya son ${b.despues}. Mira si hay que retirar un nodo.`;
     }
   },
   {
@@ -930,18 +1087,41 @@ export const REGLAS: readonly Regla[] = [
     // `limite-fisico`: en el replay de 24 h esto daba verdadero en 135 de 135 vueltas y sacaba 4
     // mensajes por día sobre el MISMO dominio, todos los días. Con la firma habla cuando entra o
     // sale un dominio de la lista, que es cuando hay algo nuevo que hacer.
-    firmaDelHecho: (e) => (e.hechos?.cap?.porEncimaDelTecho ?? []).map((x) => `${x.dominio}=${x.cap}`).sort().join(","),
+    //
+    // LA MARCA `!` NO ES ADORNO: distingue al que ya cruzó del que va camino. Sin ella, un dominio
+    // que pasa de "cerca" a "cruzó" sin que le muevan el cap tiene la MISMA firma, así que el
+    // mensaje nuevo —que es el grave— quedaría tapado por el viejo.
+    firmaDelHecho: (e) => porEncima(e).map((x) => `${x.dominio}=${x.cap}${x.yaCruzo ? "!" : ""}`).sort().join(","),
     texto: (e) => {
-      const l = [...(e.hechos?.cap?.porEncimaDelTecho ?? [])];
-      const uno = l.length === 1;
+      const l = porEncima(e);
       // LOS DOS NÚMEROS ADENTRO DE LA FRASE. Sin ellos el mensaje decía "por encima del techo que
       // aguanta el dominio" y la respuesta textual del jefe fue "No entiendo, es decir ?".
-      const dichos = l.map((x) => `${x.dominio} tiene el nodo cableado a ${miles(x.cap)} por día`);
-      const frase = uno ? dichos[0] : `${dichos.slice(0, -1).join("; ")} y ${dichos[dichos.length - 1]}`;
-      return (
-        `${frase}, y el techo que aguanta un dominio es ${miles(TECHO_DURO_POR_DOMINIO)}. ` +
-        `${uno ? "Va" : "Van"} camino al umbral permanente de Gmail: hay que bajarle el cap al nodo.`
-      );
+      const listar = (xs: typeof l): string => {
+        const dichos = xs.map((x) => `${x.dominio} tiene el nodo cableado a ${miles(x.cap)} por día`);
+        return dichos.length === 1 ? dichos[0]! : `${dichos.slice(0, -1).join("; ")} y ${dichos[dichos.length - 1]}`;
+      };
+      const techo = `el techo que aguanta un dominio es ${miles(TECHO_DURO_POR_DOMINIO)}`;
+      const cruzados = l.filter((x) => x.yaCruzo);
+      const camino = l.filter((x) => !x.yaCruzo);
+      // LOS DOS CASOS SE DICEN DISTINTO PORQUE LA LLAVE ES LA MISMA PERO LA URGENCIA NO.
+      //  · camino: todavía se puede evitar el daño permanente bajando el tope.
+      //  · ya cruzó: el daño de Gmail ya está hecho y no se deshace, y el nodo sigue con el freno
+      //    siete veces por encima de lo que hay que frenar, así que el mismo volumen va ahora contra
+      //    el siguiente receptor. Medido: 8 de los 9 nodos que cruzaron figuran cerca de Yahoo.
+      const frases: string[] = [];
+      if (camino.length > 0) {
+        frases.push(
+          `${listar(camino)}, y ${techo}. ${camino.length === 1 ? "Va" : "Van"} camino al umbral permanente de Gmail: ` +
+            `hay que bajarle el tope diario al nodo.`
+        );
+      }
+      if (cruzados.length > 0) {
+        frases.push(
+          `${listar(cruzados)} y ${cruzados.length === 1 ? "ya cruzó" : "ya cruzaron"} el umbral de Gmail, que no se deshace. ` +
+            `Con ${techo}, ese mismo volumen va ahora contra el siguiente receptor. Hay que bajarle el tope diario al nodo igual.`
+        );
+      }
+      return frases.join(" ");
     }
   },
   {
@@ -959,9 +1139,48 @@ export const REGLAS: readonly Regla[] = [
       if (!r) return "";
       if (listado(r)) {
         const l = Array.isArray(r.listas) ? r.listas : [];
-        return `La IP de ${r.dominio} (${r.ip ?? "sin IP en el inventario"}) figura en ${l.length} lista${l.length === 1 ? "" : "s"} negra${l.length === 1 ? "" : "s"}: ${l.join(", ")}. Ese nodo hay que bajarlo o retirarlo.`;
+        // EL CONTADOR, que d5 ya tenía y ésta no. Con los datos del 2026-08-07 el mensaje nombraba
+        // UN dominio de CINCO listados (corp-delivery.com, infranationalreport.com,
+        // annualfiling-ops.com, annualfilingops.com, annualfilings-infra.com) y no decía que había
+        // más. En la clase de mensaje que le hace vibrar el móvil, y en la dirección peligrosa: el
+        // jefe baja ese nodo y se queda tranquilo con cuatro puestos.
+        const otros = (e.hechos?.reputacion ?? []).filter(listado).length - 1;
+        const mas = otros > 0 ? ` Hay ${otros} ${otros === 1 ? "dominio más" : "dominios más"} en la misma.` : "";
+        return `La IP de ${r.dominio} (${r.ip ?? "sin IP en el inventario"}) figura en ${l.length} lista${l.length === 1 ? "" : "s"} negra${l.length === 1 ? "" : "s"}: ${l.join(", ")}. Ese nodo hay que bajarlo o retirarlo.${mas}`;
       }
-      return `${r.dominio} tiene las 2 señales cruzadas: 0 listas negras y el receptor cerrado. Las listas no ven la reputación interna del receptor, así que limpio no quiere decir sano. Mirá si ese nodo se retira.`;
+      return `${r.dominio} tiene las 2 señales cruzadas: 0 listas negras y el receptor cerrado. Las listas no ven la reputación interna del receptor, así que limpio no quiere decir sano. Mira si ese nodo se retira.`;
+    }
+  },
+  {
+    // LA AUTENTICACIÓN ROTA NO ES REPUTACIÓN: ES LA PUERTA CERRADA CON LLAVE.
+    //
+    // El barrido mide spf/dkim/ptr por dominio desde hace días y ninguna regla los leía. Medido
+    // sobre el archivo real del 2026-08-07 (66 dominios): corpfiling-ops.com no tiene PTR desde
+    // que existe —textual del barrido, "193.180.211.182 no tiene PTR"— y nfcfilings.com no publica
+    // SPF. Nadie lo dijo NUNCA en el canal, ni una vez.
+    //
+    // Va como DAÑO y no como ceguera porque no es que no sepamos: sabemos, y lo que sabemos es que
+    // ese dominio está gastando su ventana de "dominio nuevo" mandando correo que el receptor está
+    // obligado a castigar. Es la única categoría de problema de este archivo que se arregla en
+    // media hora y sin esperar a nadie.
+    //
+    // POR CONJUNTO Y NO POR RELOJ, igual que c3: un PTR que falta hoy va a faltar en la vuelta 144
+    // de hoy y en las 144 de mañana. Se dice una vez, y otra cuando entra o sale un dominio.
+    id: "d5-auth-rota",
+    clase: "dano",
+    decision: "arreglar-el-nodo",
+    pide: true,
+    predicado: (e) => authRota(e).length > 0,
+    firmaDelHecho: (e) => authRota(e).map((x) => `${x.dominio}:${x.que}`).sort().join(","),
+    texto: (e) => {
+      const l = authRota(e);
+      const r = l[0];
+      if (!r) return "";
+      const mas = l.length > 1 ? ` Hay ${l.length - 1} ${l.length === 2 ? "dominio más" : "dominios más"} así.` : "";
+      return (
+        `${r.dominio} tiene ${r.que} en mal estado: ${r.detalle}. Con eso roto el receptor lo castiga por reglamento, ` +
+        `no por reputación, así que el calentamiento que hace no le sirve de nada.${mas} Eso se arregla en el nodo.`
+      );
     }
   },
 
@@ -982,7 +1201,12 @@ export const REGLAS: readonly Regla[] = [
     texto: (e) =>
       e.sinLectura
         ? `Van ${e.vueltasSinLecturaUtil ?? 2} vueltas que no puedo leer el estado: ${e.sinLectura}. Estoy vigilando a ciegas.`
-        : `Van ${e.vueltasSinLecturaUtil ?? 2} vueltas que lo que leo no cuadra con los datos (${e.reparos[0] ?? "sin detalle"}), así que no toqué nada. Estoy vigilando a ciegas.`
+        : // "sin detalle" ERA UN CASO REAL, no un placeholder muerto: `vueltasSinLecturaUtil` viene
+          // de la memoria, así que una vuelta LIMPIA (sin reparos y sin sinLectura) cae igual en
+          // esta rama con el contador heredado y el paréntesis salía con la muletilla adentro. Un
+          // paréntesis vacío no se escribe: se omite.
+          `Van ${e.vueltasSinLecturaUtil ?? 2} vueltas que lo que leo no cuadra con los datos` +
+          `${e.reparos[0] ? ` (${e.reparos[0]})` : ""}, así que no toqué nada. Estoy vigilando a ciegas.`
   },
   {
     // LA MEDICIÓN DEL CUPO VENCE A LAS 12 h Y NADIE SE ENTERA. Es el modo de falla normal, no el
@@ -1042,7 +1266,7 @@ export const REGLAS: readonly Regla[] = [
       return (
         `El veredicto de salud de ${n === null ? "las bandejas" : `las ${n} bandejas`} lo estoy sacando de TODO el correo que pasa por el nodo, ` +
         `no sólo del nuestro: el nodo mezcla lo nuestro con lo de terceros y desde acá no hay forma de separarlo. ` +
-        `Cuando te diga que una bandeja está sana, leelo con ese descuento. Te lo digo una vez y no lo repito hasta que cambie.`
+        `Cuando te diga que una bandeja está sana, léelo con ese descuento. Te lo digo una vez y no lo repito hasta que cambie.`
       );
     }
   },
@@ -1059,7 +1283,7 @@ export const REGLAS: readonly Regla[] = [
     predicado: (e) => !!e.emisor && e.emisor !== "send" && (e.vueltasEmisorFrenado ?? 0) >= 2,
     texto: (e) => {
       const como = COMO_ESTA_EL_EMISOR[e.emisor ?? ""] ?? `parado (${e.emisor ?? "sin estado"})`;
-      return `Van ${e.vueltasEmisorFrenado ?? 2} vueltas con el emisor ${como}, así que hoy no está calentando nada. Levantás la pausa vos o sigo esperando.`;
+      return `Van ${e.vueltasEmisorFrenado ?? 2} vueltas con el emisor ${como}, así que hoy no está calentando nada. La pausa la levantas tú o sigo esperando.`;
     }
   },
   {
@@ -1074,7 +1298,10 @@ export const REGLAS: readonly Regla[] = [
     firmaDelHecho: (e) => firmaDeLaMano(manoTrabada(e, new Set(["soltar_dominio"]))),
     texto: (e) => {
       const a = manoTrabada(e, new Set(["soltar_dominio"]));
-      return `Quiero soltar ${a?.objetivo ?? "un dominio"} y no me deja: ${a?.detalle ?? "sin detalle"}. Lo autorizás vos.`;
+      // "sin detalle" era la muletilla de un log, no una frase. Cuando no hay motivo se dice que no
+      // lo hay, con las palabras con las que uno se lo diría a alguien.
+      const porque = a?.detalle ? `: ${a.detalle}` : ", y no me dijo por qué";
+      return `Quiero soltar ${a?.objetivo ?? "un dominio"} y no me deja${porque}. Eso lo autorizas tú.`;
     }
   },
   {
@@ -1097,16 +1324,15 @@ export const REGLAS: readonly Regla[] = [
       const a = manoTrabada(e, new Set(["frenar_dominio", "pausar_warmup"]));
       const global = a?.accion === "pausar_warmup";
       const que = global ? "parar el calentamiento de la flota entera" : `frenar ${a?.objetivo ?? "un dominio"}`;
-      const detalle = a?.detalle ?? "sin detalle";
-      const vigente = medicionDelCupoVigente(e);
-      const dicho = vigente
-        ? detalle
-        : detalle.replace(AFIRMA_QUE_NO_PEGO, `no sé si quedó puesto, porque la última medición directa del nodo es de hace más de ${HORAS_MEDICION_VIGENTE} horas`);
+      // EL `detalle` CRUDO NO SE INTERPOLA MÁS. Ver `porQueNoPudo`: esta mano toca infraestructura y
+      // el mensaje va con `pide: true`, así que lo que salía por acá era un renglón de log haciéndole
+      // vibrar el móvil.
+      const dicho = porQueNoPudo(a?.detalle ?? "", medicionDelCupoVigente(e));
       // La mano global no tiene objetivo, así que sin esto el mensaje sale sin un solo dato que
       // agarrar — la regresión de "Sigo acá. Ya los estoy evaluando…". El número no se inventa: la
       // acción no se ejecutó, o sea que quedaron 0 frenos aplicados.
       const consecuencia = global ? " Quedaron 0 frenos aplicados y sigue mandando." : "";
-      return `Quise ${que} y no pude: ${dicho}.${consecuencia} Esto lo destrabás vos.`;
+      return `Quise ${que} y no pude: ${dicho}.${consecuencia} Eso lo destrabas tú.`;
     }
   },
   {
@@ -1130,6 +1356,19 @@ export const REGLAS: readonly Regla[] = [
     pide: true,
     predicado: (e) => {
       if (e.emisor !== "send") return false;
+      // TERCERA GUARDA, y salió de una falsa alarma REAL. El 2026-08-07T18:35 esta regla avisó
+      // "hace 3 horas que la fábrica no da una vuelta" mientras el daemon llevaba 4h48m vivo y su
+      // propia última línea decía: "PAUSA — los 6 boxes del pool ya agotaron su cupo diario. Nada
+      // que enviar hoy". La fábrica no estaba rota: había TERMINADO.
+      //
+      // Y esa clase de error es peor que escalar algo resoluble. Un aviso que grita en falso no
+      // molesta: enseña a ignorar todos los demás, incluido el que un día sí importe. Si cada
+      // dominio del plan ya gastó su cupo, el silencio es la consecuencia esperada del diseño, no
+      // un síntoma. La contradicción que esta regla busca es entre lo que el emisor DICE y lo que
+      // la fábrica HACE — y acá no hay contradicción: hizo exactamente lo que tenía permitido.
+      const plan = e.hechos?.plan ?? [];
+      const todosCumplieronSuCupo = plan.length > 0 && plan.every((p) => p.enviadosHoy >= p.cupo);
+      if (todosCumplieronSuCupo) return false;
       const h = horasDesde(e.hechos?.vueltas?.[0]?.cuando ?? null, e.ahoraISO);
       return h !== null && h >= HORAS_SIN_ENVIAR;
     },
@@ -1140,7 +1379,7 @@ export const REGLAS: readonly Regla[] = [
       // "no manda un correo" sobre eso sería afirmar de más.
       return (
         `Hace ${Math.round(h)} horas que la fábrica no da una vuelta —ni un envío, ni una medición— y el emisor dice que está mandando. ` +
-        `El daemon tendría que dar una cada hora y media. Andá a ver si sigue vivo.`
+        `El daemon tendría que dar una cada hora y media. Échale un ojo a ver si sigue vivo.`
       );
     }
   },
@@ -1176,7 +1415,7 @@ export const REGLAS: readonly Regla[] = [
       const hechas = e.acciones.filter((a) => a.ejecutada && TOCAN.has(a.accion));
       const dichas = hechas.map((a) => COMO_SE_DICE[a.accion]?.(a.objetivo ?? "") ?? `toqué ${a.objetivo ?? "la flota"}`);
       const frase = dichas.length === 1 ? dichas[0] : `${dichas.slice(0, -1).join(", ")} y ${dichas[dichas.length - 1]}`;
-      return `Toqué la infraestructura: ${frase}. Si no querés que quede así, revertilo.`;
+      return `Toqué la infraestructura: ${frase}. Si no quieres que quede así, reviértelo.`;
     }
   }
 ];

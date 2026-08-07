@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { esLaMisma } from "./decisiones-del-jefe.ts";
-import { CANAL_REAL } from "./memoria-conversacion.fixture.ts";
+import { CANAL_REAL, MEMORIA_REAL } from "./memoria-conversacion.fixture.ts";
 import {
   anotar,
   anotarReaccion,
@@ -287,12 +287,25 @@ test("la reacción se busca sin filtrar por hilo", () => {
   assert.equal(m.intercambios[0]?.reaccion, "insiste");
 });
 
-test("una reacción que llega tarde no cuenta", () => {
-  // Silencio ≠ aprobación, y un "ok" de dos horas después tampoco habla de esa respuesta.
+test("una reacción que llega tarde SÍ cuenta: el reloj no aportaba identidad", () => {
+  // ESTE TEST CAMBIÓ DE SENTIDO, y el motivo está medido en el archivo real de producción
+  // (sha256 c73203fb…): el corte de 15 minutos tiraba DOS DE LAS TRES correcciones que el jefe
+  // hizo de verdad —"No entiendo, es decir ?" a los 19,9 min y "No me has dicho nada en toda la
+  // tarde ..." a los 221,8— y las dejaba en `null`, que se lee como "no contestó nada". El jefe
+  // contesta cuando puede: 126 minutos es su máximo medido de latencia, o sea que el corte estaba
+  // por debajo de su ritmo normal.
+  //
+  // Lo que sostiene la etiqueta no es el reloj sino el selector: el intercambio elegido es el más
+  // reciente SIN reacción y del mismo autor, así que el mensaje siguiente es su etiqueta por
+  // construcción. El techo lo pone `DIAS_VIDA`, que recorta el archivo a 30 días.
   let m = memoriaVacia();
   m = anotar(m, { ts: "1", hilo: "h", quien: "U1", pregunta: "Como vamos ?", respuesta: "pausado", cuando: T, tardoSeg: 10, fallo: null, inventadas: 0 });
   m = anotarReaccion(m, { texto: "Ok!", cuando: "2026-08-06T14:00:00.000Z" });
-  assert.equal(m.intercambios[0]?.reaccion, null);
+  assert.equal(m.intercambios[0]?.reaccion, "conforme");
+
+  // Y una sola vez: la segunda no pisa la primera, porque el selector salta los ya reaccionados.
+  m = anotarReaccion(m, { texto: "No, eso no era", cuando: "2026-08-06T15:00:00.000Z" });
+  assert.equal(m.intercambios[0]?.reaccion, "conforme", "la etiqueta la escribe el primer mensaje que llega, no el último");
 });
 
 test("dedupe por ts: si el tick se repite, el registro ya está", () => {
@@ -352,11 +365,18 @@ test("TECHO: nunca más de 6 líneas y ninguna da una orden", () => {
   // Y una respuesta reciente en el hilo actual, para que salgan las dos secciones.
   m = anotar(m, { ts: "reciente", hilo: "hilo-actual", quien: "U1", pregunta: "Y ahora que hacemos con los nodos", respuesta: "Frené bizreport-control.com y estoy midiendo el resto", cuando: new Date(t0 - 3 * 60_000).toISOString(), tardoSeg: 12, fallo: null, inventadas: 0 });
 
+  // Y una corrección, que es la evidencia DURA y la única sección que quedó además de la foto.
+  m = anotarReaccion(m, { texto: "No, eso no era lo que te pedí, mirá otra vez el placement", cuando: new Date(t0 - 60_000).toISOString(), quien: "U1" });
+
   const l = lineasParaPrompt(m, "hilo-actual", T);
   assert.ok(l.length > 0, "con datos sí emite");
   assert.ok(l.length <= 6, `nunca más de 6 líneas (fueron ${l.length})`);
   assert.match(l[0] as string, /LO ÚLTIMO QUE DIJISTE \(hace 3 min, en este hilo\)/);
-  assert.match(l.join("\n"), /LO QUE TE PREGUNTA SEGUIDO/);
+  // EL BLOQUE DE TEMAS SE FUE, y el assert cambia de sentido con él: pedía 3 vistas del mismo tema
+  // en 14 días sobre un archivo que guarda 12 temas mientras el canal produce 12,2 por día. Era
+  // inalcanzable, no "todavía vacío". Lo que ocupa su lugar es la evidencia dura, citada.
+  assert.doesNotMatch(l.join("\n"), /LO QUE TE PREGUNTA SEGUIDO/, "el bloque de temas ya no existe");
+  assert.match(l.join("\n"), /TE CORRIGIÓ DESPUÉS DE ESTO/);
   for (const x of l) {
     assert.doesNotMatch(x, /\b(deberías|tenés que|hay que|conviene|revisá|respondé|hacé|mejorá|contestá)\b/, `orden en: ${x}`);
   }
@@ -478,6 +498,141 @@ test("los registros VIEJOS sin tardoMs no entran al percentil (ni cuentan como 0
   const r = resumen(m, T);
   assert.equal(r.modelo.n, 0);
   assert.equal(r.intercambios, 1, "pero el intercambio sí cuenta para todo lo demás");
+});
+
+test("LA VENTANA DE 15 MINUTOS TIRABA DOS DE LAS TRES CORRECCIONES REALES", () => {
+  // Los dos gaps son del archivo de producción (sha256 c73203fb…), medidos con las fechas de sus
+  // propios registros:
+  //   · "Ok, bien!" (20:55:32) → "No entiendo, es decir ?" (21:15:23)              = 19,9 min
+  //   · "Ok!"       (21:28:57) → "No me has dicho nada en toda la tarde ..." (01:10) = 221,8 min
+  // Con `MS_REACCION = 900_000` los dos caían fuera y el intercambio quedaba en `reaccion: null`,
+  // que se lee como "no contestó nada". O sea que la evidencia DURA —la única que el prompt puede
+  // citar— se perdía justo cuando el jefe se tomaba el trabajo de corregir.
+  //
+  // El reloj no aportaba identidad: el intercambio lo elige el selector (el más reciente sin
+  // reacción, del mismo autor), así que el mensaje siguiente es su etiqueta por construcción.
+  const caso = (gapMin: number, pregunta: string, respuesta: string, texto: string) => {
+    let m = memoriaVacia();
+    m = anotar(m, { ts: "1", hilo: "h", quien: "U1", pregunta, respuesta, cuando: T, tardoSeg: 10, fallo: null, inventadas: 0 });
+    return anotarReaccion(m, { texto, cuando: new Date(Date.parse(T) + gapMin * 60_000).toISOString(), quien: "U1" }).intercambios[0]?.reaccion;
+  };
+  assert.equal(caso(19.9, "Ok, bien!", "seis calentando", "No entiendo, es decir ?"), "corrige");
+  // EL SEGUNDO ES `insiste`, NO `corrige`, Y ES LA MITAD QUE FALTABA. Los dos se guardan (que es lo
+  // que este test defiende: sin reloj, ninguno se pierde), pero no dicen lo mismo. "No entiendo, es
+  // decir ?" reclama por el CONTENIDO de la respuesta; "No me has dicho nada en toda la tarde"
+  // reclama por el SILENCIO que vino después, y la respuesta anterior podía estar perfecta. Ver
+  // `clasificarReaccion`: el reloj no distingue las dos cosas —los 15 min tiraban también la
+  // primera— y el texto sí.
+  assert.equal(caso(221.8, "Ok!", "seis calentando", "No me has dicho nada en toda la tarde ..."), "insiste");
+
+  // Lo único que se conserva del reloj es el ORDEN: un mensaje anterior al intercambio no puede ser
+  // su reacción, y eso sigue rechazado.
+  let m = memoriaVacia();
+  m = anotar(m, { ts: "1", hilo: "h", quien: "U1", pregunta: "Como vamos con las bandejas", respuesta: "seis", cuando: T, tardoSeg: 10, fallo: null, inventadas: 0 });
+  m = anotarReaccion(m, { texto: "No, eso no", cuando: new Date(Date.parse(T) - 60_000).toISOString(), quien: "U1" });
+  assert.equal(m.intercambios[0]?.reaccion, null, "un mensaje anterior no etiqueta al posterior");
+});
+
+test("LA CITA DEL PROMPT DICE LA VERDAD SOBRE EL ARCHIVO REAL: reclamo por silencio ≠ reparo al texto", () => {
+  // ESTE TEST MIRA QUÉ DICE LA CITA, no cuántas líneas salen — y ésa era la brecha por la que pasó
+  // el defecto: los tests de este bloque contaban renglones de evidencia dura y pasaban en verde
+  // mientras la línea le enseñaba al modelo exactamente lo contrario de lo que pasó.
+  //
+  // El caso es el del archivo de producción, sin inventar nada: los 6 primeros intercambios de
+  // MEMORIA_REAL y el mensaje real "No me has dicho nada en toda la tarde ..." (01:10:42Z). El
+  // intercambio que queda etiquetado es el 5, cuya respuesta fue "Dale Juanes, aquí quedo de
+  // guardia. Apenas se mueva algo… te escribo de una" — una respuesta CORRECTA. Con la clasificación
+  // vieja el prompt decía `TE CORRIGIÓ DESPUÉS DE ESTO: "Dale Juanes, aquí quedo de guardia…"`, o
+  // sea que prometer guardia se ganaba un reparo. Lo que falló fue el silencio, no el texto.
+  const seis = { ...MEMORIA_REAL, intercambios: MEMORIA_REAL.intercambios.slice(0, 6) } as MemoriaConversacion;
+  const out = anotarReaccion(seis, {
+    texto: "No me has dicho nada en toda la tarde ...",
+    cuando: "2026-08-07T01:10:42.614Z",
+    quien: "U0BAQSXJJLW"
+  });
+  const marcado = out.intercambios[5];
+  assert.match(marcado?.respuesta ?? "", /aquí quedo de guardia/, "el archivo real no cambió: sigue siendo esta respuesta");
+  assert.equal(marcado?.reaccion, "insiste");
+
+  const linea = lineasParaPrompt(out, "x", "2026-08-07T01:20:00.000Z").find((l) => /TE (CORRIGIÓ|INSISTIÓ)/.test(l));
+  assert.ok(linea, "la evidencia dura tiene que seguir entrando al prompt: no se pierde, se dice bien");
+  assert.match(linea, /TE INSISTIÓ DESPUÉS DE ESTO/);
+  assert.doesNotMatch(linea, /TE CORRIGIÓ/, "una respuesta correcta seguida de silencio no es una corrección");
+});
+
+test("UN PEDIDO QUE ARRANCA CORTÉS NO ES UN CONFORME", () => {
+  // Los dos textos son del canal real y se guardaron el MISMO turno como decisiones permanentes del
+  // jefe (d-5 y d-6 de decisiones-del-jefe.json) mientras acá quedaban como "me dio el visto bueno".
+  // Dos memorias del mismo sistema afirmando cosas contrarias sobre el mismo mensaje.
+  const d5 = "Ok me avisas. Tambien tu mismo puedes tomar la decision de frenar o continuar el warmup";
+  const d6 = "Ok, recuedame el lunes, a las 5pm hora Colombia, decirte si sigues con el mismo plan";
+  for (const t of [d5, d6]) {
+    assert.ok(esTema(t), `"${t.slice(0, 30)}…" es un pedido, y esTema ya lo sabía`);
+    assert.notEqual(clasificarReaccion("x", t), "conforme", `no es conforme: "${t.slice(0, 40)}…"`);
+  }
+  // Y el cierre de cortesía de verdad SIGUE siendo conforme: el arreglo no puede comerse el caso
+  // útil, que es el único `conforme` limpio que hay.
+  assert.equal(clasificarReaccion("x", "Ok, gracias."), "conforme");
+  assert.equal(clasificarReaccion("x", "Ok!"), "conforme");
+});
+
+test("A3: la evidencia DURA vuelve al prompt como CITA, y la débil no vuelve", () => {
+  // Es lo que el jefe pidió ("que aprenda de lo que yo le digo") y lo único que ya se guardaba sin
+  // volver nunca: `Intercambio.reaccion` existe hace días y ninguna línea del prompt la leía.
+  const conReaccion = (texto: string): string[] => {
+    let m = memoriaVacia();
+    m = anotar(m, { ts: "1", hilo: "h", quien: "U1", pregunta: "Como vamos con las bandejas", respuesta: "Nos vemos el lunes, quedo de guardia", cuando: T, tardoSeg: 10, fallo: null, inventadas: 0 });
+    m = anotarReaccion(m, { texto, cuando: new Date(Date.parse(T) + 60_000).toISOString(), quien: "U1" });
+    return lineasParaPrompt(m, "h", new Date(Date.parse(T) + 120_000).toISOString());
+  };
+
+  const corrige = conReaccion("No, reportarme hoy viernes tambien los avances");
+  assert.ok(corrige.some((l) => l.startsWith("TE CORRIGIÓ")), `un corrige produce la línea: ${corrige.join(" | ")}`);
+  // SE CITA LO QUE DIJO ÉL, no lo que escribió el jefe: la frase del jefe es una orden y su lugar es
+  // decisiones-del-jefe.ts. Traerla acá la duplicaría en dos memorias y es el camino más corto a que
+  // un reclamo puntual se vuelva regla permanente.
+  assert.match(corrige.join("\n"), /"Nos vemos el lunes, quedo de guardia"/);
+  assert.doesNotMatch(corrige.join("\n"), /reportarme hoy viernes/, "la orden del jefe es de la otra memoria");
+
+  // `conforme` NO entra: es evidencia débil ("Ok!" tanto puede ser "entendí" como "ya fue,
+  // dejalo") y un prompt que la premia se gana diciendo cosas que cierren la charla.
+  assert.ok(!conReaccion("Ok, gracias.").some((l) => l.startsWith("TE ")), "un conforme no produce nada");
+
+  // DATO, NUNCA CONSEJO: el marco que ponemos nosotros no lleva un solo imperativo. Se mira el
+  // marco y no la cita — la cita es texto guardado, y recortarla por su contenido sería editarla.
+  const marco = corrige.filter((l) => l.startsWith("TE ")).map((l) => l.replace(/"[^"]*"/g, ""));
+  for (const x of marco) assert.doesNotMatch(x, /\b(deberías|tenés que|hay que|conviene|revisá|respondé|hacé|mejorá|contestá|no repitas)\b/, `orden en: ${x}`);
+
+  // Y la cita va RECORTADA a MAX_CITA (120), igual que la que emitía el bloque de temas: un mensaje
+  // que vuelve al prompt en cada turno es un canal de persistencia para texto ajeno.
+  let larga = memoriaVacia();
+  larga = anotar(larga, { ts: "1", hilo: "h", quien: "U1", pregunta: "Como vamos con las bandejas", respuesta: "x".repeat(400), cuando: T, tardoSeg: 10, fallo: null, inventadas: 0 });
+  larga = anotarReaccion(larga, { texto: "No, no era eso", cuando: new Date(Date.parse(T) + 60_000).toISOString(), quien: "U1" });
+  const cita = /"([^"]*)"/.exec(lineasParaPrompt(larga, "h", new Date(Date.parse(T) + 120_000).toISOString()).find((l) => l.startsWith("TE ")) ?? "")?.[1] ?? "";
+  assert.equal(cita.length, 120);
+});
+
+test("A3 CONTRA EL ARCHIVO REAL: sale la cita del corrige guardado y ninguna otra", () => {
+  // Sobre la copia de producción (sha256 c73203fb…), no sobre un fixture escrito desde nuestra
+  // suposición: es la lección de `verificar-por-el-camino-de-produccion`.
+  const mem = MEMORIA_REAL as unknown as MemoriaConversacion;
+  const ultimo = mem.intercambios.at(-1) as Intercambio;
+  const ahora = new Date(Date.parse(ultimo.cuando) + 3 * 60_000).toISOString();
+  const l = lineasParaPrompt(mem, ultimo.hilo, ahora);
+
+  // Hay UN solo `corrige` guardado en el archivo y es el del 2026-08-07T18:35:03Z. Ni un `insiste`.
+  assert.equal(mem.intercambios.filter((i) => i.reaccion === "corrige").length, 1);
+  assert.equal(mem.intercambios.filter((i) => i.reaccion === "insiste").length, 0);
+  const duras = l.filter((x) => x.startsWith("TE "));
+  assert.equal(duras.length, 1, `una sola línea de evidencia dura: ${l.join(" | ")}`);
+  assert.match(duras[0] as string, /^TE CORRIGIÓ DESPUÉS DE ESTO \(1 vez en lo guardado\): "/);
+
+  // Y el bloque de temas, que se borró, sobre este mismo archivo emitía CERO: los 12 temas
+  // guardados tienen UNA vista cada uno contra un piso de 3. No se sacó algo que estuviera dando
+  // señal — se sacó un encabezado que nunca tuvo debajo una sola línea.
+  assert.equal(mem.temas.length, 12);
+  assert.ok(mem.temas.every((t) => t.vistas.length === 1), "una vista cada uno: el bloque era inalcanzable");
+  assert.ok(l.length <= 6);
 });
 
 test("fallosSeguidos cuenta los turnos muertos POR HILO", () => {

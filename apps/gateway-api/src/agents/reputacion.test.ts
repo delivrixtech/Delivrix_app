@@ -14,6 +14,10 @@ import {
   type EntradaReputacion,
   type ReputacionLeida
 } from "./reputacion.ts";
+// Se importa del MOTOR a propósito: lo que hay que fijar es que la señal llegue hasta la válvula
+// que excluye del pool, no que el campo se llene. El 5º incidente de esta clase fue exactamente un
+// campo que se llenaba de un lado y no cruzaba al otro.
+import { authRota, elegirPool } from "../../../warmup-engine/src/service/plan-diario.ts";
 
 const AHORA = new Date("2026-08-06T12:00:00.000Z");
 
@@ -342,4 +346,95 @@ test("el presupuesto de cuota vive en CÓDIGO, no en una variable de entorno", (
   // MXToolbox se comparte con la pestaña Reputación del panel.
   assert.equal(typeof PRESUPUESTO_LISTAS_POR_BARRIDO, "number");
   assert.ok(PRESUPUESTO_LISTAS_POR_BARRIDO > 0 && PRESUPUESTO_LISTAS_POR_BARRIDO < 58, "menos que la flota entera");
+});
+
+// ── EL CERTIFICADO, DE PUNTA A PUNTA ─────────────────────────────────────────────────────────────
+
+test("TLS: un cert VENCIDO llega hasta la exclusión del pool, no se queda en el campo", async () => {
+  // No alcanza con probar que el campo se llena: el incidente de esta clase fue exactamente un campo
+  // que se llenaba de un lado y no llegaba al otro. `chequearTls` estaba escrito y testeado desde el
+  // primer día, y el llamador nunca le pasaba la sonda — o sea que `authRota`, que YA excluye por
+  // `tls === "mal"`, estaba conectada a un dato que no podía valer "mal" ni con el cert caído.
+  // filing-ops.com, uno de los 7 candidatos a soltar, es el dominio cuyo cert vencido lo motivó.
+  const vencido = await revisarReputacionDe(entrada({
+    dominio: "filing-ops.com",
+    tls: async () => ({ vence: "2026-07-01T00:00:00.000Z", nombre: "mail.filing-ops.com" })
+  }));
+  assert.equal(vencido.tls.estado, "mal");
+  assert.match(vencido.tls.detalle, /venció hace 37 día\(s\)/);
+
+  // Y la cadena entera: la fila del archivo entra a `authRota` con la misma forma con la que la lee
+  // `elegirPool`, y el dominio queda fuera del pool.
+  assert.match(authRota({ tls: { estado: vencido.tls.estado } }) ?? "", /certificado TLS/);
+  const cupos = { porDominio: new Map([["filing-ops.com", 20]]), vencida: false, medidoEn: AHORA.toISOString(), edadHoras: 1 };
+  const { boxes } = elegirPool(cupos, ["filing-ops.com"], undefined, new Map([["filing-ops.com", { tls: { estado: vencido.tls.estado } }]]));
+  assert.deepEqual(boxes, [], "con el certificado caído no se calienta: mandar así quema el dominio");
+
+  // El "no sé" NO excluye a nadie, y esa asimetría es la que deja encender esto sin apagar la
+  // fábrica: sin sonda inyectada la señal es "no sé" y el pool queda igual que hoy.
+  const sinSonda = await revisarReputacionDe(entrada({ dominio: "filing-ops.com" }));
+  assert.equal(sinSonda.tls.estado, "no-se");
+  assert.equal(authRota({ tls: { estado: sinSonda.tls.estado } }), null);
+});
+
+// ── EL RECEPTOR, QUE SE LEÍA Y NO LO ESCRIBÍA NADIE ──────────────────────────────────────────────
+
+test("la fila lleva el estado del RECEPTOR: la mitad de la regla d4 era código muerto", async () => {
+  // La regla que no negocia este módulo —"listas limpias PERO el receptor cerrado"— es el modo de
+  // falla exacto del 2026-07-25: 38 de 64 nodos rechazados por Gmail con 550-5.7.1 y TODAS sus IPs
+  // limpias. El canal la tenía implementada y leía `receptor`, que nadie escribía. Hay 36 bandejas
+  // cerradas hoy para reproducirla.
+  const r = await barridoDeReputacion({
+    orden: ["cerrado.com", "sano.com"],
+    now: () => AHORA,
+    receptorDe: (d) => (d === "cerrado.com" ? "cerrado" : "sano"),
+    revisar: async (d) => rep(d)
+  });
+  assert.equal(r.dominios[0]!.receptor, "cerrado");
+  assert.deepEqual(r.dominios[0]!.listas, [], "y con las listas limpias: las dos señales cruzadas");
+  assert.equal(r.dominios[1]!.receptor, "sano");
+
+  // Sin el dato, `null`: "no se sabe", jamás "sano". Ausencia de dato no es evidencia de nada.
+  const sin = await barridoDeReputacion({ orden: ["x.com"], now: () => AHORA, revisar: async (d) => rep(d) });
+  assert.equal(sin.dominios[0]!.receptor, null);
+});
+
+// ── LA CUOTA: NO SE GASTA EN PREGUNTAS QUE NO SE FORMULAN ────────────────────────────────────────
+
+test("un dominio SIN IP no gasta presupuesto: la unidad queda para el que sí se puede consultar", async () => {
+  // Medido: hasta 7 de las 25 consultas (28%) se iban en dominios sin binding, donde
+  // `chequearBlacklist` ni llama a la API. Los dominios del final de la lista quedaban sin medir por
+  // una cuota que nadie gastó.
+  const r = await barridoDeReputacion({
+    orden: ["sinip1.com", "sinip2.com", "sinip3.com", "conip1.com", "conip2.com"],
+    presupuesto: 2,
+    now: () => AHORA,
+    revisar: async (d, conListas) =>
+      d.startsWith("sinip")
+        ? rep(d, { ip: null, blacklist: { estado: "no-se", detalle: "no sé de qué IP hablamos: el dominio no tiene nodo asignado en el inventario" } })
+        : rep(d, conListas ? {} : { blacklist: { estado: "no-se", detalle: "no consultado" } })
+  });
+  assert.equal(r.cuota.gastadas, 2, "las dos unidades se gastaron en los dos que sí tienen IP");
+  assert.deepEqual(r.dominios.map((f) => f.listas), ["no-se", "no-se", "no-se", [], []]);
+  // Y el "no sé" de los sin IP NO se marca como decisión de presupuesto: no fue el tope, fue que no
+  // hay a quién preguntarle.
+  assert.equal(r.dominios[0]!.porPresupuesto, undefined);
+});
+
+test("cuando se pregunta y no hay veredicto, se guarda POR QUÉ", async () => {
+  // De 25 consultas del barrido real, 13 volvieron sin veredicto y el motivo se descartaba: la
+  // cobertura real era 12 de 66 (18%) y el archivo la mostraba como 25 de 66. Entre las 13 perdidas
+  // había 4 de los 6 dominios que HOY calientan, que son prioridad 0 del orden.
+  const r = await barridoDeReputacion({
+    orden: ["a.com"],
+    now: () => AHORA,
+    revisar: async (d) => rep(d, { blacklist: { estado: "no-se", detalle: "la API de listas negras respondió con error" } })
+  });
+  assert.equal(r.dominios[0]!.listas, "no-se");
+  assert.equal(r.dominios[0]!.listasMotivo, "la API de listas negras respondió con error");
+  assert.equal(r.cuota.gastadas, 1, "la consulta se gastó igual: preguntamos");
+
+  // Y una fila con veredicto no arrastra motivo: el campo existe solo cuando hay algo que explicar.
+  const ok = await barridoDeReputacion({ orden: ["b.com"], now: () => AHORA, revisar: async (d) => rep(d) });
+  assert.equal(ok.dominios[0]!.listasMotivo, undefined);
 });

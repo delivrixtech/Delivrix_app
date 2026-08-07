@@ -7,11 +7,14 @@ import test from "node:test";
 
 import {
   CAP_AL_SOLTAR,
+  CAP_SEGURO_POR_DOMINIO,
   ejecutarAcciones,
   extraerAcciones,
   MAX_ACCIONES_POR_VUELTA,
   porQueNoVuelve,
+  textoDeLaPropuesta,
   type ContextoAcciones,
+  type DatosParaProponer,
   type Pendiente,
   type ReputacionLeida
 } from "./acciones-agente.ts";
@@ -863,4 +866,197 @@ test("el dominio pegado al nombre de la acción se tolera, no se le pasa el prob
   // Y lo que NO es un desliz sigue rechazándose: un nombre inventado no se parece a ninguna acción.
   const [c] = extraerAcciones("ACCION: borrar_todo_ya | motivo=porque sí");
   assert.equal(c!.accion, "borrar_todo_ya", "no se fuerza a la acción más parecida: eso sería adivinar");
+});
+
+// ── EL BUCLE QUE SE CORTA EN EL EJECUTOR ─────────────────────────────────────────────────────────
+
+test("una consulta que ya dio lo mismo dos veces se RECHAZA, y el rechazo lo dice", async () => {
+  // El incidente está medido en warmup-acciones.json de producción: 300 acciones en 233 vueltas, y
+  // `diagnosticar_dominio bizregistry-ops.com` pedida 34 veces recibiendo 34 veces la misma
+  // respuesta vacía. El contador ya entraba al prompt como PROSA ("lo pediste 34 veces") y el
+  // modelo lo leyó 34 veces sin cambiar de idea. Un bucle no se corta pidiendo; se corta acá.
+  let miradas = 0;
+  const r = await ejecutarAcciones([{ accion: "diagnosticar_dominio", dominio: "a.com", motivo: "ver quién lo cierra" }], ctx({
+    yaDaLoMismo: (accion, objetivo) => (accion === "diagnosticar_dominio" && objetivo === "a.com" ? 34 : null),
+    diagnosticarDominio: async () => { miradas++; return { estado: "ok", bloqueanPor: [], degradadoEn: [], entregados: 0, rechazados: 0, detalle: "" }; }
+  }));
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(miradas, 0, "ni siquiera se abre el SSH");
+  assert.match(r[0]!.detalle, /ya lo pediste 34 veces y las últimas dos dieron exactamente lo mismo/);
+  assert.match(r[0]!.detalle, /dato nuevo/);
+});
+
+test("el corte NO alcanza a las manos que reducen: frenar dos veces igual puede ser legítimo", async () => {
+  // Un `frenar_dominio` con el mismo detalle dos veces puede ser el operador soltando el nodo en el
+  // medio y el agente volviéndolo a frenar. Bloquear una acción que REDUCE por parecerse a la
+  // anterior es el error caro de los dos: lo reversible es frenar de más.
+  const c = ctx({ yaDaLoMismo: () => 9, frenablesConDanio: ["a.com"] });
+  const r = await ejecutarAcciones([{ accion: "frenar_dominio", dominio: "a.com", motivo: "cruzó" }], c);
+  assert.equal(r[0]!.ejecutada, true);
+  assert.deepEqual(c.frenados, ["a.com"]);
+});
+
+test("sin bitácora cableada, el corte no existe y todo sigue igual que hoy", async () => {
+  const r = await ejecutarAcciones([{ accion: "medir_dominio", dominio: "a.com", motivo: "ver" }], ctx({
+    medirDominio: async () => ({ tasaInbox: 0.8, muestra: 5, diaN: 3, ultimaMedicion: "2026-08-07T10:00:00Z" })
+  }));
+  assert.equal(r[0]!.ejecutada, true);
+});
+
+test("las manos que MIRAN dejan su ANTES, o la bitácora no puede juzgar nada", async () => {
+  // Medido: 54 entradas en warmup-acciones.json, 0 con `antes` y por lo tanto 0 veredictos. El
+  // aprendizaje entero estaba apagado porque solo `frenar_dominio` dejaba con qué comparar — y de
+  // esa acción no hay UNA sola entrada en el archivo.
+  const medida = await ejecutarAcciones([{ accion: "medir_dominio", dominio: "a.com", motivo: "ver" }], ctx({
+    medirDominio: async () => ({ tasaInbox: 0.8, muestra: 5, diaN: 3, ultimaMedicion: "2026-08-07T10:00:00Z" })
+  }));
+  assert.deepEqual(medida[0]!.antes, { muestra: 5, ultimaMedicion: "2026-08-07T10:00:00Z" });
+
+  const diag = await ejecutarAcciones([{ accion: "diagnosticar_dominio", dominio: "a.com", motivo: "ver" }], ctx({
+    diagnosticarDominio: async () => ({ estado: "healthy", bloqueanPor: [], degradadoEn: [], entregados: 4, rechazados: 1, detalle: "" })
+  }));
+  assert.deepEqual(diag[0]!.antes, { estado: "healthy", entregados: 4, rechazados: 1 });
+});
+
+// ── LA PROPUESTA DE SUBIDA: ARGUMENTA Y NO EJECUTA ───────────────────────────────────────────────
+
+const DATOS_OK: DatosParaProponer = {
+  cupoActual: 2,
+  cupoPropuesto: 4,
+  placement: { proveedor: "Gmail", tasa: 0.83, muestra: 6 },
+  gate: { pasa: true, falla: null },
+  enviadosHoy: 2
+};
+
+test("proponer_subida escribe una NOTA con los números y no toca absolutamente nada", async () => {
+  // Es el ala que el jefe pidió y la única que no pone la flota en riesgo: el agente pasa de "solo
+  // sabe reducir" a "sabe argumentar que suba", sin tocar el volumen. La decisión es del operador.
+  const c = ctx({ datosParaProponer: async () => DATOS_OK });
+  const r = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "viene bien" }], c);
+
+  assert.equal(r[0]!.ejecutada, true);
+  assert.equal(c.lista.length, 1, "escribe en pendientes");
+  assert.equal(c.frenados.length, 0, "y NADA más: ni un cap tocado");
+  assert.equal(c.pausas.length, 0);
+  // Los números que la hacen evaluable: cupo actual, cupo propuesto, placement CON proveedor y
+  // muestra, y la distancia a los dos techos.
+  const que = c.lista[0]!.que;
+  assert.match(que, /subir a\.com de 2 a 4\/día/);
+  assert.match(que, /placement Gmail 83% sobre 6 mediciones/);
+  assert.match(que, /1996 de margen hasta el techo de 2000\/día/);
+  assert.match(que, /4996 hasta el umbral permanente de Gmail \(5000\/día/);
+  // Y SE LEE COMO PROPUESTA: quién la aprueba va en la primera frase. Una propuesta redactada como
+  // anuncio es el camino más corto a que alguien la ejecute a mano creyendo que ya estaba decidida.
+  // EN TUTEO: es el string más nuevo del canal y nació en voseo ("la aprobás vos"), porque el test de
+  // higiene de la voz vive en slack.test.ts y sólo barría las plantillas de ahí. Ahora lo cubre.
+  assert.match(que, /^PROPUESTA \(esta la apruebas tú, yo no puedo subir un cupo\)/);
+});
+
+test("LA IDENTIDAD DE LA PROPUESTA SOBREVIVE A QUE SE REESCRIBA SU TEXTO", () => {
+  // El dedupe buscaba `startsWith(marcaDePropuesta(d))`, o sea el preámbulo ENTERO, mientras el
+  // comentario de al lado decía "la identidad es el DOMINIO, no su redacción". En este mismo lote
+  // hubo que reescribir el preámbulo (estaba en voseo) y eso habría dejado huérfana toda propuesta
+  // ya abierta en producción: el `find` no la encuentra, `visto` vuelve a 1 y el operador recibe una
+  // segunda propuesta del mismo dominio. Se fija con un pendiente escrito con el texto VIEJO.
+  const viejo = "PROPUESTA (la aprobás vos, yo no puedo subir un cupo): subir a.com de 2 a 4/día. placement Gmail 83%";
+  const nuevo = textoDeLaPropuesta("a.com", DATOS_OK);
+  const marca = "subir a.com de 2 a 4/día";
+  assert.ok(viejo.includes(marca) && nuevo.includes(marca), "los dos textos comparten la identidad, no el preámbulo");
+  // Y no se confunde con otro dominio, que es el falso positivo que el prefijo exacto evitaba.
+  assert.ok(!textoDeLaPropuesta("b.com", DATOS_OK).includes(marca));
+});
+
+test("proponer_subida se AUTORRECHAZA si el dominio no pasa el gate determinista", async () => {
+  const c = ctx({ datosParaProponer: async () => ({ ...DATOS_OK, gate: { pasa: false, falla: "placement 70% < 95% exigido en Gmail" } }) });
+  const r = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "yo lo veo bien" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(c.lista.length, 0, "0 propuestas: no se propone lo que el criterio ya niega");
+  assert.match(r[0]!.detalle, /no pasa el gate del motor \(placement 70% < 95% exigido en Gmail\)/);
+});
+
+test("proponer_subida: sin los números del motor no hay propuesta, y sin la capacidad tampoco", async () => {
+  // Sin evidencia, la nota sería la versión perezosa que YA existía (`anotar_pendiente`) y que ya se
+  // demostró inútil: "hay que subirle el cupo a X" no se puede evaluar.
+  const sinDatos = ctx({ datosParaProponer: async () => null });
+  const a = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "x" }], sinDatos);
+  assert.equal(a[0]!.ejecutada, false);
+  assert.equal(sinDatos.lista.length, 0);
+
+  const sinMano = ctx();
+  const b = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "x" }], sinMano);
+  assert.equal(b[0]!.ejecutada, false);
+  assert.match(b[0]!.detalle, /no está habilitado en este entorno/);
+
+  // Y un dominio inventado no llega ni a pedir los números.
+  const c = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "inventado.com", motivo: "x" }], ctx({ datosParaProponer: async () => DATOS_OK }));
+  assert.match(c[0]!.detalle, /no está en el inventario/);
+});
+
+test("proponer_subida: el techo se verifica ACÁ aunque el motor proponga otra cosa", async () => {
+  // Un techo que solo vive en el productor no es un techo. El umbral de 5.000/día de Gmail es
+  // PERMANENTE y se cruza una sola vez.
+  const c = ctx({ datosParaProponer: async () => ({ ...DATOS_OK, cupoPropuesto: 6000 }) });
+  const r = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(c.lista.length, 0);
+  assert.match(r[0]!.detalle, /pasa el techo de 2000\/día/);
+});
+
+test("dos propuestas de dominios DISTINTOS no se funden en una", async () => {
+  // `mismoPendiente` compara vocabulario, y dos propuestas comparten TODAS las palabras salvo el
+  // nombre del dominio: con ese dedupe la segunda desaparecía y el operador nunca se enteraba. La
+  // identidad de una propuesta es el dominio, no su redacción.
+  const c = ctx({ datosParaProponer: async () => DATOS_OK });
+  await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "x" }], c);
+  await ejecutarAcciones([{ accion: "proponer_subida", dominio: "b.com", motivo: "x" }], c);
+  assert.equal(c.lista.length, 2);
+
+  // Y la MISMA propuesta dos veces suma al contador y REFRESCA los números: una propuesta de ayer
+  // con el placement de ayer es peor que ninguna.
+  const r = await ejecutarAcciones([{ accion: "proponer_subida", dominio: "a.com", motivo: "x" }], c);
+  assert.equal(c.lista.length, 2, "no crea una tercera");
+  assert.equal(c.lista.find((p) => p.que.includes("a.com"))!.visto, 2);
+  assert.equal(r[0]!.ejecutada, false, "re-proponer no es una acción nueva");
+});
+
+test("bajar el cap SOLO baja: nunca puede subir un nodo por accidente", () => {
+  // LA MANO DEL MEDIO, y sale de una queja del jefe: el agente veía infranationalreport.com con el
+  // nodo cableado a 15.000/día contra un techo de 2.000, y sus únicas opciones eran matarlo (cap 0)
+  // o escribirle. Matarlo era desproporcionado —por ese nodo sale correo de un cliente— así que
+  // escribía. Le pasaba un problema que podía resolver solo.
+  //
+  // El riesgo de esta mano es el inverso al de frenar: mal hecha, SUBE. Por eso lee el cap vivo
+  // antes de tocar y se rechaza si ya está en el techo o por debajo.
+  const ctxBajar = (cap: number | null, over: Partial<ContextoAcciones> = {}) => {
+    const bajados: Array<[string, number]> = [];
+    return {
+      bajados,
+      dominiosConocidos: ["alto.com"],
+      leerCupoNodo: async () => ({ cap, consumidoHoy: null }),
+      bajarCapNodo: async (d: string, c: number) => { bajados.push([d, c]); return { antes: cap, despues: c }; },
+      pendientes: { listar: async () => [], guardar: async () => {} },
+      ...over
+    } as never as ContextoAcciones & { bajados: Array<[string, number]> };
+  };
+
+  return (async () => {
+    // Por encima del techo: baja, y al valor CONSTANTE, no al que pida el motivo.
+    const c = ctxBajar(15000);
+    const r = await ejecutarAcciones([{ accion: "bajar_cap_nodo", dominio: "alto.com", motivo: "bajalo a 9000" }], c);
+    assert.equal(r[0]!.ejecutada, true);
+    assert.deepEqual(c.bajados, [["alto.com", CAP_SEGURO_POR_DOMINIO]]);
+    assert.match(r[0]!.detalle, /de 15000 a 2000\/día/);
+
+    // Ya en el techo: no toca nada. Sin este guard, "bajar" un nodo en 20 lo SUBIRÍA a 2000.
+    const enTecho = ctxBajar(20);
+    const r2 = await ejecutarAcciones([{ accion: "bajar_cap_nodo", dominio: "alto.com", motivo: "x" }], enTecho);
+    assert.equal(r2[0]!.ejecutada, false);
+    assert.deepEqual(enTecho.bajados, [], "un nodo en 20 NO se sube a 2000");
+
+    // Cap ilegible: no baja a ciegas. "No sé" nunca es permiso.
+    const ciego = ctxBajar(null);
+    const r3 = await ejecutarAcciones([{ accion: "bajar_cap_nodo", dominio: "alto.com", motivo: "x" }], ciego);
+    assert.equal(r3[0]!.ejecutada, false);
+    assert.deepEqual(ciego.bajados, []);
+  })();
 });

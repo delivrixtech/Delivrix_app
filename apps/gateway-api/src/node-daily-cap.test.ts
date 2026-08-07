@@ -285,6 +285,35 @@ test("el cruce que faltaba: cerca del umbral Y con un cap que lo deja cruzarlo",
   );
 });
 
+test("los que YA CRUZARON también se miran: son los nodos más cargados de la flota", () => {
+  // EL PUNTO CIEGO MEDIDO EL 2026-08-07: `flota.cerca` EXCLUYE a los cruzados por diseño (estar en
+  // las dos listas hacía contar el mismo dominio dos veces), y el llamador le pasaba sólo `cerca`.
+  // Resultado: los 9 nodos con el tope cableado a 15.000/día moviendo entre 9.910 y 11.025 mensajes
+  // diarios —los ÚNICOS que ya demostraron que su volumen alcanza para cruzar un umbral permanente—
+  // eran invisibles para la única regla que mira el tope. Y 8 de esos 9 figuran cerca de Yahoo: van
+  // camino a un SEGUNDO umbral permanente con el freno puesto siete veces por encima.
+  //
+  // Cruzar uno no es razón para dejar de vigilar el siguiente: es exactamente al revés.
+  assert.deepEqual(
+    porEncimaDelTecho({ cerca: [], cruzados: ["infranationalreport.com"], nodos: [{ domain: "infranationalreport.com", cap: 15_000 }] }),
+    [{ dominio: "infranationalreport.com", cap: 15_000 }]
+  );
+
+  // Un dominio en las DOS listas sale UNA vez. Con dos filas, la firma del hecho de la regla d2
+  // cambia sola y el aviso se repite sin que nada haya cambiado.
+  assert.deepEqual(
+    porEncimaDelTecho({ cerca: ["x.com"], cruzados: ["X.COM"], nodos: [{ domain: "x.com", cap: 15_000 }] }),
+    [{ dominio: "x.com", cap: 15_000 }],
+    "ni duplicado ni sensible a la capitalización"
+  );
+
+  // Y las reglas viejas siguen mandando sobre los cruzados: un cruzado sin cap leído NO entra.
+  assert.deepEqual(porEncimaDelTecho({ cerca: [], cruzados: ["x.com"], nodos: [{ domain: "x.com", cap: null }] }), []);
+  assert.deepEqual(porEncimaDelTecho({ cerca: [], cruzados: ["x.com"], nodos: [{ domain: "x.com", cap: 2000 }] }), [], "el techo exacto no es una violación");
+  // Sin el campo se comporta como antes: es opcional y el llamador viejo no cambia de conducta.
+  assert.deepEqual(porEncimaDelTecho({ cerca: ["x.com"], nodos: [{ domain: "x.com", cap: 15_000 }] }), [{ dominio: "x.com", cap: 15_000 }]);
+});
+
 test("no medido NO es 'está sobre el techo': sin cap leído, el dominio no entra", () => {
   // La regla 5 del encargo, acá donde más caro sale: éste es el input de una regla de DAÑO, y un
   // aviso de daño inventado sobre un `cap: null` (SSH caído en ese nodo) es exactamente el probe

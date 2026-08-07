@@ -10,6 +10,7 @@ import {
   loQueSeCallo,
   mandarASlack,
   novedades,
+  porQueNoPudo,
   presupuestoDeAvances,
   promoverPorPreguntas,
   recordarAviso,
@@ -25,7 +26,8 @@ import {
   type Relevancia,
   type TablaRelevancia
 } from "./slack.ts";
-import type { HechosWarmup } from "./warmup-monitor.ts";
+import { textoDeLaPropuesta } from "./acciones-agente.ts";
+import { construirPrompt, SISTEMA, type HechosWarmup } from "./warmup-monitor.ts";
 
 /** Horas desde la medianoche UTC del 2026-08-06. Acepta fracciones: el enfriamiento por clave se
  *  mide en minutos, y con una versión que redondeaba producía una fecha ilegible que `Date.parse`
@@ -110,6 +112,7 @@ test("LA PRUEBA ANTI-CÍRCULO: cada regla nombra la decisión concreta que toma 
     "d3-derrumbe-flota": { llave: "bajar-o-retirar-nodo", hace: "baja o retira el nodo que se cayó" },
     "d2-cerca-con-cap-alto": { llave: "bajar-cap-del-nodo", hace: "baja el cap del nodo" },
     "d4-reputacion": { llave: "bajar-o-retirar-nodo", hace: "retira el nodo con la IP quemada" },
+    "d5-auth-rota": { llave: "arreglar-el-nodo", hace: "le publica el PTR o el SPF que le falta al dominio" },
     "c1-sin-lectura-2": { llave: "arreglar-el-nodo", hace: "levanta el modelo caído" },
     "c2-medicion-vencida": { llave: "arreglar-el-nodo", hace: "vuelve a correr la medición del cupo" },
     "c3-reputacion-no-se": { llave: "arreglar-el-nodo", hace: "arregla la llave de la API de listas negras" },
@@ -396,6 +399,134 @@ test("LA FÁBRICA PARADA MIENTRAS EL EMISOR DICE QUE MANDA", () => {
   assert.notEqual(decidirSiHablar(viva, memBase(), T(10))?.regla, "dec4-fabrica-sin-enviar");
 });
 
+test("LA AUTENTICACIÓN ROTA SE DICE: corpfiling-ops.com lleva días sin PTR y nadie lo dijo", () => {
+  // MEDIDO EN EL ARCHIVO REAL DEL BARRIDO (warmup-reputacion.json, 2026-08-07, 66 dominios): DOS
+  // filas en "mal" —corpfiling-ops.com con `ptr: "193.180.211.182 no tiene PTR"` y nfcfilings.com
+  // con `spf: "el dominio no publica SPF"`— y CERO mensajes en el canal por ese motivo, nunca. El
+  // barrido escribía spf/dkim/dmarc/ptr desde hacía días y `ReputacionDominio` sólo declaraba
+  // `listas`, así que el dato llegaba y ninguna regla lo miraba.
+  const conPtrRoto = base({
+    hechos: { ...HECHOS(), reputacion: [{ dominio: "corpfiling-ops.com", ip: "193.180.211.182", listas: [], ptr: { estado: "mal", detalle: "193.180.211.182 no tiene PTR" } }] }
+  });
+  const a = decidirSiHablar(conPtrRoto, memBase(), T(10));
+  assert.equal(a?.regla, "d5-auth-rota");
+  assert.equal(a?.clase, "dano");
+  assert.equal(a?.decision, "arreglar-el-nodo");
+  assert.equal(a?.pideRespuesta, true);
+  assert.match(a?.texto ?? "", /corpfiling-ops\.com/);
+  assert.match(a?.texto ?? "", /193\.180\.211\.182 no tiene PTR/, "cita el detalle del barrido, que ya está escrito para una persona");
+
+  // "NO MEDIDO" NO ES "ROTO", que es el error simétrico del que costó el mes de julio. El barrido
+  // deja "no-se" cuando la consulta falló o cuando no había con qué mirar: en los 66 dominios reales
+  // el campo `tls` está en "no-se" en los 66, porque el llamador nunca le pasa la sonda.
+  for (const estado of ["no-se", "ok"]) {
+    assert.equal(
+      decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "x.com", listas: [], ptr: { estado, detalle: "d" } }] } }), memBase(), T(10)),
+      null,
+      `un ptr en "${estado}" no es una autenticación rota`
+    );
+  }
+  // Y sin el campo, silencio: el archivo viejo no tiene estas señales y eso no es "está todo bien".
+  assert.equal(decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "x.com", listas: [] }] } }), memBase(), T(10)), null);
+
+  // POR CONJUNTO Y NO POR RELOJ: un PTR que falta hoy va a faltar en las 144 vueltas de hoy y en las
+  // 144 de mañana. Se dice una vez; vuelve a hablar cuando entra o sale un dominio de la lista.
+  // Se compara la REGLA y no `null`: a las 20 h del reloj de prueba ya hay otras reglas verdaderas
+  // (la medición del cupo vence a las 12 h), y exigir silencio total probaría otra cosa.
+  const mem = recordarAviso(conPtrRoto, true, T(10), memBase(), a);
+  assert.notEqual(decidirSiHablar(conPtrRoto, mem, T(20))?.regla, "d5-auth-rota", "diez horas después sigue dicho");
+  const dosRotos = base({
+    hechos: {
+      ...HECHOS(),
+      reputacion: [
+        { dominio: "corpfiling-ops.com", listas: [], ptr: { estado: "mal", detalle: "193.180.211.182 no tiene PTR" } },
+        { dominio: "nfcfilings.com", listas: [], spf: { estado: "mal", detalle: "el dominio no publica SPF" } }
+      ]
+    }
+  });
+  assert.equal(decidirSiHablar(dosRotos, mem, T(20))?.regla, "d5-auth-rota", "un dominio nuevo en la lista SÍ es un hecho nuevo");
+  assert.match(decidirSiHablar(dosRotos, mem, T(20))?.texto ?? "", /1 dominio más/, "dice cuántos más hay, no los enumera todos");
+});
+
+test("d2 mira también a los que YA CRUZARON, que son los nodos más cargados de la flota", () => {
+  // EL PUNTO CIEGO: `flota.cerca` excluye a los cruzados por diseño, y el llamador le pasaba sólo
+  // `cerca` a `porEncimaDelTecho`. Consecuencia medida el 2026-08-07: los 9 nodos con el tope
+  // cableado a 15.000/día moviendo 9.910-11.025 mensajes diarios —los únicos que YA demostraron que
+  // su volumen alcanza para cruzar un umbral permanente— eran invisibles para la única regla que
+  // mira el tope. Y 8 de esos 9 figuran cerca de Yahoo, o sea caminando al SEGUNDO umbral.
+  const yaCruzo = base({
+    hechos: {
+      ...HECHOS(),
+      cap: { ...HECHOS().cap!, porEncimaDelTecho: [{ dominio: "infranationalreport.com", cap: 15_000 }] },
+      flota: { ...HECHOS().flota!, cruzados: ["infranationalreport.com"] }
+    }
+  });
+  const a = decidirSiHablar(yaCruzo, memBase(), T(10));
+  assert.equal(a?.regla, "d2-cerca-con-cap-alto");
+  assert.match(a?.texto ?? "", /ya cruzó/, "no lo cuenta como si todavía se pudiera evitar");
+  assert.match(a?.texto ?? "", /siguiente receptor/, "dice cuál es el daño que TODAVÍA se puede evitar");
+  assert.match(a?.texto ?? "", /15\.000/);
+  assert.match(a?.texto ?? "", /2\.000/, "los dos números, que son lo que vuelve accionable el mensaje");
+
+  // El que NO cruzó se dice distinto: ahí el daño permanente todavía se evita.
+  const camino = base({ hechos: { ...HECHOS(), cap: { ...HECHOS().cap!, porEncimaDelTecho: [{ dominio: "x.com", cap: 15_000 }] } } });
+  const b = decidirSiHablar(camino, memBase(), T(10));
+  assert.match(b?.texto ?? "", /camino al umbral permanente/);
+  assert.ok(!/ya cruzó/.test(b?.texto ?? ""), "no puede afirmar un cruce que no ocurrió");
+
+  // Y LA FIRMA LOS DISTINGUE: sin eso, un dominio que pasa de "cerca" a "cruzó" sin que le muevan el
+  // tope tiene la MISMA firma, así que el mensaje grave quedaría tapado por el que ya se dijo.
+  const mem = recordarAviso(camino, true, T(10), memBase(), b);
+  assert.notEqual(decidirSiHablar(camino, mem, T(20))?.regla, "d2-cerca-con-cap-alto", "el mismo hecho ya está dicho");
+  assert.equal(decidirSiHablar(yaCruzo, mem, T(20))?.regla, "d2-cerca-con-cap-alto", "cruzar el umbral ES un hecho nuevo");
+
+  // "El cap" es jerga nuestra: lo que él tiene que bajar se llama tope diario.
+  assert.ok(!/\bcap\b/i.test(a?.texto ?? ""), `el mensaje habla de "cap", que es jerga de código: ${a?.texto}`);
+});
+
+test("el detalle CRUDO de una mano fallida no sale al canal: le suena el móvil para leer un log", () => {
+  // dec3 interpolaba `a.detalle` verbatim y va con `pide: true`. Textual de lo que salió en
+  // producción: "no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432" y 'rechazada:
+  // "medir_dominio_controlcontrolledger.com" no es una acción permitida'. Eso no es una frase de
+  // persona: es un stack trace con un prefijo en castellano, haciéndole vibrar el bolsillo.
+  const motivos: Array<[string, RegExp]> = [
+    ["rechazada: frenar no está habilitado en este entorno", /apagada en este entorno/],
+    ["no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432", /se me cayó la conexión/],
+    ["ssh: connect to host 1.2.3.4 port 22: Connection timed out", /se me cayó la conexión|por SSH/],
+    ["Permission denied (publickey)", /credencial/],
+    // LOS DOS GUARDS PROPIOS DE `frenar_dominio`, textuales de acciones-agente.ts. Son 2 de sus 4
+    // `detalle` reales y caían al default, así que el mensaje decía "el motivo es técnico" sobre una
+    // regla de negocio del propio agente y terminaba en "Eso lo destrabas tú" sobre algo que NO está
+    // trabado. Antes salía feo pero VERDADERO: la naturalidad se comió la precisión.
+    [
+      "rechazada: z.com no cruzó el umbral ni está frenado por el receptor — frenar un dominio sano cuesta calentamiento y lo decide el operador. Anotalo como pendiente.",
+      /frenar un dominio sano no lo decido yo, lo decide el operador/
+    ],
+    [
+      "rechazada: no se pudo leer la medición de la flota, así que no sé si z.com tiene daño. Frenar sin saberlo puede costar calentamiento sano.",
+      /la medición de la flota no se pudo leer, así que no sé si tiene daño y no freno a ciegas/
+    ],
+    // Lo que no está en la tabla NO se inventa ni se filtra crudo: se dice dónde quedó y NADA de la
+    // causa. Decía "el motivo es técnico" y eso es una afirmación que el código no puede sostener:
+    // acá cae todo lo que no matcheó, incluidas las reglas de negocio.
+    ["el nodo devolvió 550 5.7.1 unsolicited", /no pude, y el motivo quedó en el log/]
+  ];
+  for (const [detalle, esperado] of motivos) {
+    const t = decidirSiHablar(base({ acciones: [{ accion: "frenar_dominio", objetivo: "z.com", ejecutada: false, detalle }] }), memBase(), T(10))?.texto ?? "";
+    assert.match(t, esperado, `el motivo no se tradujo: ${detalle}`);
+    assert.ok(!t.includes("ECONNREFUSED") && !t.includes("publickey") && !t.includes("port 22"), `salió texto de máquina: ${t}`);
+    assert.match(t, /z\.com/, "sigue nombrando el hecho: ningún mensaje sale sin un dato que agarrar");
+  }
+
+  // LA TRAMPA DEL `lastIndex`: `AFIRMA_QUE_NO_PEGO` lleva la bandera `g`, así que `.test()` sobre ella
+  // devolvería falso una llamada de cada dos SOBRE EL MISMO TEXTO. Por eso `porQueNoPudo` compara el
+  // resultado de `replace`, que no tiene estado. Se fija llamándola dos veces seguidas.
+  const conCupo = "sigue con cupo 255: el freno no quedó puesto";
+  assert.equal(porQueNoPudo(conCupo, true), porQueNoPudo(conCupo, true), "la función no puede depender de cuántas veces se la llamó");
+  assert.match(porQueNoPudo(conCupo, true), /255/, "el número del cupo es el dato accionable: no se pierde");
+  assert.match(porQueNoPudo(conCupo, false), /no sé si quedó puesto/, "y con la medición vencida no se afirma");
+});
+
 test("LAS DOS SEÑALES DEL 2026-07-25: el mensaje las dice las dos, o no sale", () => {
   // Ese día 38 nodos estaban cerrados en Gmail con TODAS las IPs limpias en listas negras: la
   // reputación interna de Google es invisible al chequeo de blacklists. Decir solo "está limpio"
@@ -428,6 +559,35 @@ test("una IP listada en una lista negra es DAÑO, con la lista nombrada", () => 
   assert.match(a?.texto ?? "", /1\.2\.3\.4/);
   assert.match(a?.texto ?? "", /spamhaus-sbl/);
   assert.equal(a?.decision, "bajar-o-retirar-nodo");
+  assert.doesNotMatch(a?.texto ?? "", /Hay \d+ dominio/, "con uno solo no inventa un contador");
+});
+
+test("con VARIAS IPs listadas el aviso dice CUÁNTAS más: nombrar una de cinco es media verdad", () => {
+  // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO, con los datos del 2026-08-07: warmup-reputacion.json
+  // tenía CINCO dominios listados —corp-delivery.com, infranationalreport.com, annualfiling-ops.com,
+  // annualfilingops.com, annualfilings-infra.com— y el mensaje nombraba uno y callaba los otros
+  // cuatro. `reputacionDonde` es un `.find`, y d5 (la regla de al lado) ya llevaba contador. Es
+  // precisión comida por la brevedad en el mensaje que le hace vibrar el móvil, y en la dirección
+  // peligrosa: baja ese nodo y se queda tranquilo con cuatro puestos.
+  const a = decidirSiHablar(
+    base({
+      hechos: {
+        ...HECHOS(),
+        reputacion: [
+          { dominio: "corp-delivery.com", ip: "217.216.53.43", listas: ["RATS Dyna"] },
+          { dominio: "infranationalreport.com", ip: "217.216.51.187", listas: ["RATS Dyna"] },
+          { dominio: "annualfiling-ops.com", ip: "89.117.76.105", listas: ["DRONE BL"] },
+          { dominio: "annualfilingops.com", ip: "217.216.94.132", listas: ["RATS Dyna"] },
+          { dominio: "annualfilings-infra.com", ip: "217.216.55.33", listas: ["RATS Dyna"] }
+        ]
+      }
+    }),
+    memBase(),
+    T(10)
+  );
+  assert.equal(a?.regla, "d4-reputacion");
+  assert.match(a?.texto ?? "", /corp-delivery\.com/, "nombra uno, con su IP y su lista");
+  assert.match(a?.texto ?? "", /Hay 4 dominios más en la misma\./, "y DICE que hay cuatro más");
 });
 
 test("el cap por encima del techo es DAÑO, nombra la llave y TRAE LOS DOS NÚMEROS", () => {
@@ -689,12 +849,31 @@ test("el enum del emisor sale TRADUCIDO, no crudo entre paréntesis", () => {
 
 // ══ LA VOZ ══════════════════════════════════════════════════════════════════════════════════════
 
-/** Todos los textos que puede producir `decidirSiHablar`, con los escenarios que los disparan. */
-function todosLosTextos(): string[] {
-  const out: string[] = [];
+/** Una señal de autenticación rota, tal como la escribe el barrido de reputación. */
+const MAL = { estado: "mal", detalle: "193.180.211.182 no tiene PTR" };
+
+/**
+ * Todos los AVISOS que puede producir `decidirSiHablar`, con los escenarios que los disparan.
+ *
+ * ERA UNA LISTA DE TEXTOS Y ESO LE ABRIÓ UN AGUJERO. Es una lista escrita a mano, así que una regla
+ * sin escenario queda fuera del barrido en silencio y todos los tests de higiene la dan por buena.
+ * Pasó de verdad: `dec4-fabrica-sin-enviar` NO estaba, y se descubrió al inyectarle voseo a su
+ * plantilla y ver que el test seguía VERDE. Devolviendo el `Aviso` entero se puede exigir la
+ * cobertura por id, que es lo que cierra la clase entera de agujero — ver el test de abajo.
+ */
+function todosLosAvisos(): Aviso[] {
+  const out: Aviso[] = [];
   const push = (a: Aviso | null) => {
-    if (a) out.push(a.texto);
+    if (a) out.push(a);
   };
+  // dec4: la fábrica parada mientras el emisor dice que manda. FALTABA en este barrido.
+  push(
+    decidirSiHablar(
+      base({ hechos: HECHOS({ vueltas: [{ dominio: "a.com", semilla: "s@gmail.com", cuando: T(3), placement: "INBOX", completa: true, error: null }] }) }),
+      memBase(),
+      T(10)
+    )
+  );
   push(decidirSiHablar(base({ novedades: [N("flota.cruzados", "x.com", "")] }), memBase(), T(10)));
   push(decidirSiHablar(base({ novedades: [N("flota.sanas", 8, 14)] }), memBase(), T(10)));
   push(decidirSiHablar(base({ novedades: [N("flota.bloqueadas", 30, 22)] }), memBase(), T(10)));
@@ -705,7 +884,25 @@ function todosLosTextos(): string[] {
       T(10)
     )
   );
+  // d2 con el dominio que YA CRUZÓ: es la rama que el llamador dejaba muerta descartando a los
+  // cruzados antes de llegar a `porEncimaDelTecho`.
+  push(
+    decidirSiHablar(
+      base({
+        hechos: {
+          ...HECHOS(),
+          cap: { ...HECHOS().cap!, porEncimaDelTecho: [{ dominio: "a.com", cap: 15_000 }] },
+          flota: { ...HECHOS().flota!, cruzados: ["a.com"] }
+        }
+      }),
+      memBase(),
+      T(10)
+    )
+  );
   push(decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "a.com", ip: "1.2.3.4", listas: ["sbl"] }] } }), memBase(), T(10)));
+  // d5: las tres señales de autenticación, una por una y las tres juntas.
+  for (const rota of [{ spf: MAL }, { dkim: MAL }, { ptr: MAL }, { spf: MAL, dkim: MAL, ptr: MAL }])
+    push(decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "a.com", listas: [], ...rota }] } }), memBase(), T(10)));
   push(decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "a.com", listas: [], receptor: "cerrado" }] } }), memBase(), T(10)));
   push(decidirSiHablar(base({ hechos: { ...HECHOS(), reputacion: [{ dominio: "a.com", listas: "no-se" }] } }), memBase(), T(10)));
   push(decidirSiHablar(base({ hechos: { ...HECHOS(), flota: { ...HECHOS().flota!, atribuido: false } } }), memBase(), T(10)));
@@ -746,6 +943,21 @@ function todosLosTextos(): string[] {
   return out;
 }
 
+const todosLosTextos = (): string[] => todosLosAvisos().map((a) => a.texto);
+
+test("EL BARRIDO CUBRE TODAS LAS REGLAS: una regla sin escenario no puede pasar por buena", () => {
+  // EL AGUJERO QUE ESTE TEST CIERRA, y que era real: `todosLosTextos` es una lista escrita a mano, y
+  // `dec4-fabrica-sin-enviar` nunca estuvo en ella. Se descubrió inyectándole voseo a su plantilla
+  // ("Andá a ver si sigue vivo") y viendo que el test de registro seguía VERDE — o sea que los tres
+  // tests de higiene de la voz venían dando por buena una plantilla que nunca leían.
+  //
+  // Con esto, agregar una regla a REGLAS sin darle un escenario acá pone el gate en ROJO, que es la
+  // única forma de que la cobertura no dependa de que alguien se acuerde.
+  const cubiertas = new Set(todosLosAvisos().flatMap((a) => (a.reglas ?? [{ id: a.regla }]).map((r) => r.id)));
+  const faltan = REGLAS.map((r) => r.id).filter((id) => !cubiertas.has(id));
+  assert.deepEqual(faltan, [], `estas reglas no tienen escenario en todosLosAvisos(): ${faltan.join(", ")}`);
+});
+
 test("HIGIENE DE LA VOZ: ni un guión bajo, ni una flecha, ni un asterisco, ni un identificador", () => {
   // Textual: "esa manera o lexico de escribir esta muy bot del 2000… recuerdo que openclaw me
   // respondia con asteriscos, muy horrible genericamente, y luego arreglamos eso". El vicio concreto
@@ -762,6 +974,143 @@ test("HIGIENE DE LA VOZ: ni un guión bajo, ni una flecha, ni un asterisco, ni u
     assert.ok(!/\bHice esto:/.test(t), `el texto de máquina grapado al final: ${t}`);
     assert.ok(!/\brechazada:/i.test(t), `el prefijo de log del ejecutor: ${t}`);
   }
+});
+
+/**
+ * Formas que SOLO existen en voseo rioplatense. Ninguna de estas se escribe igual en tuteo, así que
+ * un match es siempre un error y nunca un falso positivo — "mira", "lee" y "contesta" no están
+ * porque son correctas en tuteo y meterlas volvería el test incumplible.
+ *
+ * LOOKAROUNDS CON `u`, NO `\b`: en JavaScript `\b` es ASCII y `/\bmirá\b/` NO matchea "Mirá:", que
+ * es la forma más común del voseo imperativo en el log real. Un test escrito con `\b` parece que
+ * funciona y no mira nada.
+ */
+const VOSEO =
+  /(?<![\p{L}\p{N}])(sos|vos|podés|tenés|sabés|querés|hacés|decís|resolvés|destrabás|autorizás|levantás|andás|mirá|revisá|andá|decí|hacé|contá|dejá|poné|contestá|agregá|respondé|pedí|escribí|seguí|mandá|leé|vení|tené|confirmá|fijate|usala|decilo|anotalo|proponelo|hacelo|leelo|avisame|miralo|revertilo|reportá|buscá|cerralos)(?![\p{L}\p{N}])/giu;
+
+test("NINGUNA PLANTILLA LE HABLA EN VOSEO: el jefe es colombiano y escribe en tuteo", () => {
+  // EL HALLAZGO QUE ORDENA ESTE TEST. El encargo decía que el problema era el prompt, y sobre el
+  // prompt era cierto —VOZ tenía 20 marcas de voseo— pero el efecto es otro: el carril de la guardia
+  // NO emite una palabra del modelo (`EstadoParaSlack.voz` no la lee ninguna regla, hay un test que
+  // lo fija), así que TODO lo que el jefe leyó en rioplatense salió de literales nuestros. Medido
+  // sobre las líneas `[slack]` del log de producción: 41 marcas —vos ×15, mirá ×7, miralo ×7,
+  // resolvés ×5, revisá ×5, querés ×4, Andá, avisame, leelo—. Arreglar sólo el prompt no cambiaba
+  // una sola palabra de lo que él lee.
+  //
+  // Y EL REGISTRO OBJETIVO ES TUTEO, NO USTED: en los 18 mensajes reales del jefe hay 13 marcas de
+  // tuteo, 0 de usted y 0 de voseo. Un agente en usted sonaría igual de ajeno, con el agravante de
+  // que nadie lo notaría porque "usted" suena colombiano de oído.
+  //
+  // ESTE TEST LEE LAS CADENAS PRODUCIDAS, NUNCA EL ARCHIVO. Un test que grepeara slack.ts obligaría
+  // a castellanizar los COMENTARIOS del repo, que van en rioplatense a propósito: son el registro
+  // del código, no la voz del agente. Se verifica que la distinción funciona escribiendo "mirá" en
+  // un comentario y confirmando que este test sigue verde.
+  // EL BARRIDO NO SE QUEDA EN slack.ts, y ésa fue la fuga siguiente: el string más nuevo del canal
+  // —`textoDeLaPropuesta`, que es lo ÚNICO que el jefe lee del camino de proponer— nació diciendo
+  // "PROPUESTA (la aprobás vos…)" y pasó verde, porque vive en acciones-agente.ts. Es puro y
+  // exportado justamente para poder fijarlo acá sin montar nada. Un test de higiene que cubre un
+  // archivo en vez de un CANAL deja nacer el próximo string con el mismo defecto.
+  const textos = [
+    ...todosLosTextos(),
+    textoDeLaPropuesta("a.com", {
+      cupoActual: 2,
+      cupoPropuesto: 4,
+      placement: { proveedor: "Gmail", tasa: 0.83, muestra: 6 },
+      gate: { pasa: true, falla: null },
+      enviadosHoy: 2
+    })
+  ];
+  assert.ok(textos.length >= 35, `el barrido tiene que cubrir todas las plantillas, cubrió ${textos.length}`);
+  for (const t of textos) {
+    const m = t.match(VOSEO);
+    assert.equal(m, null, `voseo en una plantilla (${m?.join(", ")}): ${t}`);
+  }
+
+  // Y EL PROMPT DE LA GUARDIA, que es la otra mitad que se había quedado afuera. La aceptación pedía
+  // "VOZ y SISTEMA reescritos" y sólo se hizo VOZ: SISTEMA quedó con 55 marcas de voseo. No es
+  // teórico — el carril de la guardia publica texto del modelo (la clase `avance`) y su lectura
+  // entra ENTERA al prompt del chat por `construirContexto`, así que el jefe leía porteño por los
+  // dos lados. Medido en producción antes del arreglo: 34 de 1312 líneas del modelo local con
+  // voseo (mirá ×15, revisá ×14, querés ×7, avisame ×4).
+  //
+  // SOBRE LA CONSTANTE Y NUNCA SOBRE EL ARCHIVO: los comentarios del repo van en rioplatense a
+  // propósito —son el registro del código, no la voz del agente— y hay varios adentro del array.
+  const enSistema = SISTEMA.match(VOSEO);
+  assert.equal(enSistema, null, `voseo en el prompt de la guardia (${enSistema?.join(", ")})`);
+
+  // Y EL MENSAJE DE USUARIO DEL MISMO PROMPT, que es la fuga que este assert no veía: la constante
+  // SISTEMA daba 0 marcas mientras `construirPrompt` daba SEIS —"Reportá el estado", "agregá una
+  // línea ACCION", "no lo podés resolver vos, anotalo", "cerralos con resolver_pendiente"— y ésas
+  // son las ÚLTIMAS líneas que el modelo lee antes de escribir. La aceptación del lote anterior no
+  // lo vio porque grepeaba un rango de líneas fijo que sólo cubría la constante, y un rango de
+  // líneas se desincroniza con el archivo al primer commit.
+  //
+  // Se corre sobre la SALIDA de la función con un `hechos` de ejemplo, que es el texto que el modelo
+  // recibe de verdad, y con las cuatro secciones opcionales llenas: la línea de los pendientes vive
+  // adentro de un `if` y con el `hechos` pelado no se emite.
+  const prompt = construirPrompt(
+    HECHOS({ pendientesAbiertos: [{ id: "p-1", que: "semilla en outlook" }], sinMedirVolumen: ["x.com"] }),
+    ["nombra x.com, que no está en los datos"],
+    ["- pediste medir_dominio y NO se ejecutó"],
+    ["El jefe decidió: se trabaja con las dos semillas que hay."]
+  );
+  const enPrompt = prompt.match(VOSEO);
+  assert.equal(enPrompt, null, `voseo en el mensaje de usuario de la guardia (${enPrompt?.join(", ")})`);
+  assert.match(prompt, /Pendientes que YA anotaste/, "el barrido cubrió la sección opcional de pendientes");
+  assert.match(prompt, /LO QUE YA PEDISTE/, "y la de la bitácora");
+});
+
+test("SIN BYTES DE CONTROL: un .ts con un NUL apaga grep sobre el archivo entero, en silencio", async () => {
+  // ESTE TEST EXISTE POR UN BYTE. En slack.ts vivía un `\0` literal dentro de un `replace`, y con eso
+  // `grep` clasificaba el archivo como binario y lo SALTEABA sin decir nada: `grep -n "EL CANAL"
+  // slack.ts` no encontraba la línea 1, y el comando de aceptación del lote —el grep de voseo sobre
+  // ese mismo archivo— devolvía cero líneas por ceguera, no por limpieza. El runtime no cambiaba, o
+  // sea que el defecto era invisible salvo por lo que rompía: TODA verificación por grep, incluido
+  // `git grep`, sobre el archivo que decide qué le llega al jefe.
+  //
+  // Barre el repo y no un archivo: el problema no es slack.ts, es que un carácter invisible se cuela
+  // en cualquier literal y nadie lo ve en un diff (se muestra como un espacio).
+  const { readdir, readFile } = await import("node:fs/promises");
+  const raiz = new URL("../../../../", import.meta.url);
+  const sucios: string[] = [];
+  for (const dir of ["apps", "scripts", "packages"]) {
+    let entradas: string[];
+    try {
+      entradas = (await readdir(new URL(dir, raiz), { recursive: true })) as string[];
+    } catch {
+      continue; // el directorio puede no existir en un checkout parcial: ausencia no es hallazgo
+    }
+    for (const rel of entradas) {
+      if (!rel.endsWith(".ts") && !rel.endsWith(".tsx")) continue;
+      if (rel.includes("node_modules")) continue;
+      const crudo = await readFile(new URL(`${dir}/${rel}`, raiz), "utf8");
+      // Tab y salto de línea son legítimos; el resto del rango de control no tiene nada que hacer
+      // en código fuente.
+      if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(crudo)) sucios.push(`${dir}/${rel}`);
+    }
+  }
+  assert.deepEqual(sucios, [], "hay bytes de control en el fuente: grep va a saltear estos archivos sin avisar");
+});
+
+test("UN NÚMERO NO PUEDE DECIR LO CONTRARIO DE LO QUE MIDE: cap.frenados que BAJA son soltados", () => {
+  // `cap.frenados` es la CANTIDAD DE FRENADOS (`camposObservables`: `hechos.cap.frenados.length`).
+  // Con 8 → 7 se soltó UNO y quedan 7 frenados, y el mensaje decía "ya son 7 los dominios sueltos
+  // que estaban frenados (eran 8)": presentaba los 7 que SIGUEN frenados como los liberados —
+  // inflado 7×, y justo en la dirección del volumen, que es la única irreversible del sistema.
+  // No era hipotético: hay promesas abiertas esperando exactamente esta clave, así que disparaba sola.
+  //
+  // Y POR QUÉ NO LO ATAJÓ NADIE: la CONTRA-CONDICIÓN de abajo sólo exige que el texto TENGA un
+  // número, no que ese número signifique algo. Este test mira qué dice.
+  const dicho = (antes: number, despues: number): string =>
+    decidirSiHablar(base({ novedades: [N("cap.frenados", despues, antes)] }), memBase(), T(10), abierta("huella:cap.frenados"))?.texto ?? "";
+
+  const bajo = dicho(8, 7);
+  assert.match(bajo, /soltaron 1/, `la diferencia es lo único que el dato prueba: ${bajo}`);
+  assert.match(bajo, /quedan 7 dominios frenados/, `7 son los que SIGUEN frenados: ${bajo}`);
+  assert.doesNotMatch(bajo, /7 los dominios sueltos/, "presentaba los frenados como liberados");
+
+  // La rama que sube no cambia: más frenados es menos volumen y ya se decía bien.
+  assert.match(dicho(7, 8), /quedaron 8 dominios frenados \(eran 7\)/);
 });
 
 test("CONTRA-CONDICIÓN: ningún mensaje sale sin nombrar un hecho con su número o su nombre propio", () => {
@@ -1374,4 +1723,41 @@ test("mandarASlack DEVUELVE el ts, que es lo que ata una respuesta a su mensaje"
       assert.match(r.motivo ?? "", /red caída/);
     })
   ]);
+});
+
+test("la fábrica que TERMINÓ su cupo no es una fábrica muerta", () => {
+  // LA FALSA ALARMA REAL del 2026-08-07T18:35. La regla avisó "hace 3 horas que la fábrica no da
+  // una vuelta y el emisor dice que está mandando" mientras el daemon llevaba 4h48m vivo y su
+  // propia última línea decía "PAUSA — los 6 boxes del pool ya agotaron su cupo diario".
+  //
+  // Es el peor tipo de error de este canal: no escala algo resoluble, ASUSTA con algo que no pasa.
+  // Y un aviso que grita en falso no molesta — enseña a ignorar todos los demás.
+  const hace3h = new Date(Date.parse(T(10)) - 3 * 3_600_000).toISOString();
+  const conVueltaVieja = (plan: Array<{ dominio: string; cupo: number; enviadosHoy: number }>) =>
+    base({
+      emisor: "send",
+      hechos: HECHOS({
+        vueltas: [{ dominio: "a.com", semilla: "s@x.com", cuando: hace3h, placement: "INBOX", completa: true, error: null }],
+        plan: plan.map((p) => ({ ...p, diaN: 3, placementTasa: 0.8, placementMuestra: 5, accion: "sostener", motivo: "" }))
+      }) as never
+    });
+
+  // Cupo agotado: silencio. Hizo exactamente lo que tenía permitido.
+  const cumplido = decidirSiHablar(conVueltaVieja([{ dominio: "a.com", cupo: 2, enviadosHoy: 2 }]), memBase(), T(10));
+  assert.notEqual(cumplido?.regla, "dec4-fabrica-sin-enviar");
+
+  // Con cupo DISPONIBLE y sin vueltas, sí: ahí la contradicción es real.
+  const conSaldo = decidirSiHablar(conVueltaVieja([{ dominio: "a.com", cupo: 8, enviadosHoy: 2 }]), memBase(), T(10));
+  assert.equal(conSaldo?.regla, "dec4-fabrica-sin-enviar");
+
+  // Y basta con que UNO tenga saldo: si a alguien le quedaba cupo y no salió nada, algo pasa.
+  const unoConSaldo = decidirSiHablar(
+    conVueltaVieja([
+      { dominio: "a.com", cupo: 2, enviadosHoy: 2 },
+      { dominio: "b.com", cupo: 4, enviadosHoy: 1 }
+    ]),
+    memBase(),
+    T(10)
+  );
+  assert.equal(unoConSaldo?.regla, "dec4-fabrica-sin-enviar");
 });

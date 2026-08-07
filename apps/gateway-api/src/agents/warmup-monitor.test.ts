@@ -13,7 +13,7 @@ import type { HechosWarmup } from "./warmup-monitor.ts";
 
 import { ejecutarAcciones, extraerAcciones } from "./acciones-agente.ts";
 import { limpiarMaquinaria, responder, VOZ } from "./sentinel-chat.ts";
-import { construirPrompt, lineasDeFrenados, SISTEMA, verificarLectura, type FrenadoDetalle } from "./warmup-monitor.ts";
+import { agruparReparos, construirPrompt, lineasDeFrenados, SISTEMA, verificarLectura, type FrenadoDetalle } from "./warmup-monitor.ts";
 
 const HECHOS_BASE: HechosWarmup = {
   generadoEn: "2026-08-04T15:00:00.000Z",
@@ -196,12 +196,12 @@ test("el prompt le prohíbe pedirle a Juanes lo que puede hacer solo", () => {
   // cosas, que él mismo puede resolver... más que decirme errores sobre errores, que vaya
   // aprendiendo a cómo resolverlos".
   const p = SISTEMA.replace(/\s+/g, " ");
-  assert.match(p, /NO LE PIDAS A JUANES LO QUE PODÉS HACER VOS/);
-  assert.match(p, /MOLESTALO SOLO SI SE CUMPLEN LAS DOS/, "el criterio de escalada es explícito");
-  assert.match(p, /es grave AHORA, y vos no tenés herramienta para resolverlo/);
+  assert.match(p, /NO LE PIDAS A JUANES LO QUE PUEDES HACER TÚ/);
+  assert.match(p, /MOLÉSTALO SOLO SI SE CUMPLEN LAS DOS/, "el criterio de escalada es explícito");
+  assert.match(p, /es grave AHORA, y tú no tienes herramienta para resolverlo/);
   // Y le da los ejemplos concretos que separan un caso del otro: sin ellos la regla es abstracta
   // y el modelo la cumple a medias.
-  assert.match(p, /leelo.*diagnosticalo.*medilo/s);
+  assert.match(p, /léelo.*diagnostícalo.*mídelo/s);
   assert.match(p, /no es un mensaje: es un pendiente/);
 });
 
@@ -402,7 +402,13 @@ const CAPACIDAD_DE: Record<string, string | null> = {
   leer_cupo_nodo: "leerCupoNodo",
   diagnosticar_dominio: "diagnosticarDominio",
   medir_dominio: "medirDominio",
-  revisar_reputacion: "revisarReputacion"
+  revisar_reputacion: "revisarReputacion",
+  // TODAVÍA NO SE ANUNCIA EN NINGÚN PROMPT, y la fila entra igual: el contrato de arriba solo mira
+  // las acciones que el prompt nombra, así que esto es el guardia puesto ANTES de que haga falta.
+  // El día que la línea `- proponer_subida |` entre a SISTEMA sin que el orquestador pase
+  // `datosParaProponer`, este test se pone rojo — que es exactamente la falla que el repo ya pagó
+  // cinco veces (la mano prometida y no cableada), atajada del lado barato.
+  proponer_subida: "datosParaProponer"
 };
 
 test("EL CONTRATO: ninguna mano se anuncia en un prompt si el orquestador no la cablea", async () => {
@@ -594,5 +600,94 @@ test("el prompt de la guardia ya no le ENSEÑA a arrancar cada frase con el nomb
   assert.ok(!SISTEMA.includes("Juanes,"), "el prompt no puede traer el vocativo ni siquiera como ejemplo");
   assert.match(SISTEMA.replace(/\s+/g, " "), /sin rodeos y sin arrancar con su nombre/);
   // Y la regla que se está cuidando sigue viva: el ejemplo tiene que seguir mostrando CUÁNDO pedir.
-  assert.match(SISTEMA.replace(/\s+/g, " "), /esto no lo puedo destrabar yo, mirá X/);
+  assert.match(SISTEMA.replace(/\s+/g, " "), /esto no lo puedo destrabar yo, mira X/);
+});
+
+test("EL REPARO FALSO: nombrar un dominio que NOSOTROS le dimos en su bitácora no es inventarlo", () => {
+  // Medido en el log de producción: 3 de 51 vueltas. `construirPrompt` le entrega "LO QUE YA
+  // PEDISTE" con el nombre del dominio adentro, el agente lo nombra en su lectura, y `conocidos`
+  // —armado solo desde `hechos`— lo marcaba como invención. Como el runner ejecuta acciones solo
+  // cuando `reparos.length === 0`, perdía las manos la vuelta entera por citar lo que le dimos.
+  //
+  // Es la TERCERA instancia de la clase que este mismo archivo declara peor que el error que
+  // previene: un reparo falso bloquea también las acciones correctas.
+  const loQueHiciste = [
+    "- pediste diagnosticar_dominio bizregistry-ops.com (lo pediste 34 veces) y NO se ejecutó: sin datos. Pedirlo otra vez no lo va a cambiar."
+  ];
+  const texto = "AHORA: sigo sin poder diagnosticar bizregistry-ops.com\nPORQUE: lo pedí 34 veces y siempre vuelve vacío\nRIESGO: ninguno\nFALTA: nada";
+
+  const sinBitacora = verificarLectura(texto, HECHOS_BASE);
+  assert.ok(sinBitacora.reparos.some((r) => /bizregistry-ops\.com/.test(r)), "así estaba antes: reparo sobre un dato nuestro");
+
+  const conBitacora = verificarLectura(texto, HECHOS_BASE, loQueHiciste);
+  assert.deepEqual(conBitacora.reparos, [], "el dominio salió de nuestro propio prompt");
+
+  // Y lo que SÍ es una invención sigue siendo una invención: la puerta se abre para lo que le
+  // dimos, no para cualquier cosa.
+  const inventado = verificarLectura(
+    "AHORA: bizregistry-ops.com y jamas-existio.com están cerrados\nPORQUE: los diagnostiqué\nRIESGO: ninguno\nFALTA: nada",
+    HECHOS_BASE,
+    loQueHiciste
+  );
+  assert.ok(inventado.reparos.some((r) => /jamas-existio\.com/.test(r)));
+});
+
+test("los FRENADOS son datos que le dimos: nombrarlos no es inventarlos", () => {
+  // El mismo agujero por otra puerta: las ocho líneas de FRENADOS entran al prompt con su nombre y
+  // `conocidos` no las miraba. Los 7 nodos vírgenes son justo los que hay que evaluar para soltar.
+  const hechos = { ...HECHOS_BASE, cap: CAP_FRENADOS([{ dominio: "filing-ops.com", cruzado: false, bloqueanPor: [], muestra: 0, tasaInbox: null }]) };
+  const v = verificarLectura("AHORA: filing-ops.com sigue frenado\nPORQUE: tiene cupo 0\nRIESGO: ninguno\nFALTA: nada", hechos);
+  assert.deepEqual(v.reparos, []);
+});
+
+test("el placement del plan NUNCA sale sin su proveedor, y el gate solo si alguien lo evaluó", () => {
+  // Con una sola semilla que mide (Gmail), un "83%" a secas es 83%-en-Gmail disfrazado de placement
+  // general — y los umbrales de la receta son distintos por proveedor. Mientras el motor no emita el
+  // campo se dice "sin proveedor": la verdad, no un default.
+  const conProveedor = construirPrompt({
+    ...HECHOS_BASE,
+    plan: [{ dominio: "a.com", diaN: 3, placementTasa: 0.83, placementMuestra: 6, placementProveedor: "Gmail", gate: { pasa: true, falla: null }, cupo: 2, accion: "sostener", motivo: "m", enviadosHoy: 2 }]
+  });
+  assert.match(conProveedor, /placement Gmail 83% sobre 6 mediciones/);
+  assert.match(conProveedor, /gate: PASA/);
+
+  const sinProveedor = construirPrompt({
+    ...HECHOS_BASE,
+    plan: [{ dominio: "a.com", diaN: 3, placementTasa: 0.83, placementMuestra: 6, cupo: 2, accion: "sostener", motivo: "m", enviadosHoy: 2 }]
+  });
+  assert.match(sinProveedor, /placement sin proveedor 83% sobre 6 mediciones/);
+  assert.doesNotMatch(sinProveedor, /gate:/, "sin evaluación no se nombra el gate: silencio, nunca 'pasa'");
+
+  // Y "no medido" sigue sin ser "0%".
+  const sinMedir = construirPrompt({
+    ...HECHOS_BASE,
+    plan: [{ dominio: "a.com", diaN: null, placementTasa: null, placementMuestra: 0, cupo: 2, accion: "arrancar", motivo: "m", enviadosHoy: 0 }]
+  });
+  assert.match(sinMedir, /placement SIN MEDIR \(0 mediciones\)/);
+});
+
+test("los 5 reparos de la MISMA lección ocupan UNA línea con contador, no cinco", () => {
+  // Medido en el archivo real: las 5 ranuras de "ERRORES QUE YA COMETISTE" estaban ocupadas por la
+  // misma lección con cinco dominios distintos, o sea que la memoria de errores tenía capacidad
+  // para UNA sola lección y cualquier otra clase quedaba empujada afuera por el slice.
+  const cinco = [
+    'nombra "bizregistry-ops.com", que no está en los datos',
+    'nombra "corpfiling-relay.com", que no está en los datos',
+    'nombra "controlnationalcorp.com", que no está en los datos',
+    'nombra "annualfiling-infra.com", que no está en los datos',
+    'nombra "corpannualinfra.com", que no está en los datos'
+  ];
+  const g = agruparReparos(cinco);
+  assert.equal(g.length, 1);
+  assert.match(g[0] as string, /te pasó 5 veces, con distintos nombres/);
+  assert.match(g[0] as string, /bizregistry-ops\.com/, "conserva el texto completo del primero");
+
+  // Y una lección DISTINTA no se funde con ellas: el agrupamiento es por clase, no por parecido.
+  const conOtra = agruparReparos([...cinco, "dice que cruzaron 5 dominios y los datos dicen 9"]);
+  assert.equal(conOtra.length, 2);
+
+  // En el prompt, las cinco dejan lugar para las otras cuatro clases que antes no entraban.
+  const p = construirPrompt(HECHOS_BASE, [...cinco, "dice que cruzaron 5 dominios y los datos dicen 9"]);
+  assert.match(p, /te pasó 5 veces/);
+  assert.match(p, /dice que cruzaron 5 dominios/);
 });

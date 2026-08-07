@@ -28,10 +28,12 @@ export type NombreAccion =
   | "pausar_warmup"
   | "anotar_pendiente"
   | "resolver_pendiente"
+  | "proponer_subida"
   | "leer_cupo_nodo"
   | "diagnosticar_dominio"
   | "medir_dominio"
-  | "revisar_reputacion";
+  | "revisar_reputacion"
+  | "bajar_cap_nodo";
 
 /**
  * El cupo con el que vuelve un dominio soltado. NO lo elige el modelo, y esa es toda la seguridad
@@ -53,13 +55,59 @@ export const ACCIONES_VALIDAS: ReadonlySet<string> = new Set<NombreAccion>([
   "pausar_warmup",
   "anotar_pendiente",
   "resolver_pendiente",
+  "proponer_subida",
+  "leer_cupo_nodo",
+  "diagnosticar_dominio",
+  "medir_dominio",
+  "revisar_reputacion",
+  "bajar_cap_nodo"
+]);
+
+/**
+ * LAS MANOS QUE SOLO MIRAN. No mutan nada y su resultado depende únicamente del estado del mundo,
+ * así que pedirlas dos veces seguidas sin que cambie nada devuelve lo mismo dos veces.
+ *
+ * Existe para acotar el corte del bucle a este grupo, y esa restricción es deliberada: un
+ * `frenar_dominio` que devuelve el mismo detalle dos veces PUEDE ser legítimo (el operador soltó el
+ * nodo en el medio y hay que volver a frenarlo, con idéntico "cap 20 → 0"), y bloquear una acción
+ * que REDUCE por parecerse a la anterior es el error caro de los dos.
+ */
+const PASIVAS: ReadonlySet<string> = new Set<NombreAccion>([
   "leer_cupo_nodo",
   "diagnosticar_dominio",
   "medir_dominio",
   "revisar_reputacion"
 ]);
 
+/**
+ * El cupo al que se BAJA un nodo que está cableado por encima del techo que aguanta un dominio.
+ *
+ * Es el mismo TECHO_DURO_POR_DOMINIO del motor (2.000/día), y no lo elige el modelo — igual que
+ * CAP_AL_SOLTAR. Existe porque al agente le faltaba la mano del medio: sus opciones eran matar el
+ * nodo (cap 0) o soltarlo en 20, y con `infranationalreport.com` cableado a 15.000/día contra un
+ * techo de 2.000, matarlo era desproporcionado —por ese nodo sale correo de un cliente— así que la
+ * única salida que le quedaba era escribirle a Juanes. Le pasaba un problema que podía resolver.
+ *
+ * Bajar un cap es una REDUCCIÓN, y por la regla de este módulo una reducción siempre está
+ * permitida: su peor caso es "mandamos de menos un rato", que es recuperable. Lo irreversible es
+ * al revés.
+ */
+export const CAP_SEGURO_POR_DOMINIO = 2000;
+
 export const CAP_AL_SOLTAR = 20;
+
+/**
+ * El techo diario POR DOMINIO que este proyecto se puso, y el umbral de Google que es PERMANENTE.
+ *
+ * Van juntos y en código porque son las dos varas contra las que se mide cualquier propuesta de
+ * subir volumen: cruzar los 5.000/día a personales clasifica el dominio como "bulk sender" para
+ * siempre y se pierde una sola vez (cita verificada en la doc oficial). El 2.000 es nuestro techo
+ * recomendado, con margen para que ningún error de cálculo se coma la distancia al 5.000.
+ *
+ * Los subdominios SUMAN al mismo contador: la distancia se mide sobre el dominio primario.
+ */
+export const TECHO_DIARIO_RECOMENDADO = 2_000;
+export const UMBRAL_PERMANENTE_GMAIL = 5_000;
 
 /** Cuántas mediciones propias hacen falta para que la historia de un dominio pese en su contra. */
 export const MUESTRA_PARA_JUZGAR = 3;
@@ -311,6 +359,11 @@ export interface ContextoAcciones {
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /**
+   * BAJA el cap del nodo a un valor seguro, sin apagarlo. La mano del medio que faltaba: sin ella,
+   * ante un nodo cableado muy por encima del techo el agente solo podía matarlo o avisar.
+   */
+  bajarCapNodo?: (dominio: string, cap: number, motivo: string) => Promise<{ antes: number | null; despues: number }>;
+  /**
    * SOLTAR un dominio frenado: instala un cupo chico para que vuelva a calentar.
    *
    * Es la única acción del agente que AUMENTA volumen, y por eso es la que más cuidado lleva. La
@@ -338,8 +391,86 @@ export interface ContextoAcciones {
     listar: () => Promise<Pendiente[]>;
     guardar: (p: Pendiente[]) => Promise<void>;
   };
+  /**
+   * LOS NÚMEROS DE UNA PROPUESTA DE SUBIDA, ya evaluados por el motor. `null` = ese dominio no
+   * tiene plan hoy, y entonces no hay nada que proponer.
+   *
+   * El modelo NO elige ninguno de estos valores, igual que no elige `CAP_AL_SOLTAR`: los produce el
+   * plan determinista del motor y acá solo se copian a la nota. Es lo que separa "el agente
+   * argumenta que un dominio se ganó un escalón" de "el agente pide 200/día".
+   */
+  datosParaProponer?: (dominio: string) => Promise<DatosParaProponer | null>;
+  /**
+   * ¿Esta acción ya devolvió lo mismo las últimas dos veces? Devuelve cuántas veces se pidió.
+   *
+   * Se inyecta en vez de leerse acá adentro porque la bitácora vive en disco y este módulo no toca
+   * disco. El llamador la arma con `daLoMismo` de bitacora-acciones.ts.
+   */
+  yaDaLoMismo?: (accion: string, objetivo: string | null) => number | null;
   ahora?: () => Date;
 }
+
+/**
+ * La evidencia de una propuesta de subida, tal como la deja el motor. Todo opcional en su contenido
+ * (un `null` es "no medido") menos el veredicto del gate, que es la puerta.
+ */
+export interface DatosParaProponer {
+  cupoActual: number;
+  /** El escalón siguiente según la rampa del motor. NO lo elige el modelo ni este módulo. */
+  cupoPropuesto: number;
+  /**
+   * El placement CON su proveedor. Sin proveedor un porcentaje no se puede comparar contra su
+   * umbral —Gmail y Outlook no piden lo mismo— y una cifra sin proveedor es un promedio de cosas
+   * distintas. `proveedor: null` = no se sabe con qué se midió, y eso vale como "no sé".
+   */
+  placement: { proveedor: string | null; tasa: number | null; muestra: number };
+  /**
+   * El veredicto DETERMINISTA del motor: ¿este dominio pasa el gate de la receta? `pasa:false` trae
+   * cuál condición falló. Lo produce el motor, no el modelo y no este módulo.
+   */
+  gate: { pasa: boolean; falla: string | null };
+  /** Cuánto manda hoy ese dominio por día, para poder medir la distancia a los dos techos. */
+  enviadosHoy: number;
+}
+
+/**
+ * LA IDENTIDAD DE UNA PROPUESTA ES EL DOMINIO, NO SU REDACCIÓN — y hasta hoy el código decía eso en
+ * un comentario mientras hacía lo contrario: el dedupe buscaba `startsWith(marcaDePropuesta(d))`, o
+ * sea el PREÁMBULO ENTERO. Cambiar una palabra del preámbulo —y en este mismo lote hubo que cambiar
+ * dos, porque estaba en voseo— dejaba huérfanas las propuestas ya abiertas: el `find` no las
+ * encontraba y el operador recibía una propuesta duplicada por dominio. Se separa lo que identifica
+ * de lo que se lee, así la próxima corrección de estilo no cuesta un pendiente doble.
+ */
+const identidadDePropuesta = (dominio: string): string => `subir ${dominio} de `;
+
+/** El preámbulo, que es SOLO redacción: dice qué es y quién la aprueba. Ver `textoDeLaPropuesta`. */
+const marcaDePropuesta = (dominio: string): string =>
+  `PROPUESTA (esta la apruebas tú, yo no puedo subir un cupo): ${identidadDePropuesta(dominio)}`;
+
+/**
+ * El texto de la propuesta. PURO y exportado: es lo único de este camino que el jefe va a leer, y
+ * tiene que poder fijarse con un test sin montar nada.
+ *
+ * SE LEE COMO PROPUESTA Y DICE QUIÉN LA APRUEBA. No es cosmética: una propuesta redactada como
+ * anuncio ("le subo el cupo a 40") es el camino más corto a que alguien la ejecute a mano creyendo
+ * que ya estaba decidido, y subir volumen es lo único irreversible de este sistema.
+ */
+export function textoDeLaPropuesta(dominio: string, d: DatosParaProponer): string {
+  const placement =
+    d.placement.tasa === null || d.placement.muestra === 0
+      ? "placement sin medir"
+      : `placement ${d.placement.proveedor ?? "de proveedor no identificado"} ${Math.round(d.placement.tasa * 100)}% sobre ${d.placement.muestra} mediciones`;
+  // El prefijo sale de `marcaDePropuesta` y no de un literal repetido: es la IDENTIDAD con la que
+  // después se deduplica, y dos copias del mismo texto se desincronizan sin que nadie lo note —
+  // ahí el dedupe deja de encontrar la propuesta anterior y el operador recibe una nueva cada vuelta.
+  return (
+    `${marcaDePropuesta(dominio)}${d.cupoActual} a ${d.cupoPropuesto}/día. ` +
+    `${placement}, pasa el gate del motor. Hoy lleva ${d.enviadosHoy} enviados; con ${d.cupoPropuesto}/día quedan ` +
+    `${TECHO_DIARIO_RECOMENDADO - d.cupoPropuesto} de margen hasta el techo de ${TECHO_DIARIO_RECOMENDADO}/día y ` +
+    `${UMBRAL_PERMANENTE_GMAIL - d.cupoPropuesto} hasta el umbral permanente de Gmail (${UMBRAL_PERMANENTE_GMAIL}/día, se cruza una sola vez y no se deshace).`
+  );
+}
+
 
 /** Palabras que no distinguen un pendiente de otro. */
 const VACIAS = new Set(["y", "o", "de", "del", "la", "el", "los", "las", "en", "para", "un", "una", "semilla", "semillas"]);
@@ -408,7 +539,88 @@ export async function ejecutarAcciones(
       continue;
     }
 
+    // ── EL BUCLE SE CORTA ACÁ, NO EN EL PROMPT ────────────────────────────────────────────────
+    //
+    // Medido en warmup-acciones.json de producción: 300 acciones en 233 vueltas, y
+    // `diagnosticar_dominio bizregistry-ops.com` pedida 34 VECES recibiendo 34 veces la misma
+    // respuesta. El contador ya existía y ya entraba al prompt —"lo pediste 34 veces"— pero en
+    // PROSA, que es la forma que este proyecto ya pagó dos veces: un párrafo el modelo lo lee, lo
+    // devuelve como hallazgo propio y sigue de largo. Un ejecutor, en cambio, no negocia.
+    //
+    // El rechazo SÍ le vuelve al modelo como hecho (entra a la bitácora y de ahí al prompt), que es
+    // lo único que se vio funcionar. Y solo alcanza a las manos PASIVAS: ver `PASIVAS`.
+    if (PASIVAS.has(nombre)) {
+      const veces = ctx.yaDaLoMismo?.(nombre, (p.dominio ?? "").trim().toLowerCase() || null) ?? null;
+      if (veces !== null) {
+        out.push({
+          accion: nombre,
+          objetivo: (p.dominio ?? "").trim().toLowerCase() || null,
+          ejecutada: false,
+          detalle: `rechazada: ya lo pediste ${veces} veces y las últimas dos dieron exactamente lo mismo. Hace falta un dato nuevo primero, no otra consulta igual.`
+        });
+        continue;
+      }
+    }
+
     switch (nombre) {
+      case "bajar_cap_nodo": {
+        // LA MANO DEL MEDIO. Sale de una queja concreta: el agente veía infranationalreport.com
+        // con el nodo cableado a 15.000/día contra un techo de 2.000, y sus únicas opciones eran
+        // matarlo o escribirle a Juanes. Matarlo era desproporcionado —por ese nodo sale correo de
+        // un cliente— así que escribía. Le pasaba un problema que podía resolver solo.
+        //
+        // No lleva el alcance de `frenablesConDanio` y es a propósito: frenar QUITA el envío,
+        // bajar el cap lo ACOTA. Bajar a 2.000 un nodo cableado a 15.000 no le saca nada a nadie
+        // salvo la posibilidad de cruzar un umbral que no se deshace.
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.bajarCapNodo) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: bajar el cap no está habilitado en este entorno" });
+          break;
+        }
+        // SOLO BAJA. Se lee el cap vivo y si ya está en el techo o por debajo, no se toca: sin este
+        // chequeo la "reducción" podría SUBIR un nodo que estaba en 20, que es exactamente la
+        // acción irreversible que este módulo existe para impedir.
+        if (!ctx.leerCupoNodo) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: sin poder leer el cupo del nodo no bajo nada a ciegas" });
+          break;
+        }
+        let vivo: { cap: number | null };
+        try {
+          vivo = await ctx.leerCupoNodo(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude leer el nodo, así que no bajo nada: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        if (vivo.cap === null) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio}: no pude confirmar el cupo actual. No bajo a ciegas.` });
+          break;
+        }
+        if (vivo.cap <= CAP_SEGURO_POR_DOMINIO) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio} ya está en ${vivo.cap}/día, que no pasa el techo de ${CAP_SEGURO_POR_DOMINIO}: no hacía falta` });
+          break;
+        }
+        let b: { antes: number | null; despues: number };
+        try {
+          b = await ctx.bajarCapNodo(dominio, CAP_SEGURO_POR_DOMINIO, motivo);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude bajar el cap de ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        out.push({
+          accion: nombre,
+          objetivo: dominio,
+          ejecutada: true,
+          detalle: `${dominio}: bajé el cupo del nodo de ${b.antes ?? "?"} a ${b.despues}/día — ${motivo}`,
+          antes: b.antes,
+          despues: b.despues
+        });
+        break;
+      }
+
       case "frenar_dominio": {
         const dominio = (p.dominio ?? "").trim().toLowerCase();
         // El dominio tiene que EXISTIR. Sin esto, un nombre alucinado por el modelo se convertiría
@@ -443,7 +655,7 @@ export async function ejecutarAcciones(
             accion: nombre,
             objetivo: dominio,
             ejecutada: false,
-            detalle: `rechazada: ${dominio} no cruzó el umbral ni está frenado por el receptor — frenar un dominio sano cuesta calentamiento y lo decide el operador. Anotalo como pendiente.`
+            detalle: `rechazada: ${dominio} no cruzó el umbral ni está frenado por el receptor — frenar un dominio sano cuesta calentamiento y lo decide el operador. Anótalo como pendiente.`
           });
           break;
         }
@@ -680,6 +892,94 @@ export async function ejecutarAcciones(
         break;
       }
 
+      case "proponer_subida": {
+        // EL AGENTE ARGUMENTA QUE UN DOMINIO SE GANÓ UN ESCALÓN — y no puede dárselo.
+        //
+        // Hasta acá tenía nueve manos y la única que subía volumen era `soltar_dominio`, con cupo
+        // FIJO y cuatro condiciones en código. Para todo lo demás su única salida era
+        // `anotar_pendiente`, que pierde los números por el camino: "hay que subirle el cupo a X" no
+        // se puede evaluar sin el placement, la muestra y la distancia a los dos techos.
+        //
+        // NO EJECUTA NADA. Escribe una nota en la lista de pendientes y termina: no toca un cap, no
+        // manda un correo, no llama a `soltarDominio`. La decisión es del operador y el texto lo
+        // dice. Hay un test que fija los dos lados (cero efectos, y 0 propuestas si el gate falla).
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.datosParaProponer) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: proponer no está habilitado en este entorno" });
+          break;
+        }
+        let datos: DatosParaProponer | null;
+        try {
+          datos = await ctx.datosParaProponer(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude juntar los números de ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        // SIN NÚMEROS NO HAY PROPUESTA. Una nota que dice "subile el cupo" sin la evidencia es la
+        // versión perezosa que ya existía y que ya se demostró inútil.
+        if (!datos) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio}: no tengo sus números de hoy (no está en el plan), así que no hay nada que proponer.` });
+          break;
+        }
+        // SE AUTORRECHAZA CONTRA EL CRITERIO DETERMINISTA. No se propone lo que el gate ya niega:
+        // una propuesta que el propio motor rechazaría le hace perder tiempo al operador y entrena
+        // a ignorarlas. El gate lo evalúa el motor, no el modelo y no esta función.
+        if (!datos.gate.pasa) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `${dominio} no pasa el gate del motor (${datos.gate.falla ?? "sin detalle"}): no propongo lo que el criterio ya niega.`
+          });
+          break;
+        }
+        // Y NUNCA POR ENCIMA DEL TECHO. El cupo lo produce el motor, pero un techo que solo vive en
+        // el productor no es un techo: si algún día el motor propone 6.000, acá se corta igual.
+        if (datos.cupoPropuesto > TECHO_DIARIO_RECOMENDADO) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `${dominio}: el escalón propuesto (${datos.cupoPropuesto}/día) pasa el techo de ${TECHO_DIARIO_RECOMENDADO}/día. Eso no se propone solo.`
+          });
+          break;
+        }
+        const que = textoDeLaPropuesta(dominio, datos);
+        const lista = await ctx.pendientes.listar();
+        // LA IDENTIDAD ES EL DOMINIO, no el texto. `mismoPendiente` compara vocabulario, y dos
+        // propuestas de dominios distintos comparten TODAS las palabras salvo el nombre: se habrían
+        // fundido en una y el segundo dominio desaparecía. Acá la marca es exacta y no hay
+        // heurístico que discutir.
+        //
+        // Busca `identidadDePropuesta` y NO el preámbulo: ver su comentario — con el preámbulo, una
+        // corrección de estilo del texto huerfanaba las propuestas ya abiertas.
+        const previo = lista.find((x) => !x.resueltoEn && x.que.includes(identidadDePropuesta(dominio)));
+        if (previo) {
+          previo.visto += 1;
+          // Los NÚMEROS se refrescan: son la evidencia, y una propuesta de ayer con el placement de
+          // ayer es peor que ninguna. El `visto` dice hace cuánto que está esperando decisión.
+          previo.que = que;
+          previo.porque = motivo;
+          await ctx.pendientes.guardar([...lista]);
+          out.push({ accion: nombre, objetivo: previo.id, ejecutada: false, detalle: `ya te lo había propuesto (visto ${previo.visto} veces, números actualizados): ${que}` });
+          break;
+        }
+        const nueva: Pendiente = {
+          id: `p-${lista.length + 1}-subir-${dominio.replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`,
+          que,
+          porque: motivo,
+          abiertoEn: ahora.toISOString(),
+          visto: 1
+        };
+        await ctx.pendientes.guardar([...lista, nueva]);
+        out.push({ accion: nombre, objetivo: nueva.id, ejecutada: true, detalle: que, despues: nueva.id });
+        break;
+      }
+
       case "resolver_pendiente": {
         const id = (p.id ?? "").trim();
         const lista = await ctx.pendientes.listar();
@@ -747,7 +1047,10 @@ export async function ejecutarAcciones(
             accion: nombre,
             objetivo: dominio,
             ejecutada: true,
-            detalle: `${dominio}: ${d.estado}, ${d.entregados} entregados / ${d.rechazados} rechazados.${quien}${flojo} ${d.detalle}`.trim()
+            detalle: `${dominio}: ${d.estado}, ${d.entregados} entregados / ${d.rechazados} rechazados.${quien}${flojo} ${d.detalle}`.trim(),
+            // Misma razón que en medir_dominio: sin `antes` no hay veredicto posible y la bitácora
+            // guarda 54 desenlaces que nadie puede juzgar.
+            antes: { estado: d.estado, entregados: d.entregados, rechazados: d.rechazados }
           });
         } catch (e) {
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude diagnosticar: ${e instanceof Error ? e.message : String(e)}` });
@@ -783,6 +1086,12 @@ export async function ejecutarAcciones(
             objetivo: dominio,
             ejecutada: true,
             detalle: `${dominio}: ${tasa}, ${dia}${m.ultimaMedicion ? `, última medición ${m.ultimaMedicion}` : ""}`,
+            // LA FOTO DEL ANTES TAMBIÉN EN LAS MANOS QUE MIRAN. Medido en producción: 54 entradas de
+            // bitácora, 0 con `antes` y por lo tanto 0 veredictos — el aprendizaje entero apagado
+            // porque solo `frenar_dominio` dejaba con qué comparar, y de esa no hay una sola
+            // entrada. Con {muestra, ultimaMedicion} alcanza: si la próxima medición trae muestras
+            // nuevas, la mirada sirvió para algo; si devuelve exactamente lo mismo, no.
+            antes: { muestra: m.muestra, ultimaMedicion: m.ultimaMedicion },
             despues: m.tasaInbox
           });
         } catch (e) {

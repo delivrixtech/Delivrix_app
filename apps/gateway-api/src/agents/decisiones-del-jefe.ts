@@ -112,3 +112,24 @@ export function lineasParaPrompt(dec: Decisiones | null): string[] {
     ...items.map((d) => `- ${d.que}`)
   ];
 }
+
+/**
+ * Suma 1 a `recordada` en cada ítem que `lineasParaPrompt` acaba de emitir. Devuelve la lista nueva
+ * — nunca muta la que recibe, igual que el resto del módulo.
+ *
+ * El campo estaba DECLARADO con este propósito exacto ("cuántas veces se le recordó al agente") y
+ * no se incrementaba en ningún lado, así que valía 0 en las seis decisiones del archivo real. Sin
+ * él no hay forma de leer si una memoria sirve: para contestar "¿la d-1 funcionó?" hubo que grepear
+ * el log a mano y contar a ojo las líneas FALTA sobre outlook/yahoo antes y después.
+ *
+ * Va aparte de `lineasParaPrompt` y no adentro porque esa función es PURA y la llaman los dos
+ * carriles: si incrementara sola, el chat y la guardia se contarían entre ellos y el número dejaría
+ * de significar "veces que se lo recordé". Lo llama quien persiste, en la misma vuelta.
+ */
+export function marcarRecordadas(dec: Decisiones | null): Decisiones {
+  const base = dec && Array.isArray(dec.items) ? { ...dec, items: [...dec.items] } : vacias();
+  // Se incrementan TODOS porque `lineasParaPrompt` emite todos: el día que filtre, este map filtra
+  // igual o el contador empieza a mentir hacia arriba.
+  base.items = base.items.map((d) => ({ ...d, recordada: (Number(d.recordada) || 0) + 1 }));
+  return base;
+}

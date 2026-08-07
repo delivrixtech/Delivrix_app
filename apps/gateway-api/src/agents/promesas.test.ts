@@ -71,7 +71,7 @@ test("FAIL-CLOSED: con el snapshot previo VACÍO no se cumple nada", () => {
 
   // Las VENCIDAS no dependen del snapshot: no afirman ningún dato, solo dicen que el plazo se acabó.
   const vencida = revisarPromesas(promesa(), {}, {}, mas(HORAS_PARA_VENCER + 1), PREVIO_DE);
-  assert.match(vencida.aviso?.texto ?? "", /nadie está midiendo eso/);
+  assert.match(vencida.aviso?.texto ?? "", /nadie está midiendo el placement de corp-delivery\.com/);
 });
 
 test("UNA PROMESA NO SE CUMPLE CON UN DATO ANTERIOR A ELLA", () => {
@@ -173,14 +173,64 @@ test("DEDUPE: la misma promesa dicha de dos formas es UNA sola — el disparador
   assert.equal(tres.length, 2);
 });
 
+test("DOS PROMESAS QUE ESPERAN EL MISMO CAMPO CUMPLEN CON EL MISMO DATO: un renglón, no dos", () => {
+  // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO, con el archivo real del 2026-08-07: las promesas
+  // abiertas en producción eran DOS FORMAS DE PEDIR LO MISMO —"reporte de cómo va la evaluación de
+  // los frenados" y "avisar cuando cambie el conteo de dominios frenados"— las dos con
+  // `espero=cap.frenados`. `anotarPromesa` no las junta porque el TEXTO difiere, así que el estreno
+  // de esta función en el canal era un muro de renglones con la misma novedad repetida. El dedupe
+  // es de lo que el jefe LEE: las dos se cierran igual.
+  // COPIADAS DEL ARCHIVO REAL (warmup-promesas.json de la Mac Studio, 2026-08-07), y por eso van
+  // como literal y no por `anotarPromesa`: el dedupe por términos que se agregó después SÍ las junta
+  // hoy, pero éstas ya estaban escritas en producción cuando entró, y las de mañana pueden esperar
+  // el mismo campo con textos que no compartan un solo término.
+  const dos: Promesa[] = [
+    { id: "pm-3", que: "reporte de cómo va la evaluación de los frenados y cualquier dominio que suelte", hilo: HILO, esperando: "cap.frenados", abiertoEn: T0, venceEn: mas(6), visto: 1 },
+    { id: "pm-4", que: "avisar cuando cambie el conteo de dominios frenados (alguno liberado)", hilo: HILO, esperando: "cap.frenados", abiertoEn: T0, venceEn: mas(6), visto: 1 }
+  ];
+
+  const r = revisarPromesas(dos, { "cap.frenados": 8 }, { "cap.frenados": 7 }, mas(1), PREVIO_DE);
+  assert.equal(r.aviso?.texto.split("\n").length, 1, `un renglón por dato: ${r.aviso?.texto}`);
+  // Y EN CASTELLANO: decía "cap.frenados pasó de 8 a 7", que es la clave de máquina. El mapa
+  // `ETIQUETA` ya existía en slack.ts y este camino no lo usaba.
+  assert.match(r.aviso?.texto ?? "", /los dominios frenados pasaron de 8 a 7/);
+  assert.doesNotMatch(r.aviso?.texto ?? "", /cap\.frenados/);
+  // Las DOS se cierran: se deduplica el mensaje, no el registro.
+  assert.deepEqual(r.lista.map((p) => p.comoCerro), ["cumplida", "cumplida"]);
+
+  // Y dos campos DISTINTOS siguen siendo dos renglones: el dedupe no puede comerse una novedad.
+  let otras = anotarPromesa([], { que: "los frenados", hilo: HILO, esperando: "cap.frenados" }, T0);
+  otras = anotarPromesa(otras, { que: "dónde cae corp-delivery", hilo: HILO, esperando: CAMPO }, T0);
+  const r2 = revisarPromesas(otras, { "cap.frenados": 8, [CAMPO]: "SPAM" }, { "cap.frenados": 7, [CAMPO]: "INBOX" }, mas(1), PREVIO_DE);
+  assert.equal(r2.aviso?.texto.split("\n").length, 2);
+});
+
 test("REGLA DURA: una promesa produce MENSAJES, jamás volumen", () => {
   // Cumplir no puede mover un cap. Si algún día una promesa tiene que disparar `soltar_dominio`,
   // eso lo decide el operador y es otro ítem — no se cuela por acá.
   // Se fija por los imports porque es lo único que no se puede sortear escribiendo más código: sin
   // ejecutor, sin disco y sin red importados, este módulo no puede tener efectos.
-  const src = readFileSync(new URL("./promesas.ts", import.meta.url), "utf8");
-  const imports = src.split("\n").filter((l) => l.startsWith("import "));
-  assert.deepEqual(imports, ['import { mismoPendiente } from "./acciones-agente.ts";'], "solo el dedupe: nada que ejecute, escriba o llame a un modelo");
+  //
+  // SE FIJA TRANSITIVAMENTE Y NO CON UNA LISTA DE NOMBRES. La versión anterior era un whitelist de
+  // UN import literal, y eso tiene dos problemas: se rompe cuando entra un import legítimo (pasó al
+  // reusar `claveLegible` y `enCastellano` de slack.ts, que son texto puro) y no dice nada del
+  // import DE ESE import. Lo que hay que garantizar no es "cuántos imports", es que en todo el árbol
+  // no haya disco, red, proceso ni base: sin eso, este módulo no puede tener efectos aunque quiera.
+  const externos = new Set<string>();
+  const vistos = new Set<string>();
+  const pila = [new URL("./promesas.ts", import.meta.url)];
+  while (pila.length > 0) {
+    const u = pila.pop() as URL;
+    if (vistos.has(u.pathname)) continue;
+    vistos.add(u.pathname);
+    for (const m of readFileSync(u, "utf8").matchAll(/\bfrom\s+"([^"]+)"/g)) {
+      const spec = m[1] as string;
+      if (spec.startsWith(".")) pila.push(new URL(spec, u));
+      else externos.add(spec);
+    }
+  }
+  assert.ok(vistos.size > 1, "el barrido tiene que haber seguido al menos un import");
+  assert.deepEqual([...externos], [], `el árbol de promesas.ts importa algo de afuera: ${[...externos].join(", ")}`);
 
   // Y es pura de verdad: no muta lo que recibe.
   const lista = Object.freeze(promesa()) as readonly Promesa[];
@@ -223,8 +273,11 @@ test("`esperando` que NADIE MIDE: habla igual, y dice la verdad distinta", () =>
   const vencida = revisarPromesas(claveRara, RETRATO, campos, mas(HORAS_PARA_VENCER + 1), PREVIO_DE);
   assert.equal(vencida.lista[0]?.comoCerro, "vencida");
   // Y le dice algo ACCIONABLE: que ese dominio no tiene ciclos. Es más honesto que el silencio.
-  assert.match(vencida.aviso?.texto ?? "", /nadie está midiendo eso/);
-  assert.match(vencida.aviso?.texto ?? "", /placement:no-existe\.example/);
+  // EN CASTELLANO Y NO EN CLAVES DE MÁQUINA. Decía textual "nadie está midiendo eso
+  // (placement:no-existe.example)" — el identificador crudo del retrato, en el canal. El dominio,
+  // que es la parte accionable, se conserva entero.
+  assert.match(vencida.aviso?.texto ?? "", /nadie está midiendo el placement de no-existe\.example/);
+  assert.doesNotMatch(vencida.aviso?.texto ?? "", /placement:/, "la clave cruda no sale al canal");
 });
 
 test("UN RETRATO VACÍO AL ANOTAR NO MATA LA PROMESA", () => {
@@ -379,4 +432,38 @@ test("la ventana de silencio son 24 h DE VERDAD, no para siempre", () => {
     if (r.aviso) disculpas.push(ahora);
   }
   assert.equal(disculpas.length, 2, `una por día, no una por vida ni una cada 6,5 h (salieron en ${disculpas.join(", ")})`);
+});
+
+test("LOS 4 PENDIENTES REALES SON DOS PROMESAS: el disparador ya es la identidad", () => {
+  // Textuales de warmup-promesas.json de la Mac Studio (2026-08-07). pm-1/pm-2 esperan el mismo
+  // campo en el mismo hilo con un minuto de diferencia, y pm-3/pm-4 igual: el modelo reformula, que
+  // es lo que hacen los modelos, y el dedupe por TEXTO no las juntaba. El jefe terminaba recibiendo
+  // dos avisos por cada cosa que le prometieron una vez, y el segundo sin un dato nuevo.
+  const reales: Array<[string, string, string]> = [
+    ["resultados de medición/diagnóstico de los frenados evaluados", "1786114077.973449", "placement:filing-ops.com"],
+    ["resultados de la medición de filing-ops.com y qué decisión tomé con él", "1786114077.973449", "placement:filing-ops.com"],
+    ["reporte de cómo va la evaluación de los frenados y cualquier dominio que suelte", "1786127249.643589", "cap.frenados"],
+    ["avisar cuando cambie el conteo de dominios frenados (alguno liberado)", "1786127249.643589", "cap.frenados"]
+  ];
+  let lista: Promesa[] = [];
+  reales.forEach(([que, hilo, esperando], i) => {
+    lista = anotarPromesa(lista, { que, hilo, esperando }, new Date(Date.parse(T0) + i * 60_000).toISOString());
+  });
+  assert.equal(lista.length, 2, "dos promesas, no cuatro");
+  assert.deepEqual(lista.map((p) => p.visto), [2, 2]);
+  assert.deepEqual(lista.map((p) => p.esperando), ["placement:filing-ops.com", "cap.frenados"]);
+  // El reloj NO se mueve al re-prometer: volver a prometer es la señal de que todavía no cumplió.
+  assert.equal(lista[0]!.abiertoEn, T0);
+});
+
+test("el MISMO disparador en OTRO hilo es otra promesa: son dos conversaciones", () => {
+  // El jefe está leyendo dos hilos, y una respuesta dentro de un hilo no suena en el otro.
+  let lista = anotarPromesa([], { que: "te traigo el placement", hilo: "h1", esperando: "placement:a.com" }, T0);
+  lista = anotarPromesa(lista, { que: "te traigo el placement", hilo: "h2", esperando: "placement:a.com" }, T0);
+  assert.equal(lista.length, 2);
+
+  // Y disparadores DISTINTOS en el mismo hilo también son dos: no hay heurístico que discutir.
+  let otra = anotarPromesa([], { que: "te aviso de esto", hilo: "h1", esperando: "placement:a.com" }, T0);
+  otra = anotarPromesa(otra, { que: "te aviso de esto", hilo: "h1", esperando: "cap.frenados" }, T0);
+  assert.equal(otra.length, 2);
 });

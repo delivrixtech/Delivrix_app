@@ -11,12 +11,14 @@ import { join } from "node:path";
 
 import { decidirCupoDeHoy, rampaDesdeEnv } from "../domain/decision-diaria.ts";
 import {
+  cupoAutorizadoVigente,
   elegirPool,
   enviosDelDia,
   flotaAtribuida,
   leerCuposFisicos,
   leerReputacion,
   placementsDeDominio,
+  ultimoAutorizado,
   planDelDia,
   type MedicionCupos
 } from "./plan-diario.ts";
@@ -132,10 +134,27 @@ test("flota entera en cap 0: pool VACÍO, no un fallback que rebote 58 veces", (
 // ── El plan completo ─────────────────────────────────────────────────────────────────────────────
 
 /** Postgres falso: responde por la forma de la consulta. */
-function pgFalso(filas: { medidos?: string[]; enviadosHoy?: number; hace2Dias?: number; historial?: string[]; rebotes?: string[] }) {
+function pgFalso(filas: {
+  medidos?: string[];
+  /** La semilla que midió. De ella sale el PROVEEDOR de la cifra: sin esto, `placement 70%` a secas. */
+  semilla?: string;
+  enviadosHoy?: number;
+  hace2Dias?: number;
+  /** El cupo AUTORIZADO de hace 2 días (`detail.cupoDelDia`). Es OTRA cosa que `hace2Dias`. */
+  cupoAutorizadoHace2Dias?: number;
+  historial?: string[];
+  rebotes?: string[];
+}) {
   return {
     async query(sql: string, params?: unknown[]) {
-      if (sql.includes("kind = 'measured'")) return { rows: (filas.medidos ?? []).map((placement) => ({ placement })) };
+      if (sql.includes("kind = 'measured'")) {
+        return { rows: (filas.medidos ?? []).map((placement) => ({ placement, seed_inbox: filas.semilla ?? "" })) };
+      }
+      // El lector del cupo AUTORIZADO va ANTES del de envíos: los dos filtran `kind = 'sent'` y sólo
+      // se distinguen por el campo. Es exactamente la confusión que dejó al clamp sin entrada.
+      if (sql.includes("cupoDelDia")) {
+        return { rows: [{ node_domain: "a.com", cupo: filas.cupoAutorizadoHace2Dias ?? 0 }] };
+      }
       // `enviosDelDia` lleva el día en el parámetro: 0 = hoy, 2 = anteayer. Distinguirlos acá es lo
       // que hace que el test pueda probar el clamp de 48h por separado del cupo del día.
       if (sql.includes("COUNT(*)::int")) {
@@ -493,9 +512,15 @@ test("las tres ventanas de 'hoy' usan date_trunc con zona EXPLÍCITA", async () 
       .join("\n");
     assert.doesNotMatch(sql, /date_trunc\('day',\s*now\(\)\)/, `${f}: trunca en la TZ de la sesión`);
     assert.doesNotMatch(sql, /at time zone 'utc'\s*\)/, `${f}: devuelve timestamp sin zona y se reinterpreta`);
-    for (const linea of sql.split("\n").filter(Boolean)) {
-      assert.match(linea, /date_trunc\('day', now\(\), 'UTC'\)/, `${f}: ventana sin zona explícita → ${linea.trim()}`);
-    }
+    // SE CUENTAN LOS `date_trunc`, no se exige una forma por LÍNEA: el assert por línea daba rojo
+    // sobre `date_trunc('day', occurred_at, 'UTC')` —que tiene la zona explícita y es correcto— sólo
+    // porque no truncaba `now()`. Lo que hay que garantizar es que NINGUNO se quede sin el tercer
+    // argumento, venga de la columna o del reloj.
+    const total = (sql.match(/date_trunc\(/g) ?? []).length;
+    const conZona = (sql.match(/date_trunc\('day', (?:now\(\)|[a-z_.]+), 'UTC'\)/g) ?? []).length;
+    assert.ok(total > 0, `${f}: el barrido no encontró una sola ventana`);
+    assert.equal(conZona, total, `${f}: hay ${total - conZona} date_trunc sin zona explícita en\n${sql}`);
+    assert.ok(sql.includes("date_trunc('day', now(), 'UTC')"), `${f}: la ventana de hoy se ancla en now() truncado en UTC`);
   }
 });
 
@@ -600,4 +625,201 @@ test("lo que mandó hace 2 días NO le pone techo a un dominio sano", async () =
     "haber mandado 2 correos hace dos días no puede dejarte con menos cupo que no haber mandado ninguno"
   );
   assert.equal(conEnvios.dominios[0]!.decision.accion, "subir");
+});
+
+// ══ EL CUPO AUTORIZADO NO ES LO MISMO QUE LOS ENVÍOS ═════════════════════════════════════════════
+
+test("cupoAutorizadoVigente lee `detail.cupoDelDia`; enviosDelDia CUENTA FILAS — y en el mismo día DIFIEREN", async () => {
+  // EL CASO QUE HOY NO SE DISTINGUE, y es la raíz de que el clamp anti-firma del §10 estuviera
+  // escrito y desconectado desde el diseño v1: el único dato disponible eran los ENVÍOS, y los
+  // envíos están aplastados por el tope GLOBAL del daemon (14 vueltas para TODA la flota). Un
+  // dominio con cupo autorizado 20 mandó 2, y el clamp que lea 2 lo topa en 6/día creyendo que
+  // respeta el §10 — cuando en realidad está frenando a un dominio sano y dejando suelto al que no
+  // mandó nada (ausente del Map ⇒ sin clamp, rampa entera).
+  const consultas: string[] = [];
+  const pg = {
+    async query(sql: string) {
+      consultas.push(sql);
+      return sql.includes("cupoDelDia")
+        ? { rows: [{ node_domain: "a.com", cupo: 20 }] }
+        : { rows: [{ node_domain: "a.com", n: 2 }] };
+    }
+  } as never;
+
+  const autorizado = await cupoAutorizadoVigente(pg, 2);
+  const enviado = await enviosDelDia(pg, 2);
+  assert.equal(autorizado.get("a.com"), 20, "lo que la decisión AUTORIZÓ");
+  assert.equal(enviado.get("a.com"), 2, "lo que realmente SALIÓ");
+  assert.notEqual(autorizado.get("a.com"), enviado.get("a.com"), "son dos magnitudes distintas");
+
+  // Y las dos consultas tienen que seguir siendo distintas de verdad: si alguien "simplifica"
+  // haciendo que las dos cuenten filas, el clamp vuelve a quedar sin entrada y nada falla.
+  assert.match(consultas[0]!, /MAX\(\(detail->>'cupoDelDia'\)::int\)/);
+  assert.match(consultas[1]!, /COUNT\(\*\)::int/);
+  // Un dato corrupto en el campo no puede reventar la consulta: el llamador lee un fallo de lectura
+  // como "no mando esta vuelta", así que UNA fila con basura apagaría el warmup.
+  assert.match(consultas[0]!, /~ '\^\[0-9\]\+\$'/);
+  // Misma zona explícita que el resto de las ventanas: bajo TZ=America/Bogota se perderían las
+  // filas de entre 00:00 y 05:00 UTC.
+  assert.match(consultas[0]!, /date_trunc\('day', now\(\), 'UTC'\)/);
+});
+
+test("LA AUSENCIA NO ES PERMISO: el dominio que no mandó anteayer arrastra su último cupo conocido", async () => {
+  // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO: la consulta miraba UN día puntual y sólo devuelve
+  // dominios con una fila `sent` ESE día. Sin entrada, `dailyQuota` no clampea y sale la rampa
+  // entera — o sea que el dominio QUIETO anteayer, el único que puede pegar el salto, era el que se
+  // quedaba sin freno, y el activo se llevaba el clamp. Es la misma asimetría que el archivo dice
+  // haber cerrado al dejar de usar `enviosDelDia`, con otra fuente de datos.
+  //
+  // Medido contra la Postgres de producción (10 días de warmup_activity, kind 'sent'): de los 17
+  // pares dominio-día con envíos, sólo 6 tienen envío dos días antes ⇒ el clamp faltaba el 65% de
+  // las veces. Con el tope GLOBAL de 14 vueltas para toda la flota, un día sin fila es lo normal.
+  //
+  // El arrastre vive en `ultimoAutorizado`, que es PURA justamente para poder fijarlo sin Postgres:
+  // la lógica adentro del SQL sólo se puede "probar" con un doble que devuelve lo que uno quiera.
+  const filas = [
+    { node_domain: "quieto.com", dia: "2026-08-01T00:00:00.000Z", cupo: 4 },
+    // Ni una fila el 08-03 (anteayer): antes esto era ausencia ⇒ rampa entera.
+    { node_domain: "activo.com", dia: "2026-08-01T00:00:00.000Z", cupo: 20 },
+    { node_domain: "activo.com", dia: "2026-08-03T00:00:00.000Z", cupo: 6 }
+  ];
+  const m = ultimoAutorizado(filas);
+  assert.equal(m.get("quieto.com"), 4, "el que no mandó anteayer arrastra lo último que se le autorizó");
+  assert.equal(m.get("activo.com"), 6, "y el que sí mandó usa ESE día, no el MÁXIMO de la ventana");
+
+  // EL MÁXIMO SERÍA CASI NO CLAMPEAR en una rampa hacia abajo: con `MAX` sobre la ventana,
+  // activo.com se clamparía contra 20 (60/día) en vez de contra 6 (18/día).
+  assert.notEqual(m.get("activo.com"), 20);
+
+  // Y la consulta pide una VENTANA, no un día: dos parámetros, borde inferior y borde superior.
+  const consultas: Array<{ sql: string; params: unknown[] }> = [];
+  const pg = {
+    async query(sql: string, params: unknown[]) {
+      consultas.push({ sql, params });
+      return { rows: [] };
+    }
+  } as never;
+  await cupoAutorizadoVigente(pg, 2, 10);
+  assert.deepEqual(consultas[0]!.params, [2, 10], "hasta hace 2 días, mirando 10 hacia atrás");
+  assert.match(consultas[0]!.sql, /GROUP BY node_domain, date_trunc/, "una fila por dominio y DÍA: el arrastre se decide afuera");
+});
+
+test("el plan pasa el cupo AUTORIZADO al clamp, y el clamp sólo baja", async () => {
+  const args = {
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 2000 }]),
+    poolConfigurado: [],
+    ventanaPlacement: 6,
+    ahora: AHORA
+  };
+  const medidos = Array.from({ length: 6 }, () => "INBOX");
+  const historial = ["2026-07-26T10:00:00Z"];
+  const conClamp = await planDelDia({ ...args, pg: pgFalso({ medidos, historial, cupoAutorizadoHace2Dias: 2 }) });
+  const sinClamp = await planDelDia({ ...args, pg: pgFalso({ medidos, historial }) });
+  assert.equal(conClamp.dominios[0]!.decision.cupo, 6, "3× lo autorizado hace 2 días");
+  assert.ok(sinClamp.dominios[0]!.decision.cupo > conClamp.dominios[0]!.decision.cupo, "y sin el dato, la rampa entera");
+});
+
+// ══ TODA CIFRA DE PLACEMENT DEL PLAN LLEVA SU PROVEEDOR, Y EL GATE DE §3 VA AL LADO ══════════════
+
+function archivoSemillas(seeds: Array<{ address: string; provider: string }>): string {
+  const dir = mkdtempSync(join(tmpdir(), "seeds-"));
+  const ruta = join(dir, "warmup-seeds.json");
+  writeFileSync(ruta, JSON.stringify({ seeds }));
+  return ruta;
+}
+
+test("el plan emite placement.proveedor y gate.condicionQueFalla — las DOS filas que declara el lote", async () => {
+  // Son las dos filas que `artefactos.ts` tiene que ver no-nulas a las 24 h del despliegue: un campo
+  // nuevo en un JSON de runtime no está terminado por tener test verde.
+  const plan = await planDelDia({
+    pg: pgFalso({
+      medidos: ["INBOX", "INBOX", "INBOX", "SPAM"],
+      semilla: "trazosvercel@gmail.com",
+      historial: ["2026-08-02T10:00:00Z"]
+    }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 20 }]),
+    seedsFile: archivoSemillas([{ address: "trazosvercel@gmail.com", provider: "gmail" }]),
+    poolConfigurado: [],
+    ventanaPlacement: 6,
+    ahora: AHORA
+  });
+  const d = plan.dominios[0]!;
+  assert.equal(d.placement.proveedor, "gmail", "la cifra dice EN QUÉ receptor se midió");
+  assert.equal(d.placement.tasa, 0.75, "y la tasa sigue siendo la MISMA que tomó la decisión");
+  // "no medido" y "cero" no son lo mismo: los receptores sin semilla salen null, jamás 0%.
+  const outlook = d.placement.porProveedor.find((p) => p.proveedor === "outlook")!;
+  assert.equal(outlook.tasa, null);
+  assert.equal(outlook.muestra, 0);
+  // El gate de §3 viaja evaluado, no como criterio: al modelo le llega el veredicto.
+  assert.equal(d.gate.pasa, false);
+  assert.equal(d.gate.umbral, 0.95, "el umbral del proveedor que midió");
+  assert.match(d.gate.condicionQueFalla!, /sin muestra suficiente: 4 de 4|placement Gmail/);
+  // Y no toca el cupo: la decisión es la misma que sin gate.
+  assert.equal(d.decision.accion, "sostener");
+});
+
+test("sin registro de semillas el proveedor es 'desconocido', no un gmail adivinado", async () => {
+  const plan = await planDelDia({
+    pg: pgFalso({ medidos: ["INBOX"], semilla: "quiensea@x.com", historial: ["2026-08-03T10:00:00Z"] }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 20 }]),
+    poolConfigurado: [],
+    ventanaPlacement: 6,
+    ahora: AHORA
+  });
+  assert.equal(plan.dominios[0]!.placement.proveedor, "desconocido");
+});
+
+test("el cruce MTA × placement aparece con su 'no sé' cuando el MTA no reporta el receptor", async () => {
+  // Medido el 2026-08-07: de los 6 dominios que calientan, CINCO tienen `porReceptor: []` porque el
+  // escritor filtra los receptores con menos de 20 intentos. El cruce vale hoy para UNO, y decirlo
+  // es el punto — un 0 ahí sería una medición que nadie hizo.
+  const plan = await planDelDia({
+    pg: pgFalso({ medidos: ["INBOX", "SPAM"], semilla: "trazosvercel@gmail.com", historial: ["2026-08-03T10:00:00Z"] }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 20 }]),
+    seedsFile: archivoSemillas([{ address: "trazosvercel@gmail.com", provider: "gmail" }]),
+    poolConfigurado: [],
+    ventanaPlacement: 6,
+    ahora: AHORA
+  });
+  const [c] = plan.dominios[0]!.cruce;
+  assert.equal(c!.receptor, "gmail.com");
+  assert.equal(c!.entregadosMta, null);
+  assert.match(c!.lectura, /el cruce no se puede hacer/);
+});
+
+test("CABLEADO: el registro de semillas tiene DEFAULT — sin él, `proveedor` sería 'desconocido' en producción", async () => {
+  // Es la diferencia con `saludFile`/`reputacionFile`, y la razón es concreta: el ÚNICO llamador
+  // vivo de `planDelDia` (scripts/ops/warmup-monitor.ts, que es lo que el agente le reporta al jefe
+  // por Slack) no pasa los archivos opcionales — se verifica leyendo su fuente acá abajo. Con
+  // `seedsFile` opcional-sin-default, este lote habría shipeado un campo que en producción vale
+  // `desconocido` para siempre: la sexta instancia de "una mano prometida y no cableada".
+  const { readFile, mkdir, writeFile } = await import("node:fs/promises");
+
+  const llamador = await readFile("scripts/ops/warmup-monitor.ts", "utf8");
+  const llamada = llamador.slice(llamador.indexOf("plan: await planDelDia({"), llamador.indexOf("plan: await planDelDia({") + 300);
+  assert.doesNotMatch(llamada, /seedsFile/, "si algún día lo pasa, este test sobra — hasta entonces el default es lo único que lo cablea");
+
+  // Se ejerce el camino REAL del default: el workspace apunta a un temporal con el registro adentro.
+  const raiz = mkdtempSync(join(tmpdir(), "ws-"));
+  await mkdir(join(raiz, "inventory"), { recursive: true });
+  await writeFile(
+    join(raiz, "inventory", "warmup-seeds.json"),
+    JSON.stringify({ seeds: [{ address: "trazosvercel@gmail.com", provider: "gmail" }] })
+  );
+  const previo = process.env.OPENCLAW_WORKSPACE_DIR;
+  process.env.OPENCLAW_WORKSPACE_DIR = raiz;
+  try {
+    const plan = await planDelDia({
+      pg: pgFalso({ medidos: ["INBOX"], semilla: "trazosvercel@gmail.com", historial: ["2026-08-03T10:00:00Z"] }),
+      capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 20 }]),
+      // SIN seedsFile: es el punto del test.
+      poolConfigurado: [],
+      ventanaPlacement: 6,
+      ahora: AHORA
+    });
+    assert.equal(plan.dominios[0]!.placement.proveedor, "gmail");
+  } finally {
+    if (previo === undefined) delete process.env.OPENCLAW_WORKSPACE_DIR;
+    else process.env.OPENCLAW_WORKSPACE_DIR = previo;
+  }
 });

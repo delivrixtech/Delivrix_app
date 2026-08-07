@@ -20,6 +20,20 @@ import type {
   SmtpSshRunner
 } from "./smtp-provisioning.ts";
 
+// EL GATE TARDABA 4:30 POR ESTE ARCHIVO, y lo pagaba todo commit del repo.
+//
+// Medido antes de esta línea: `time node --test apps/gateway-api/src/routes/send-email.test.ts` →
+// 29 pass / 0 fail en 4:30,38. Dos tests esperan ENTEROS los 150 s del retry de propagación DNS de
+// `send-email.ts:271` (el dominio del fixture nunca va a publicar SPF/DKIM, así que el loop corre
+// hasta el deadline sí o sí). Eso es el 94% del reloj del gate entero.
+//
+// TIENE QUE SER "1" Y NO "0". La línea es `Number(process.env.EMAIL_AUTH_PROPAGATION_MAX_WAIT_MS)
+// || 150_000` y `0` es falsy: con "0" el `||` devuelve los 150 s otra vez y no baja nada. Con 1 ms,
+// la condición del loop —`Date.now() + authPollMs <= authDeadline`, con authPollMs = 15 s— es falsa
+// en la primera vuelta y la espera no corre. El comportamiento que se testea no cambia: lo que se
+// verifica es el fallo `email_auth_incomplete` DESPUÉS del deadline, no cuánto se esperó.
+process.env.EMAIL_AUTH_PROPAGATION_MAX_WAIT_MS = "1";
+
 const fixedNow = new Date("2026-05-31T18:00:00.000Z");
 const approvalArtifactId = "artifact-send-real-email";
 const approvalToken = "exec-send-real-email";
