@@ -15,7 +15,9 @@ import {
   buildDailyCapInstallPlan,
   buildDailyCapRollbackPlan,
   buildDailyCapStatusCommand,
+  buildFrenoPlan,
   CAP_POLICY_PARAM,
+  lineaDeUso,
   parseDailyCapStatus,
   porEncimaDelTecho,
   renderDailyCapPolicyScript,
@@ -368,7 +370,9 @@ test("status: nodo con el límite puesto", () => {
       "## END"
     ].join("\n")
   );
-  assert.deepEqual(s, { cap: 2000, consumidoHoy: 417, cableado: true, motivo: null });
+  // `sin_sello` y no `intacto`: este nodo nunca se frenó, así que no hay nada que afirmar sobre la
+  // durabilidad de un freno que no existe.
+  assert.deepEqual(s, { cap: 2000, consumidoHoy: 417, cableado: true, motivo: null, freno: { estado: "sin_sello", capEscritoEn: null } });
 });
 
 test("status: nodo SIN límite se declara, no se asume", () => {
@@ -452,7 +456,9 @@ test("el contador se escribe CON newline (o `cat` lo pega al centinela siguiente
 test("el status separa cada lectura con un echo propio", () => {
   // Defensa del emisor para el mismo bug: aunque un archivo venga sin newline, el centinela
   // siguiente arranca en su propia línea.
-  for (const linea of buildDailyCapStatusCommand().split("\n").filter((l) => l.includes("cat ") || l.includes("postconf"))) {
+  // `stat ` entra al filtro junto con `cat`/`postconf`: el sello del freno se lee con `stat -c %Y`
+  // y un mtime sin newline pegaría el centinela siguiente igual que el contador del canary.
+  for (const linea of buildDailyCapStatusCommand().split("\n").filter((l) => l.includes("cat ") || l.includes("postconf") || l.includes("stat "))) {
     assert.match(linea, /;\s*echo$/, `falta el echo separador en: ${linea}`);
   }
 });
@@ -462,4 +468,239 @@ test("status: salida truncada NO se sirve como completa", () => {
   assert.equal(s.cableado, false);
   assert.equal(s.cap, null);
   assert.match(s.motivo ?? "", /truncada/);
+});
+
+// ── La durabilidad del freno ─────────────────────────────────────────────────────────────────────
+//
+// EL INCIDENTE: el 2026-08-06, entre las 03:24 y las 05:02 UTC, el agente ejecutó `frenar_dominio`
+// seis veces sobre bizreport-control.com y las SEIS reportaron "cap 255 → 0". Con esa salida a la
+// vista es imposible distinguir "alguien me deshace el freno" de "mi lectura del antes estaba
+// vieja", así que el agente terminó escribiéndole a Juanes por Slack que mirara el nodo — o sea,
+// delegándole justo lo que tiene que resolver solo.
+//
+// Se midió después, contra la flota real (2026-08-07): `/etc/postfix/daily_cap` en 86.48.29.176
+// valía 0 con mtime del 2026-08-06T18:54:34Z, intacto 30 h más tarde, uptime 42 días, sin crontab
+// de root ni unit ni timer que nombre el archivo. Nadie deshace nada. Lo que faltaba era poder
+// AFIRMARLO sin ir a mirar el nodo a mano.
+
+/** El armador de la salida del status, para no repetir las nueve secciones en cada caso. */
+function salidaStatus(over: Partial<Record<"cap" | "count" | "capMtime" | "sello", string>> = {}): string {
+  const wired = "smtpd_recipient_restrictions = check_policy_service unix:private/quota, permit_sasl_authenticated, reject";
+  return [
+    "## CAP", over.cap ?? "0",
+    "## COUNT", over.count ?? "",
+    "## WIRED", wired,
+    "## WIRED_SMTPS", wired,
+    "## SPAWN", "quota/unix = quota unix - n n - 4 spawn user=postfix-quota",
+    "## CAP_MTIME", over.capMtime ?? "",
+    "## FRENO_SELLO", over.sello ?? "",
+    "## END"
+  ].join("\n");
+}
+
+test("el freno SELLA el mtime del cap, y lo hace DESPUÉS de validar que quedó en 0", () => {
+  const plan = buildFrenoPlan();
+  assert.deepEqual(plan.map((p) => p.label), ["frenar-cap-cero", "validate-freno", "sellar-freno"]);
+  // El orden no es cosmético: si la escritura del 0 falla, `validate-freno` corta el plan (el runner
+  // lanza con exit != 0) y el sello NUNCA se escribe. Sellar un freno que no se puso sería
+  // exactamente la mentira que este paso existe para impedir.
+  const sello = plan.at(-1)!;
+  assert.equal(sello.command, "stat -c %Y /etc/postfix/daily_cap > /etc/postfix/daily_cap.freno && chmod 0644 /etc/postfix/daily_cap.freno");
+  assert.ok(sello.auditCommand.includes("daily_cap.freno"), "el audit dice qué archivo se tocó");
+});
+
+test("el plan del freno es idempotente: dos corridas, el mismo comando exacto", () => {
+  // Es un plan de SSH contra 58 nodos de producción: no se prueba corriéndolo, se prueba el texto.
+  assert.deepEqual(buildFrenoPlan(), buildFrenoPlan());
+  const todo = buildFrenoPlan().map((p) => p.command).join("\n");
+  assert.ok(!todo.includes(">>"), "nada se APPENDEA: correrlo dos veces no puede dejar dos valores");
+  assert.ok(!todo.includes("postfix reload"), "el freno no recarga: el policy service ya lee el archivo en cada request");
+  assert.ok(!/postconf/.test(todo), "el freno no toca el cableado: el nodo queda frenado pero observable");
+});
+
+test("el status del freno: el cap que nadie tocó desde el sello sale INTACTO", () => {
+  const s = parseDailyCapStatus(salidaStatus({ cap: "0", capMtime: "1754506474", sello: "1754506474" }));
+  assert.equal(s.freno?.estado, "intacto");
+  assert.equal(s.freno?.capEscritoEn, new Date(1_754_506_474_000).toISOString());
+  assert.equal(s.cap, 0);
+});
+
+test("el status del freno: mismo segundo de escritura y sello NO se lee como reescrito", () => {
+  // `stat -c %Y` da segundos enteros y el sello se toma en el mismo segundo que el `printf`. Con
+  // una comparación estricta, todo freno se declararía deshecho por sí mismo apenas se pone.
+  assert.equal(parseDailyCapStatus(salidaStatus({ capMtime: "1754506474", sello: "1754506474" })).freno?.estado, "intacto");
+  assert.equal(parseDailyCapStatus(salidaStatus({ capMtime: "1754506473", sello: "1754506474" })).freno?.estado, "intacto");
+});
+
+test("el status del freno: un cap escrito DESPUÉS del sello se declara REESCRITO, con la fecha", () => {
+  // El caso que el agente no podía distinguir en la noche del 2026-08-06. Ahora sale con nombre y
+  // con hora: no hay que preguntarle a Juanes cuándo lo pisaron.
+  const s = parseDailyCapStatus(salidaStatus({ cap: "255", capMtime: "1754593200", sello: "1754506474" }));
+  assert.equal(s.freno?.estado, "reescrito");
+  assert.equal(s.freno?.capEscritoEn, new Date(1_754_593_200_000).toISOString());
+  assert.equal(s.cap, 255, "y el cap con el que quedó, que es lo que hay que frenar de nuevo");
+});
+
+test("el status del freno: SIN SELLO no es 'intacto' — es 'no se sabe'", () => {
+  // Es el estado de los 58 nodos hasta que alguno se frene por primera vez. Leerlo como "está todo
+  // bien" es la lección más cara de este proyecto: un cero que nadie midió leído como limpio.
+  const s = parseDailyCapStatus(salidaStatus({ cap: "2000", capMtime: "1754506474" }));
+  assert.equal(s.freno?.estado, "sin_sello");
+  assert.notEqual(s.freno?.estado, "intacto");
+  assert.equal(s.freno?.capEscritoEn, new Date(1_754_506_474_000).toISOString(), "el cuándo se sabe igual: sirve para fechar cualquier cap");
+});
+
+test("el status del freno: con sello pero sin mtime legible el veredicto es 'no_se', nunca 'intacto'", () => {
+  // Un `stat` que no devuelve nada (archivo borrado, permisos) es ausencia de dato. Ausencia de
+  // dato no es evidencia de que el freno siga puesto.
+  const s = parseDailyCapStatus(salidaStatus({ sello: "1754506474" }));
+  assert.equal(s.freno?.estado, "no_se");
+  assert.equal(s.freno?.capEscritoEn, null);
+});
+
+test("el status del freno: una salida ilegible deja el freno en 'no_se', no en 'intacto'", () => {
+  for (const roto of ["## CAP\n0\n## COUNT\n", salidaStatus({ capMtime: "1754506474" }).replace("## SPAWN", "x## SPAWN")]) {
+    const s = parseDailyCapStatus(roto);
+    assert.equal(s.freno?.estado, "no_se", `salida rota leída como veredicto: ${roto.slice(0, 40)}`);
+    assert.equal(s.freno?.capEscritoEn, null);
+  }
+});
+
+test("el status lee el mtime del cap y el sello, y el ## END sigue siendo el último", () => {
+  const cmd = buildDailyCapStatusCommand();
+  assert.ok(cmd.includes('echo "## CAP_MTIME"; stat -c %Y /etc/postfix/daily_cap'), "sin el mtime el status es una foto sin fecha");
+  assert.ok(cmd.includes('echo "## FRENO_SELLO"; cat /etc/postfix/daily_cap.freno'));
+  assert.equal(cmd.trim().split("\n").at(-1), 'echo "## END"', "el centinela final tiene que quedar último o todo se lee truncado");
+  // Read-only por construcción: el status lo corre el monitor cada vez que juzga un freno, así que
+  // la única redirección que puede haber es la del `2>/dev/null` que traga los errores.
+  const redirecciones = [...cmd.matchAll(/.>/g)].map((m) => m[0]);
+  assert.ok(redirecciones.length > 0);
+  assert.deepEqual([...new Set(redirecciones)], ["2>"], `el status escribe en el nodo: ${cmd}`);
+});
+
+test("la salida REAL de un nodo se parsea entera (capturada de la flota, no inventada)", () => {
+  // Copiada tal cual de contabo-203400096 (bizreport-control.com, 86.48.29.176) el 2026-08-07,
+  // corriendo `buildDailyCapStatusCommand()` por SSH contra el nodo de producción.
+  //
+  // La lección de Bedrock: un fixture escrito desde mi suposición del wire no caza que el contrato
+  // esté mal, porque el test y el código comparten el mismo error. Fijate que el nodo REAL imprime
+  // "submission/inet/smtpd_recipient_restrictions = …" con el prefijo del listener, mientras los
+  // fixtures de arriba usan la forma corta: si el parser hubiera dependido de esa forma, todos los
+  // tests pasarían y la flota entera saldría ABIERTA.
+  const real = [
+    "## CAP", "0", "",
+    "## COUNT", "",
+    "## WIRED",
+    "submission/inet/smtpd_recipient_restrictions = check_policy_service unix:private/quota, permit_sasl_authenticated, reject", "",
+    "## WIRED_SMTPS",
+    "smtps/inet/smtpd_recipient_restrictions = check_policy_service unix:private/quota, permit_sasl_authenticated, reject", "",
+    "## SPAWN",
+    "quota      unix  -       n       n       -       4       spawn user=postfix-quota argv=/usr/bin/python3 /usr/local/lib/postfix-quota/daily-quota-policy.py", "",
+    "## CAP_MTIME", "1786042474", "",
+    "## FRENO_SELLO", "",
+    "## END"
+  ].join("\n");
+
+  const s = parseDailyCapStatus(real);
+  assert.equal(s.cableado, true);
+  assert.equal(s.cap, 0, "el nodo está frenado");
+  assert.equal(s.consumidoHoy, null, "sin contador del día NO es 'cero enviados'");
+  // EL DATO QUE FALTABA, y que fecha el freno sin ir a mirar el nodo a mano: coincide al segundo
+  // con el `stat -c %y` que se leyó por separado (2026-08-06 20:54:34 +0200).
+  assert.equal(s.freno?.capEscritoEn, "2026-08-06T18:54:34.000Z");
+  // Y el veredicto honesto: este 0 lo puso un freno ANTERIOR al sello, así que no se afirma que
+  // haya durado. Recién el próximo freno lo sella y a partir de ahí sí se puede afirmar.
+  assert.equal(s.freno?.estado, "sin_sello");
+});
+
+// ── EL CONTRATO ENTRE EL RENGLÓN Y SU PARSER ─────────────────────────────────────────────────────
+
+/**
+ * Las regex REALES de `leerCupoDelNodo`, leídas del orquestador como TEXTO.
+ *
+ * No se transcriben: se extraen del archivo vivo. Una copia acá se desincroniza en silencio y el
+ * test pasaría a probar mi idea del parser en vez del parser — la lección de Bedrock, textual: un
+ * fixture escrito desde mi suposición del wire no caza que el contrato está mal, porque el test y
+ * el código comparten el error. Leerlo como texto (y no importarlo) es el mismo patrón que usa el
+ * test de contrato de las manos en agents/warmup-monitor.test.ts: importarlo arrancaría el
+ * orquestador entero.
+ */
+async function parserDelAgente(): Promise<(linea: string) => { cap: number | null; consumidoHoy: number | null }> {
+  const crudo = await readFile(new URL("../../../scripts/ops/warmup-monitor.ts", import.meta.url), "utf8");
+  const cuerpo = crudo.slice(crudo.indexOf("async function leerCupoDelNodo"));
+  const fuente = (nombre: string, patron: RegExp): RegExp => {
+    const m = cuerpo.match(patron);
+    assert.ok(m, `no encontré la regex de ${nombre} en leerCupoDelNodo: cambió el parser y este contrato ya no lo cubre`);
+    return new RegExp(m![1]!);
+  };
+  const rFrenado = fuente("frenado", /const frenado = \/(.+?)\/\.test\(linea\)/);
+  const rCap = fuente("cap", /const mCap = linea\.match\(\/(.+?)\/\)/);
+  const rUso = fuente("uso", /const mUso = linea\.match\(\/(.+?)\/\)/);
+  const rSinContador = fuente("sin contador", /consumidoHoy: \/(.+?)\/\.test\(linea\)/);
+  return (linea: string) => {
+    const mCap = linea.match(rCap);
+    const mUso = linea.match(rUso);
+    return {
+      cap: rFrenado.test(linea) ? 0 : mCap ? Number(mCap[1]) : null,
+      consumidoHoy: rSinContador.test(linea) ? null : mUso ? Number(mUso[1]) : null
+    };
+  };
+}
+
+test("CONTRATO: lo que imprime el status es lo que el agente sabe leer, CON contador del día", async () => {
+  // EL BUG QUE ESTE TEST HABRÍA CAZADO, y que estuvo vivo hasta el 2026-08-07: la rama con contador
+  // tiraba el prefijo del cupo y el renglón quedaba `12800/15000`. Las dos regex del agente buscan
+  // `FRENADO (cap 0)` o `cap N/día`, así que ninguna matcheaba: `cap: null`, y `bajar_cap_nodo`
+  // fallaba cerrado sobre los NUEVE nodos por encima del techo — el 100% de los que existe para
+  // arreglar, los nueve con contador del día, entre ellos infranationalreport.com con 15.000/día
+  // contra un umbral permanente de 5.000.
+  //
+  // Los dos lados se testeaban por separado y los dos pasaban. Lo que no tenía dueño era el medio.
+  const leer = await parserDelAgente();
+  const casos: Array<[{ cap: number | null; consumidoHoy: number | null }, string]> = [
+    [{ cap: 15000, consumidoHoy: 12800 }, "el caso REAL de los 9 nodos por encima del techo"],
+    [{ cap: 0, consumidoHoy: 7 }, "frenado y con envíos de hoy: el cero del freno no se puede perder"],
+    [{ cap: 0, consumidoHoy: null }, "frenado sin contador (bizreport-control.com, el del incidente)"],
+    [{ cap: 255, consumidoHoy: null }, "con cupo y sin contador"],
+    [{ cap: 20, consumidoHoy: 3 }, "el cupo chico del warmup, ya usado"],
+    [{ cap: null, consumidoHoy: null }, "cupo ilegible: null, jamás un cero"]
+  ];
+  for (const [s, porque] of casos) {
+    const linea = `  CAP  ${"x.com".padEnd(32)} ${lineaDeUso(s)}`;
+    assert.deepEqual(leer(linea), s, `${porque} → "${linea.trim()}"`);
+  }
+});
+
+test("CONTRATO: el renglón del freno reescrito va aparte y no se mete en el que se parsea", async () => {
+  // `leerCupoDelNodo` toma la PRIMERA línea que contenga el dominio, así que meter el aviso de
+  // "el cap se reescribió" adentro del renglón de uso le cambiaría el cupo al agente.
+  const leer = await parserDelAgente();
+  assert.deepEqual(leer(`  CAP  x.com   ${lineaDeUso({ cap: 2000, consumidoHoy: 1999 })} — salida truncada: falta ## END`), {
+    cap: 2000,
+    consumidoHoy: 1999
+  });
+});
+
+test("instalar un cupo BORRA el sello del freno: soltar un nodo no es que alguien lo haya pisado", () => {
+  // La secuencia que fabricaba el hecho falso: frenar (sello = T1) → soltar por decisión del propio
+  // agente (cap escrito en T2 > T1) → el nodo queda en `reescrito` para siempre, y el veredicto le
+  // diría a Juanes "alguien reescribió el cap el <fecha>" sobre algo que decidió el agente. Por este
+  // mismo plan pasan `soltar_dominio` y `bajar_cap_nodo`.
+  const freno = buildFrenoPlan();
+  assert.ok(freno.some((p) => p.command.includes("daily_cap.freno")), "el freno sella");
+
+  const soltar = buildDailyCapInstallPlan({ cap: 20 });
+  const escribe = soltar.find((p) => p.label === "write-cap-file");
+  assert.match(escribe!.command, /rm -f \/etc\/postfix\/daily_cap\.freno/, "instalar un cupo levanta el freno a propósito");
+  assert.match(escribe!.auditCommand, /rm .*daily_cap\.freno/, "y queda en la auditoría: es un cambio de estado, no limpieza");
+});
+
+test("sin sello y con el cap recién escrito el veredicto es `sin_sello`, nunca `reescrito`", () => {
+  // El otro lado del mismo arreglo: borrado el sello, el status del nodo tiene que decir "no hay
+  // freno vigente que juzgar" y no "alguien lo pisó". `sin_sello` tampoco es `intacto`.
+  const s = parseDailyCapStatus(
+    ["## CAP", "20", "", "## COUNT", "", "## WIRED", "", "## WIRED_SMTPS", "", "## SPAWN", "", "## CAP_MTIME", "1786042474", "", "## FRENO_SELLO", "", "## END"].join("\n")
+  );
+  assert.equal(s.freno?.estado, "sin_sello");
+  assert.equal(s.freno?.capEscritoEn, "2026-08-06T18:54:34.000Z");
 });

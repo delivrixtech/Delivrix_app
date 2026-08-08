@@ -54,6 +54,26 @@ const VOLUMEN = `## VOLUME
    3651 Jul 30\tgmail.com
 ## END`;
 
+/** El nodo que Gmail cerro: 56 rechazos 550-5.7.1 y cero entregas. Es la foto de controlstatecorp.com. */
+const NODO_CERRADO = `## DELIVERED
+## OWN_DELIVERED
+## BLOCKED
+     56 gmail.com
+## OWN_BLOCKED
+     56 gmail.com
+## DEFERRED
+## OWN_DEFERRED
+## END`;
+
+/** El MISMO nodo cuatro dias despues, cuando el otro inquilino dejo de inyectar: el log vacio. */
+const NODO_MUDO = `## DELIVERED
+## OWN_DELIVERED
+## BLOCKED
+## OWN_BLOCKED
+## DEFERRED
+## OWN_DEFERRED
+## END`;
+
 function runner(porComando: (command: string) => string | Error) {
   return {
     async run(input: { command: string }) {
@@ -230,6 +250,154 @@ test("una bandeja que revienta no tumba la corrida ni cuenta como sana", async (
 
   assert.equal(flota.leidas, 0);
   assert.ok(flota.bandejas.every((b) => b.estado === "unreadable"));
+});
+
+test("un CIERRE del receptor no se borra porque el nodo se quedo callado", async () => {
+  // EL AGUJERO QUE SE ABRE SOLO, y tiene fecha. `estado`, `cerradoEn` y `porReceptor` se recalculan
+  // ENTEROS en cada barrido sobre una ventana de 5 dias por fecha de linea; lo unico pegajoso era
+  // `cruzados`. Asi que un nodo que DEJA de mandar vuelve solo a `no_traffic` 0/0/0 con
+  // `cerradoEn: []`, o sea que se auto-absuelve por el paso del tiempo.
+  //
+  // No es teorico: NFC dejo de inyectar por el /24 80.190.73.x el 2026-08-05, asi que alrededor del
+  // 9-11 de agosto sus TRES nodos pasan solos a `no_traffic` — y `no_traffic` es justo la puerta por
+  // la que `elegirPool` deja entrar a los dominios NUEVOS (esta el test del otro lado en
+  // plan-diario.test.ts). controlstatecorp.com tiene 56 rechazos 550-5.7.1 de Gmail de hace cuatro
+  // dias y quedaria leido como "nodo nuevo, candidato natural a arrancar". Y ya paso una vez:
+  // nationalfiling-infra.com estuvo en el pool el 2026-08-05 y mando un correo real.
+  const dir = await mkdtemp(join(tmpdir(), "medicion-cerrado-"));
+  const ws = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });
+  const bandejas = [{ domain: "controlstatecorp.com", serverSlug: "n1", serverIp: "1.1.1.1" }];
+
+  const primera = await medirFlota({
+    workspace: ws,
+    sshRunner: runner((c) => (c.includes("## VOLUME") ? VOLUMEN : NODO_CERRADO)),
+    bandejas, libro: "todo", now: () => ahora
+  });
+  assert.deepEqual(primera.bandejas[0]?.cerradoEn, ["gmail.com"], "el barrido lo ve cerrado");
+
+  // Cuatro dias despues el log esta vacio: el receptor no cambio de opinion, el nodo dejo de hablar.
+  const segunda = await medirFlota({
+    workspace: ws,
+    sshRunner: runner((c) => (c.includes("## VOLUME") ? VOLUMEN : NODO_MUDO)),
+    bandejas, libro: "todo", now: () => ahora
+  });
+  assert.equal(segunda.bandejas[0]?.estado, "no_traffic", "el estado SI se recalcula, y eso esta bien");
+  assert.deepEqual(segunda.bandejas[0]?.cerradoEn, ["gmail.com"], "pero el cierre se arrastra: no lo borra el calendario");
+  assert.deepEqual((await leerUltimaMedicion(ws))?.bandejas[0]?.cerradoEn, ["gmail.com"], "y sobrevive al archivo");
+});
+
+// ── POR QUÉ NOS CIERRAN, NO SÓLO QUIÉN ──────────────────────────────────────────────────────────
+
+/**
+ * El mismo controlstatecorp.com de arriba, pero con el texto que Gmail escribió al rechazar.
+ *
+ * La frase es la MEDIDA en el log real (1.512 apariciones en 193.181.212.223 el 2026-08-08), no una
+ * inventada de la documentación de Google: un fixture escrito desde mi suposición del formato prueba
+ * que el código coincide conmigo, no que coincida con el nodo. El formato de la sección es el que
+ * deja el pipeline del comando — `<cuenta> <receptor>\t<status>\t<motivo>`.
+ */
+const NODO_CERRADO_CON_MOTIVO = `## DELIVERED
+## OWN_DELIVERED
+## BLOCKED
+     56 gmail.com
+## OWN_BLOCKED
+     56 gmail.com
+## DEFERRED
+## OWN_DEFERRED
+## CULPA
+     56 gmail.com\tbounced\t550-5.7.1 Gmail has detected that this message is likely unsolicited mail
+## END`;
+
+test("el archivo dice POR QUE nos cierra el receptor, no solo quien", async () => {
+  // EL DATO SE CALCULABA CADA 6 HORAS EN LOS 58 NODOS Y SE TIRABA. `readNodeDeliveryHealth` clasifica
+  // cada texto de rechazo en dominio/ip/buzon/no-se y lo publica en su veredicto; este mapeador —el
+  // unico que persiste— lo omitia. Medido sobre la copia de produccion del 2026-08-08: 0 de 58
+  // bandejas lo traen. Consecuencia exacta: el archivo podia decir "cerrado en gmail.com" y NO tenia
+  // con que contestar la pregunta que cuesta plata — ¿es la IP, es el dominio, o son buzones que no
+  // existen? Esa es la diferencia entre "compra un dominio nuevo" y "no gastes un peso", y sin este
+  // campo solo se contesta abriendo el mail.log crudo del nodo por SSH.
+  const m = await medirBandeja({
+    sshRunner: runner((c) => (c.includes("## VOLUME") ? VOLUMEN : NODO_CERRADO_CON_MOTIVO)),
+    domain: "controlstatecorp.com",
+    serverSlug: "n1",
+    serverIp: "1.1.1.1",
+    propios: "todo"
+  });
+
+  assert.deepEqual(m.cerradoEn, ["gmail.com"], "QUIEN nos cierra: eso ya se sabia");
+  // Y POR QUE. `dominio` es el veredicto caro: dice que un dominio nuevo sobre esta misma IP SI
+  // cambia algo, al reves de lo que diria un `ip`.
+  assert.deepEqual(m.culpaPorProveedor, { "gmail.com": "dominio" });
+});
+
+test("si el nodo no se pudo leer, la culpa es {} y la clave NUNCA se omite", async () => {
+  // ESTA ES LA ASERCION QUE IMPORTA DE LAS DOS. Un bloque ausente se lee como "esta todo bien", y
+  // esa confusion ya costo caro dos veces con nombre y fecha: los 38 nodos cerrados por el receptor
+  // leidos como sanos (2026-07-25), y el 2026-08-06, cuando `encolados` salio `undefined` en cinco
+  // de los seis `return`, JSON.stringify borro la clave y 49 de 58 bandejas quedaron sin el dato sin
+  // que nada se pusiera rojo. Un `{}` explicito dice "lo mire y no hay"; la clave ausente no dice
+  // nada y el que lee completa con lo que le conviene.
+  const m = await medirBandeja({
+    sshRunner: runner(() => new Error("ssh caido")),
+    domain: "x.com",
+    serverSlug: "n1",
+    serverIp: "1.2.3.4",
+    propios: "todo"
+  });
+
+  assert.equal(m.estado, "unreadable");
+  assert.deepEqual(m.culpaPorProveedor, {});
+  // Y sobrevive al viaje por el archivo, que es donde `undefined` desaparece sin ruido: la clave
+  // tiene que seguir estando del otro lado del JSON.
+  assert.ok("culpaPorProveedor" in (JSON.parse(JSON.stringify(m)) as object), "JSON.stringify se come las claves undefined");
+});
+
+test("el receptor que DECIDIO el veredicto no se puede caer por el piso de tamano", async () => {
+  // UN ARRAY VACIO QUE SE LEE COMO CERO. `porReceptor` se filtra a 20 intentos porque es un techo de
+  // TAMANO DE ARCHIVO —`byProvider` no tiene tope de filas y el panel sirve el JSON entero—, pero ese
+  // techo no puede tapar al receptor sobre el que el veredicto YA se pronuncio: ahi `[]` se lee como
+  // "no mando nada" cuando lo que dice es "no llego al piso".
+  //
+  // EL CASO, reproducido por el camino de produccion el 2026-08-08 con lineas crudas del mail.log de
+  // corpfilingcontrol.com: 1 entrega y 9 rechazos 550-5.7.1 de Gmail. Son 10 intentos, la MITAD del
+  // piso, asi que la fila se filtraba siempre — y es justo el receptor que dispara el veto
+  // `insufficient_sample`. O sea que el archivo publicaba el estado nuevo sin UN solo numero que lo
+  // respaldara, y `cruzarEntregaConPlacement` imprimia "nuestro MTA no reporta gmail.com en la
+  // ventana ... el cruce no se puede hacer" sobre el receptor que nos estaba cerrando la puerta.
+  //
+  // Con nuestro volumen (~2 correos/dia por dominio) el piso de 20 es INALCANZABLE para los nuestros:
+  // sin esta excepcion la fila no aparece nunca, no "casi nunca".
+  const SALIDA = `## DELIVERED
+      1 gmail.com
+      3 cola-larga-de-nfc.com
+## OWN_DELIVERED
+      1 gmail.com
+      3 cola-larga-de-nfc.com
+## BLOCKED
+      9 gmail.com
+## OWN_BLOCKED
+      9 gmail.com
+## DEFERRED
+## OWN_DEFERRED
+## END`;
+
+  const m = await medirBandeja({
+    sshRunner: runner((c) => (c.includes("## VOLUME") ? VOLUMEN : SALIDA)),
+    domain: "x.com",
+    serverSlug: "n1",
+    serverIp: "1.2.3.4",
+    propios: "todo"
+  });
+
+  assert.equal(m.estado, "insufficient_sample", "10 intentos con 90% de rechazo: no se si esta cerrado, y eso NO es estar sano");
+  assert.deepEqual(
+    m.porReceptor?.find((p) => p.receptor === "gmail.com"),
+    { receptor: "gmail.com", entregados: 1, rechazados: 9, diferidos: 0 },
+    "el receptor que decidio el veredicto tiene que traer su numero"
+  );
+  // Y LA COLA LARGA DE NFC SIGUE FILTRADA, que es lo que mantiene acotado el archivo: la excepcion es
+  // para los receptores que decidieron algo, no un piso mas bajo para todos.
+  assert.equal(m.porReceptor?.find((p) => p.receptor === "cola-larga-de-nfc.com"), undefined, "3 intentos y ningun veredicto: no entra");
 });
 
 // ── NUESTRO CORREO vs EL DE NFC ─────────────────────────────────────────────────────────────────

@@ -225,7 +225,16 @@ async function chequearTls(input: EntradaReputacion, intentar: Intentar): Promis
   // Sin sonda inyectada NO se inventa un veredicto. Es la regla 1 del encabezado: el cuarto estado
   // implícito ("no lo chequeé, debe estar bien") es el que fabrica las mentiras caras.
   if (!input.tls) return { estado: "no-se", detalle: "no tengo con qué mirar el certificado en este entorno" };
-  const r = await intentar(() => input.tls!(`mail.${input.dominio}`));
+  // `smtp.<dominio>`, NO `mail.<dominio>`, y es la mitad de un par: la otra es `tls:
+  // sondaTlsDelNodo()` en el orquestador. Medido con dig el 2026-08-07 (`+time=3 +tries=1`):
+  // mail.corpfiling-infra.com, mail.filing-ops.com y mail.annualfilings-ops.com NO tienen registro
+  // A; smtp.* resuelve en los tres (77.37.96.101, 77.37.96.3, 80.190.74.250). `smtp.` es lo que
+  // publican el MX y el PTR de los 58 nodos.
+  //
+  // Con el prefijo viejo, cablear la sonda cambia un "no sé" ("no tengo con qué mirar") por otro
+  // "no sé" (ENOTFOUND) en los 66 dominios y el lote se daría por terminado sin destapar nada: es
+  // "una mano prometida y no cableada", la lección que este proyecto ya pagó cuatro veces.
+  const r = await intentar(() => input.tls!(`smtp.${input.dominio}`));
   if (!r.ok) return { estado: "no-se", detalle: `no pude mirar el certificado del 587: ${r.motivo}` };
   if (!r.valor) return { estado: "mal", detalle: "el 587 responde pero no presenta certificado: STARTTLS no está sirviendo" };
   const vence = Date.parse(r.valor.vence ?? "");
@@ -342,22 +351,34 @@ export interface ArchivoReputacion {
 
 /**
  * EL ORDEN, que es la mitad del valor. Primero los que HOY calientan (ahí una lista negra cambia lo
- * que sale esta tarde), después los que están cerca del umbral permanente (ahí cambia algo
- * irreversible), y al final el resto. Con la cuota agotada, los últimos quedan con las listas en
- * "no-se" — nunca en "limpio", que es la confusión que costó el mes de julio.
+ * que sale esta tarde), después los que están por ESTRENAR, después los que están cerca del umbral
+ * permanente (ahí cambia algo irreversible), y al final el resto. Con la cuota agotada, los últimos
+ * quedan con las listas en "no-se" — nunca en "limpio", que es la confusión que costó el mes de
+ * julio.
+ *
+ * POR QUÉ LOS QUE ESTRENAN SUBIERON AL SEGUNDO LUGAR, con fecha: desde el 2026-08-08 el pool NO
+ * arranca un dominio virgen con las listas en "no-se" (plan-diario.ts, rama `no_traffic`), porque el
+ * primer correo desde una IP listada construye reputación al revés y eso no se deshace. Con el orden
+ * viejo esos dominios caían en el grupo 2 —el que se come la cuota agotada— y el freno se volvía
+ * permanente: nunca se los consultaba, así que nunca podían estrenar. Una puerta que sólo se abre
+ * con un dato que este barrido nunca junta es una trampa que se cierra sola, que es exactamente la
+ * clase de bug que el freno vino a evitar. Son 7 sobre un presupuesto de 25: entran de sobra.
  *
  * Pura y exportada porque el orden es una regla de negocio, no un detalle del loop.
  */
 export function ordenDelBarrido(input: {
   todos: readonly string[];
   calientanHoy: readonly string[];
+  /** Los que nunca mandaron y esperan turno para arrancar. Sin listas consultadas no arrancan. */
+  vanAEstrenar?: readonly string[];
   cerca: readonly string[];
 }): string[] {
   const prioridad = (d: string): number => {
     const bajo = d.toLowerCase();
     if (input.calientanHoy.some((x) => x.toLowerCase() === bajo)) return 0;
-    if (input.cerca.some((x) => x.toLowerCase() === bajo)) return 1;
-    return 2;
+    if ((input.vanAEstrenar ?? []).some((x) => x.toLowerCase() === bajo)) return 1;
+    if (input.cerca.some((x) => x.toLowerCase() === bajo)) return 2;
+    return 3;
   };
   // Estable dentro de cada grupo: un orden que cambia entre corridas hace que el diff del canal
   // grite por cosas que no se movieron.

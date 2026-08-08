@@ -59,11 +59,37 @@ export const FILAS: readonly Fila[] = [
   // A.1/A.2 — la reacción del jefe, que ya se guardaba y volvía mal medida.
   { archivo: "warmup-conversacion.json", donde: "intercambios[].reaccion", promete: "lote 2 · sin ventana de 15 min y sin conformes contaminados", desde: "2026-08-07" },
   // G.1/G.2 — las dos señales que se leían y nadie escribía.
-  { archivo: "warmup-reputacion.json", donde: "dominios[].tls.estado", promete: "lote 2 · sonda STARTTLS por el 587 (sondaTlsDelNodo)", desde: "2026-08-07", noVale: ["no-se"] },
+  // YA CABLEADA, Y LA FILA SE QUEDA IGUAL — QUE ES OTRA COSA. Hasta el 2026-08-08 este texto decía
+  // "FALTA cablearla en warmup-monitor.ts:341" y era cierto; el diff de ese día puso la línea
+  // (`tls: sondaTlsDelNodo(),` en warmup-monitor.ts:390) y el texto quedó mintiendo. Se corrige
+  // porque un aviso que grita en falso enseña a ignorar todos los demás, y este es el archivo que
+  // existe justamente para eso: si el operador lee "FALTA cablear" sobre algo que ya está cableado,
+  // la próxima vez que lea "FALTA cablear" no lo va a creer.
+  //
+  // LO QUE LA FILA MIDE AHORA ES DISTINTO Y SIGUE SIENDO NECESARIO: que el DATO llegue al JSON. El
+  // llamador puede estar y el campo salir igual en `"no-se"` —es lo que pasaba el 2026-08-07 en 66
+  // de 66 dominios, con detalle "no tengo con qué mirar el certificado en este entorno"—, y por eso
+  // `noVale` sigue puesto: presente no es medido. Cablear es la condición, no la prueba.
+  { archivo: "warmup-reputacion.json", donde: "dominios[].tls.estado", promete: "lote 2 · sonda STARTTLS por el 587 (sondaTlsDelNodo), cableada en warmup-monitor.ts:390 el 2026-08-08; esta fila mide que el DATO llegue", desde: "2026-08-07", noVale: ["no-se"] },
   { archivo: "warmup-reputacion.json", donde: "dominios[].receptor", promete: "lote 2 · receptorDe desde sender-measurement", desde: "2026-08-07" },
   // B3 — la propuesta que argumenta y no ejecuta. Consume los dos campos del lote 3.
   { archivo: "warmup-monitor.json", donde: "hechos.plan[].placementProveedor", promete: "lote 3 · el placement dice de qué proveedor es", desde: "2026-08-07" },
-  { archivo: "warmup-monitor.json", donde: "hechos.plan[].gate", promete: "lote 3 · el veredicto de la receta, ya evaluado", desde: "2026-08-07" }
+  { archivo: "warmup-monitor.json", donde: "hechos.plan[].gate", promete: "lote 3 · el veredicto de la receta, ya evaluado", desde: "2026-08-07" },
+  // I7 — LA PROMESA IMPOSIBLE. Misma historia exacta que la fila del TLS de arriba, incluido el
+  // texto que envejeció mal: decía "FALTA cablearla en warmup-monitor.ts:1475" y el diff del
+  // 2026-08-08 la cableó — `porQueNoSePodraCumplir` (apps/gateway-api/src/agents/promesas.ts) hoy se
+  // llama desde warmup-monitor.ts:1551, adentro del `anotarPromesa` que antes prometía sin mirar.
+  //
+  // POR QUÉ LA FILA SIGUE VALIENDO: lo que promete el lote es que la imposibilidad se dictamine AL
+  // PROMETER, y eso se ve en el JSON o no se ve. Consecuencia MEDIDA en producción cuando no estaba:
+  // warmup-promesas.json con pm-1 y pm-2 abiertas sobre `placement:filing-ops.com`, que está en cap 0
+  // en sender-cap.json y no tiene UNA sola fila en warmup_activity — el jefe esperó 6 h por un dato
+  // que era imposible en el momento en que se lo prometieron.
+  //
+  // OJO CON EL VEREDICTO DE ESTA FILA, que es la advertencia que NO caducó: `callada` tiene DOS
+  // escritores (el dictamen al prometer y el dedupe de 24 h de `anotarPromesa`), así que verla
+  // poblada no prueba por sí sola cuál de los dos la escribió.
+  { archivo: "warmup-promesas.json", donde: "promesas[].callada", promete: "lote 3 · la promesa imposible se dictamina AL PROMETER (porQueNoSePodraCumplir), cableada en warmup-monitor.ts:1551 el 2026-08-08; esta fila mide que el DATO llegue", desde: "2026-08-07" }
 ];
 
 export type Estado = "OK" | "FALTA" | "SIN ARCHIVO" | "SIN FILAS";

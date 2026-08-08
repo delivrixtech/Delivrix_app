@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   aColombiano,
@@ -13,6 +14,8 @@ import {
   TIMEOUTS_CHAT,
   VOZ
 } from "./sentinel-chat.ts";
+import { comoEstaEsteNodo } from "./acciones-agente.ts";
+import { lineasParaPrompt, registrar } from "./bitacora-acciones.ts";
 import { camposObservables } from "./slack.ts";
 import type { HechosWarmup, LecturaAgente } from "./warmup-monitor.ts";
 
@@ -39,7 +42,12 @@ test("la voz acusa recibo antes de trabajar", () => {
   // fija ahora es la CONDUCTA —acusar recibo y después contar— sin una plantilla que copiar.
   assert.match(VOZ, /CONTESTA PRIMERO/);
   assert.match(VOZ, /Antes de nada, di que ya la tienes/, "acusa recibo antes de trabajar");
-  assert.match(VOZ, /CUANDO TERMINAS ALGO, DILO/);
+  // "y cuenta cómo salió" SE FUE, y el reemplazo se acota a lo que él SÍ puede saber al escribir.
+  // Hay UNA sola llamada al modelo por turno: las manos corren DESPUÉS, así que pedirle que cuente
+  // cómo salió es pedirle que fabrique. Es la línea que produjo "salieron con IP limpia y
+  // autenticación ok" el 2026-08-07 sobre dos nodos que gmail, hotmail y outlook rechazan hoy.
+  assert.doesNotMatch(VOZ, /cuenta cómo salió/, "no se le pide contar un resultado que todavía no existe");
+  assert.match(VOZ, /SI HABÍAS QUEDADO EN VOLVER CON ALGO Y YA LO TIENES, CIÉRRALO/);
 });
 
 test("la voz es cálida, pero se pone plana cuando el tema es serio", () => {
@@ -121,6 +129,44 @@ test("los hechos van con su antigüedad, no como si fueran de ahora", () => {
     "2026-08-06T02:45:00.000Z"
   );
   assert.match(ctx, /hace 45 min/, "un dato viejo presentado como 'ahora' es la falsedad más barata");
+});
+
+test("EL PROMPT SABE QUÉ DÍA ES EN COLOMBIA, no en la máquina", () => {
+  // EL INCIDENTE: la Studio corre en America/New_York (offset 240 hoy) y no hay `TZ=` en
+  // gateway.env. Medido en node: `new Date("2026-08-10T04:30:00Z").getDay()` da 1 —lunes— cuando en
+  // Colombia todavía es domingo 9. O sea una ventana de una hora cada noche en la que la máquina ya
+  // cambió de día y el jefe no… y en horario de invierno la ventana desaparece sola, así que el bug
+  // pasa limpio cualquier prueba corrida en la mitad del año equivocada.
+  //
+  // Sin esta línea el modelo no puede convertir "el lunes" en una fecha, y si lo intenta la inventa.
+  // Una fecha inventada es una promesa falsa con hora exacta: peor que no tener la línea.
+  const laHoraDeLaMadrugada = "2026-08-10T04:30:00Z";
+  const enCualquierZona = (): string =>
+    construirContexto({ hilo: [{ quien: "jefe", texto: "recuérdame el lunes" }], snapshot: null, loQueHiciste: [] }, laHoraDeLaMadrugada);
+
+  const original = process.env.TZ;
+  try {
+    // Las dos zonas del incidente: la de la máquina de producción y la neutra. El veredicto tiene
+    // que ser el MISMO — `timeZone: "America/Bogota"` explícito hace que la zona del proceso no
+    // participe, y eso es justamente lo que un `TZ=America/Bogota` en gateway.env taparía dejando el
+    // código mal.
+    for (const zona of ["America/New_York", "Etc/UTC"]) {
+      process.env.TZ = zona;
+      const ctx = enCualquierZona();
+      assert.match(ctx, /Hoy es domingo, 09\/08\/2026, 23:30 en Colombia\./, `bajo TZ=${zona}`);
+      assert.ok(!/lunes/.test(ctx.split("\n")[0] ?? ""), `bajo TZ=${zona} no puede decir lunes: en Colombia todavía es domingo`);
+      assert.match(ctx, /la única que existe para las fechas/, "va como dato, no como sugerencia");
+    }
+  } finally {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  }
+
+  // Un reloj ilegible degrada, no rompe. `Intl.format` sobre un Invalid Date tira RangeError, y una
+  // excepción en este camino es el jefe sin respuesta: el resto de la función ya convive con un
+  // `Date.parse` que da NaN sin tumbar nada.
+  const roto = construirContexto({ hilo: [{ quien: "jefe", texto: "?" }], snapshot: null, loQueHiciste: [] }, "no soy una fecha");
+  assert.ok(!/Hoy es/.test(roto), "sin reloj legible, la línea no sale (y nada explota)");
 });
 
 test("sin lectura reciente, se le dice que no puede afirmar nada", () => {
@@ -663,7 +709,8 @@ test("una promesa solo existe si el modelo la MARCA — la prosa no cuenta", asy
     "PROMETI: te aviso del placement de corp-delivery.com | espero=placement:corp-delivery.com";
   assert.deepEqual(extraerPromesa(conMarcador), {
     que: "te aviso del placement de corp-delivery.com",
-    esperando: "placement:corp-delivery.com"
+    esperando: "placement:corp-delivery.com",
+    cuando: null
   });
 
   // Textual del log de producción, SIN la línea: no se inventa una promesa.
@@ -675,7 +722,79 @@ test("una promesa solo existe si el modelo la MARCA — la prosa no cuenta", asy
   assert.equal(extraerPromesa("PROMETÍ: te aviso | espero=cap.frenados")?.esperando, "cap.frenados");
   // Sin `espero=` SIGUE siendo promesa: se anota y solo podrá vencer. Perderla porque el modelo
   // olvidó la segunda mitad sería castigar al jefe por un error del modelo.
-  assert.deepEqual(extraerPromesa("PROMETI: te traigo el resumen"), { que: "te traigo el resumen", esperando: null });
+  assert.deepEqual(extraerPromesa("PROMETI: te traigo el resumen"), { que: "te traigo el resumen", esperando: null, cuando: null });
+});
+
+test("LA CITA VIAJA CRUDA: cuando= se extrae igual que espero= y NO se convierte acá", () => {
+  // El incidente, textual del hilo de producción del 2026-08-07T18:34Z: el jefe escribió "recuedame
+  // el lunes a las 5pm hora Colombia" y el agente contestó "queda anotado". No quedó anotado en
+  // ningún lado: las promesas sólo saben esperar un CAMPO observable (`espero=placement:x.com`), y
+  // el único reloj que existe es el vencimiento de 6 h — que hubiera convertido la cita del lunes en
+  // una disculpa el mismo viernes.
+  assert.deepEqual(extraerPromesa("PROMETI: te recuerdo lo del cupo | cuando=2026-08-10T17:00"), {
+    que: "te recuerdo lo del cupo",
+    esperando: null,
+    cuando: "2026-08-10T17:00"
+  });
+
+  // CRUDO Y SIN JUZGAR, incluso cuando no parsea. Este extractor es puro sobre un string y no tiene
+  // reloj: no puede saber si "el lunes" es el 10 o el 17, ni en qué zona. Tirar el valor acá le
+  // sacaría al otro lado la única forma de anotar la promesa sin cita en vez de perderla entera.
+  assert.equal(extraerPromesa("PROMETI: te aviso | cuando=el lunes")?.cuando, "el lunes");
+  assert.equal(extraerPromesa("PROMETÍ: te aviso | CUANDO = 2026-08-10T17:00")?.cuando, "2026-08-10T17:00");
+
+  // Las dos claves conviven en el parser aunque VOZ pida no combinarlas: el extractor reporta lo que
+  // el modelo escribió, no lo que debería haber escrito. Quien decide qué hacer con las dos juntas
+  // es quien las consume, y para eso tiene que verlas.
+  const dos = extraerPromesa("PROMETI: te aviso | espero=cap.frenados | cuando=2026-08-10T17:00");
+  assert.equal(dos?.esperando, "cap.frenados");
+  assert.equal(dos?.cuando, "2026-08-10T17:00");
+});
+
+test("VOZ NO PUEDE PEDIR `cuando=` MIENTRAS NADIE LO ANOTE: la mitad de la voz no sale sin la mitad del cableado", async () => {
+  // EL INCIDENTE QUE FIJA (encontrado por QA antes de desplegar, 2026-08-07). El lote entregó la
+  // promesa por FECHA entera del lado del código —`aInstante`, `Promesa.cuandoEn`, la rama de la cita
+  // en `revisarPromesas`, el parámetro `cuando` de `anotarPromesa`, todo con tests verdes— y desplegó
+  // el contrato en el PROMPT: el modelo emitía `PROMETI: … | cuando=<AAAA-MM-DDTHH:MM>` y tenía orden
+  // explícita de PREGUNTARLE al jefe el día y la hora exactos si no los había dado.
+  //
+  // Pero el ÚNICO que anota promesas —`scripts/ops/warmup-monitor.ts:1475`— seguía llamando
+  // `anotarPromesa(actual ?? [], { que, hilo, esperando }, …)` sin `cuando`. O sea: el agente iba a
+  // interrogar al jefe por una fecha (sonando MÁS confiable que hoy), tirarla al piso, y pedir
+  // disculpas 6 h después. Estrictamente peor que no tener la función, y es literal la lección que
+  // este repo dice haber pagado cuatro veces: una mano prometida y no cableada es peor que no darla.
+  //
+  // ESTE TEST ES LA BISAGRA, y por eso mira las DOS mitades a la vez: el día que alguien cablee
+  // `cuando:` en warmup-monitor.ts, este test se pone rojo y obliga a devolver las líneas a VOZ en el
+  // MISMO commit. No se puede volver a separar.
+  const monitor = await readFile(new URL("../../../../scripts/ops/warmup-monitor.ts", import.meta.url), "utf8");
+  // EL DETECTOR MIRA CÓDIGO, NO PROSA, y aguanta una llamada anidada adentro del objeto.
+  //
+  // La versión original era `/anotarPromesa\([^)]*cuando\s*:/s`, y falló el día que se cableó de
+  // verdad: `[^)]*` corta en el PRIMER paréntesis, y el objeto real lleva `hilo: dondeResponder(m)`
+  // antes de `cuando:`. O sea que daba FALSO NEGATIVO sobre un cableado correcto y habría exigido
+  // sacar del prompt una capacidad que sí existe — exactamente al revés de para lo que este test
+  // está escrito. Una bisagra que se traba en la dirección equivocada es peor que no tenerla.
+  //
+  // Se quitan los comentarios antes de mirar porque este archivo documenta su propio cableado: sin
+  // eso, la frase "el `cuando` de `anotarPromesa`" en un comentario alcanzaría para dar por
+  // cableado algo que nadie llamó, que es la falla que el test previene, contrabandeada por prosa.
+  const soloCodigo = monitor.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const cableado = /anotarPromesa\((?:[^()]|\([^()]*\))*?cuando\s*:/s.test(soloCodigo);
+  const enVoz = /cuando=<AAAA-MM-DDTHH:MM>/.test(VOZ);
+  assert.equal(
+    enVoz,
+    cableado,
+    cableado
+      ? "warmup-monitor.ts ya pasa `cuando` a anotarPromesa: devolvé las líneas de cuando= a VOZ (están en el comentario del bloque PROMETI)"
+      : "VOZ pide `cuando=` y NADIE lo anota: o se cablea `cuando` en warmup-monitor.ts o se saca del prompt"
+  );
+
+  // La fecha tampoco puede colarse como un valor de `espero=`: `revisarPromesas` sólo compara campos
+  // observables entre dos retratos, y una fecha espera un reloj. Meterla ahí obligaría a EXENTARLA
+  // del test que cruza VOZ ↔ camposObservables, y una lista cerrada con una excepción adentro deja de
+  // ser una lista cerrada — que es exactamente cómo se coló `medicion:<dominio>`.
+  assert.ok(!/espero=\s*fecha/i.test(VOZ), "la fecha NO puede ofrecerse como un valor de espero=");
 });
 
 test("la línea PROMETI no llega a Slack, igual que ACCION y RECORDAR", async () => {
@@ -770,7 +889,8 @@ test("la promesa se CONSUME en el módulo: nunca sale por texto", async () => {
   assert.match(r.texto ?? "", /ACCION: medir_dominio/, "ACCION sí sigue en el texto: la lee y la limpia el orquestador");
   assert.deepEqual(r.promesa, {
     que: "te aviso del placement de corp-delivery.com",
-    esperando: "placement:corp-delivery.com"
+    esperando: "placement:corp-delivery.com",
+    cuando: null
   });
   assert.equal(r.prometioSinMarcar, false);
 });
@@ -973,35 +1093,116 @@ test("la VOZ prohíbe el markdown: es la mitad del arreglo que vive en el prompt
   assert.match(v, /Escribes en un chat, no en un informe/, "le dice la intención, no solo la lista");
 });
 
-test("el detalle crudo de una acción entra por el PROMPT, nunca por el texto que se publica", () => {
-  // Hoy el orquestador arma `hechas = res.map(a => \`hecho: ${a.detalle}\`)` y lo CONCATENA debajo
-  // de la prosa. Resultado en el canal, textual del log: "Voy a medir y diagnosticar los cercanos y
-  // los frenados para ver qué puedo soltar. Hice esto: revisar_reputacion controlnationalcorp.com."
-  // — una frase de persona con un identificador de código pegado atrás.
+test("EL CONTRATO SE DIO VUELTA: el hecho lo escribe el CÓDIGO, se publica saneado, y ADEMÁS vuelve por el prompt", () => {
+  // ESTE TEST FIJABA LA APUESTA QUE PERDIÓ EL 2026-08-07. Decía que el resultado tenía que entrar
+  // por `loQueHiciste` "y lo cuenta el modelo con sus palabras", y que lo publicable era solo la
+  // prosa. Con eso aplicado tal cual, la cláusula "receptor: CERRADO en gmail.com, hotmail.com,
+  // outlook.com" desaparecía del canal — y el modelo, que la tenía delante, publicó igual "salieron
+  // con IP limpia y autenticación ok, esos nodos sirven para montarles dominio nuevo". Contarlo con
+  // sus palabras ES el bug: no se le puede pedir a la redacción que sostenga un hecho caro.
   //
-  // El camino correcto ya existía y no se usaba: `loQueHiciste`. El resultado entra por ahí al turno
-  // SIGUIENTE y lo cuenta el modelo con sus palabras. Este test fija el contrato del lado del
-  // módulo: entra al prompt, y de la salida se ocupa quien publica (ver como_cablearlo).
-  const CRUDOS = [
-    "hecho: controlnationalcorp.com: no_traffic, 0 entregados / 0 rechazados. el log no registra ni entregas ni rechazos ni diferidos en la ventana leida",
-    "no pude: no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432",
-    'no pude: rechazada: "medir_dominio_controlcontrolledger.com" no es una acción permitida'
-  ];
+  // El contrato nuevo: la frase del hecho la escribe `comoEstaEsteNodo` DESPUÉS de que el modelo
+  // devolvió (orden de ejecución, no disciplina), se publica pasada por este mismo embudo, y además
+  // vuelve por el prompt del turno siguiente.
+  //
+  // Y EL INPUT DEJA DE FABRICARSE: los CRUDOS salen del camino de producción
+  // (`registrar` → `lineasParaPrompt`), no escritos a mano. El fixture anterior tenía un formato que
+  // `lineasParaPrompt` NUNCA produce para una acción ejecutada — es la lección de
+  // verificar-con-el-mismo-camino-de-produccion, otra vez sobre un fixture escrito desde la
+  // suposición del wire.
+  const frase = comoEstaEsteNodo(
+    "bizreport-control.com",
+    "86.48.29.176",
+    { estado: "blocked_by_provider", bloqueanPor: ["gmail.com", "hotmail.com", "outlook.com"], degradadoEn: [], entregados: 0, rechazados: 337, detalle: "" },
+    {
+      dominio: "bizreport-control.com",
+      ip: "86.48.29.176",
+      blacklist: { estado: "ok", detalle: "sin detecciones" },
+      spf: { estado: "ok", detalle: "SPF con -all" },
+      dkim: { estado: "ok", detalle: "DKIM válido" },
+      dmarc: { estado: "ok", detalle: "DMARC p=quarantine" },
+      ptr: { estado: "ok", detalle: "PTR confirmado" },
+      tls: { estado: "ok", detalle: "certificado vigente" }
+    }
+  );
+
+  // ── LOS DOS CARRILES ESCRIBEN `detalle: ejecutada ? null : …`, Y ESO NO SE ARREGLA ACÁ ────────
+  //
+  // El fixture anterior de este test ponía la frase en `motivo` y exigía "se ejecutó y devolvió:".
+  // Fallaba, y el rojo era correcto: `lineasParaPrompt` decidió —con razón, y está argumentado en su
+  // comentario— NO leer nunca `motivo`, porque el carril del chat escribe ahí "pedido por el jefe:
+  // <la pregunta del jefe>" y el prompt terminaba devolviéndole al modelo LA PREGUNTA DEL JEFE
+  // presentada como la salida del sensor. Lo que el fixture no miraba es que el carril de la GUARDIA
+  // también nulea el `detalle` de lo ejecutado (warmup-monitor.ts:886, `detalle: a.ejecutada ? null :
+  // (a.detalle ?? null)`, idéntico en :1419). O sea que HOY, con los dos escritores como están, la
+  // rama nueva no se puede alcanzar por ningún camino de producción.
+  //
+  // Se fija LA VERDAD DE HOY, no la que va a haber cuando alguien cablee al escritor. Un test que
+  // pasa con un fixture que el sistema nunca produce es exactamente la lección
+  // `verificar-con-el-mismo-camino-de-produccion`, cometida adentro de su propio arreglo.
+  const COMO_ESCRIBEN_HOY = lineasParaPrompt(
+    registrar(null, {
+      accion: "revisar_reputacion",
+      objetivo: "bizreport-control.com",
+      motivo: "pedido por el jefe: Entonces que hacemos, ese IP se pierde?",
+      estado: "ejecutada",
+      detalle: null,
+      cuando: "2026-08-07T22:01:52.000Z"
+    })
+  );
+  assert.match(COMO_ESCRIBEN_HOY[0]!, /todavía sin medir el efecto/, "sin detalle, la línea calla — que es lo correcto");
+  assert.doesNotMatch(
+    COMO_ESCRIBEN_HOY[0]!,
+    /pedido por el jefe/,
+    "LA PREGUNTA DEL JEFE NUNCA puede volver al prompt disfrazada de salida del sensor: 3 de 33 entradas del 2026-08-07 eran así"
+  );
+
+  // Y CUANDO EL ESCRITOR PASE EL DETALLE —una línea en warmup-monitor.ts: `detalle: a.detalle`— la
+  // cláusula llega entera. Esto es lo que falta para cerrar el lote, y queda fijado acá para que el
+  // día que se cablee no haya que redescubrir el formato.
+  const CRUDOS = lineasParaPrompt(
+    registrar(null, {
+      accion: "revisar_reputacion",
+      objetivo: "bizreport-control.com",
+      motivo: "pedido por el jefe: Entonces que hacemos, ese IP se pierde?",
+      estado: "ejecutada",
+      detalle: frase,
+      cuando: "2026-08-07T22:01:52.000Z"
+    })
+  );
+
+  // (1) EL HECHO LLEGA AL PROMPT DEL TURNO SIGUIENTE, con la cláusula adentro. Antes esta línea
+  // decía "se ejecutó el 2026-08-07T22:01, todavía sin medir el efecto" y nada más — verificado
+  // corriendo la función real contra el warmup-acciones.json real de producción.
+  assert.equal(CRUDOS.length, 1);
+  assert.match(CRUDOS[0]!, /se ejecutó y devolvió:/);
+  assert.match(CRUDOS[0]!, /gmail\.com, hotmail\.com y outlook\.com le rechazan el correo hoy/);
+
   const ctx = construirContexto(
     { hilo: [{ quien: "jefe", texto: "¿cómo vamos?" }], snapshot: snapshot(), loQueHiciste: CRUDOS },
     "2026-08-06T02:30:00.000Z"
   );
-  for (const crudo of CRUDOS) {
-    assert.ok(ctx.includes(crudo), `el detalle tiene que llegarle al modelo para que lo cuente él: ${crudo}`);
-  }
   assert.match(ctx, /LO QUE PEDISTE Y QUÉ PASÓ:/);
+  assert.ok(ctx.includes(CRUDOS[0]!), "el detalle tiene que llegarle al modelo, entero");
 
-  // Y la otra mitad: lo que se publica es lo que ESCRIBIÓ el modelo, sin nada pegado abajo.
-  const conProsa = limpiarParaSlack("Lo medí y no hay tráfico en la ventana, así que todavía no sé si lo aceptan.");
-  for (const crudo of CRUDOS) {
-    assert.ok(!conProsa.includes(crudo), "el detalle crudo no puede aparecer en el texto publicable");
-  }
-  assert.ok(!/no_traffic|ECONNREFUSED|no es una acción permitida/.test(conProsa));
+  // (2) Y LO QUE SE PUBLICA sobrevive al embudo: la cláusula sigue ahí después de sanearla, y sigue
+  // ANTES que la buena noticia. Ya no depende de que el modelo la escriba.
+  const publicado = limpiarParaSlack(frase);
+  assert.match(publicado, /gmail\.com, hotmail\.com y outlook\.com le rechazan el correo hoy/);
+  // `indexOf` devuelve -1 cuando no encuentra, así que `a < b` pelado se lee como "en orden" el día
+  // que la palabra desaparece. Los dos índices tienen que existir. Ver `vaAntesQue` en
+  // acciones-agente.test.ts, donde la mutación que lo destapó está escrita.
+  const iMala = publicado.indexOf("rechazan");
+  const iBuena = publicado.indexOf("limpia");
+  assert.ok(iMala >= 0 && iBuena >= 0, `las dos partes tienen que estar: ${publicado}`);
+  assert.ok(iMala < iBuena, `la mala noticia primero: ${publicado}`);
+  assert.doesNotMatch(publicado, /·|_/, "y sin la forma de cola de log que hacía que el jefe la saltara");
+
+  // (3) Lo que el embudo SÍ tiene que seguir matando: el texto de máquina de las manos que fallan.
+  const roto = limpiarParaSlack("no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432");
+  assert.ok(roto.includes("ECONNREFUSED"), "no se disfraza el error…");
+  const prosa = limpiarParaSlack("**Lo medí** y no hay tráfico en la ventana.");
+  assert.equal(prosa, "Lo medí y no hay tráfico en la ventana.");
 });
 
 test("las observaciones son BLOQUEANTES para el aviso proactivo, y contadas para la respuesta al jefe", async () => {
@@ -1039,4 +1240,72 @@ test("sacar el vocativo NO puede deformar un dato: un dominio no arranca con may
   assert.equal(limpiarParaSlack("Juanes, 89.117.75.226 está en una lista negra."), "89.117.75.226 está en una lista negra.");
   // Y la frase normal sí se repara.
   assert.equal(limpiarParaSlack("Juanes, esto no lo puedo destrabar yo."), "Esto no lo puedo destrabar yo.");
+});
+
+test("EL DETECTOR DEJA DE CASTIGAR LA VERDAD: lo que la máquina midió no es invención", async () => {
+  // MEDIDO SOBRE EL CAMINO REAL, y la asimetría iba justo al revés de lo que hace falta: los
+  // mensajes que NOMBRABAN los receptores verdaderos salían con reparos ("nombra gmail.com, que no
+  // está en el contexto" ×3, "cita el número 337") y los que mentían en abstracto salían MUDOS, con
+  // cero observaciones. O sea que el detector le ponía un reparo a la respuesta CORRECTA y ninguno a
+  // la falsa — textual la dinámica que este módulo documenta como "entrena al operador a ignorar los
+  // reparos".
+  //
+  // La causa no era el detector: los dos carriles guardan `detalle: null` para lo ejecutado
+  // (warmup-monitor.ts:886 y :1419), así que los receptores verdaderos nunca entraban al contexto y
+  // no había con qué respaldarlos. El respaldo que faltaba es lo que la mano ACABA de medir.
+  const { ejecutarAcciones, olvidarHechosVinculantes } = await import("./acciones-agente.ts");
+  const ctx = {
+    dominiosConocidos: ["bizreport-control.com"],
+    ahora: () => new Date("2026-08-07T22:00:00.000Z"),
+    revisarReputacion: async () => ({
+      dominio: "bizreport-control.com", ip: "86.48.29.176",
+      blacklist: { estado: "ok", detalle: "sin detecciones" },
+      spf: { estado: "ok", detalle: "-all" }, dkim: { estado: "ok", detalle: "s2026a" },
+      dmarc: { estado: "ok", detalle: "quarantine" }, ptr: { estado: "ok", detalle: "ok" },
+      tls: { estado: "ok", detalle: "vigente" }
+    }),
+    diagnosticarDominio: async () => ({
+      estado: "blocked_by_provider", bloqueanPor: ["gmail.com", "hotmail.com", "outlook.com"],
+      degradadoEn: [], entregados: 0, rechazados: 337, detalle: ""
+    }),
+    pendientes: { listar: async () => [], guardar: async () => {} }
+  } as never;
+
+  const CONTEXTO_FLACO = "LO QUE PEDISTE Y QUÉ PASÓ\n- revisar_reputacion bizreport-control.com se ejecutó el 2026-08-07T22:05, todavía sin medir el efecto.";
+  const HONESTA = "Hoy gmail.com, hotmail.com y outlook.com le tienen la puerta cerrada a bizreport-control.com, con 337 rechazos.";
+
+  // EL RESPALDO POR HECHO VINCULANTE SE SACÓ, y la razón es que no distingue "nombrar el dato" de
+  // "mentir con el dato". Es la misma clase de falla que el incidente: un blindaje que se calibró
+  // sobre el caso bueno y absuelve el malo.
+  //
+  // Medido por el camino real: con el hecho de bizreport-control.com vivo, la frase FALSA de abajo
+  // —los 337 son RECHAZOS, no entregas— pasaba con CERO observaciones, y sin él daba 6. O sea que el
+  // respaldo apagaba el detector justo en el turno que decide una compra, y el contador `inventadas`
+  // de la memoria quedaba subestimado ahí y en ningún otro lado.
+  const MENTIRA_CON_LOS_MISMOS_DIGITOS =
+    "bizreport-control.com ya viene con 337 entregas limpias esta semana y la IP 86.48.29.176 está sin marcas: móntale el dominio nuevo tranquilo";
+
+  olvidarHechosVinculantes();
+  const antes = revisarRespuesta(MENTIRA_CON_LOS_MISMOS_DIGITOS, CONTEXTO_FLACO);
+  assert.ok(antes.length > 0, "sin hecho vivo, la mentira se marca");
+
+  await ejecutarAcciones([{ accion: "revisar_reputacion", dominio: "bizreport-control.com", motivo: "el jefe pregunta" }], ctx);
+  assert.deepEqual(
+    revisarRespuesta(MENTIRA_CON_LOS_MISMOS_DIGITOS, CONTEXTO_FLACO),
+    antes,
+    "el hecho medido NO puede absolver una frase falsa que reusa sus dígitos"
+  );
+
+  // LO QUE SE PIERDE Y POR QUÉ SE ACEPTA: la respuesta HONESTA vuelve a salir marcada mientras el
+  // contexto siga flaco. Es un costo real y va escrito, no tapado — pero en el carril del chat las
+  // observaciones se CUENTAN, no bloquean (el jefe está del otro lado y corrige en el mismo turno), y
+  // el hecho ya viaja publicado encima del mensaje. Un detector apagado, en cambio, no se recupera.
+  assert.ok(revisarRespuesta(HONESTA, CONTEXTO_FLACO).length > 0, "el techo declarado: con contexto flaco, la verdad también se marca");
+
+  // Y NO SE VOLVIÓ CIEGO: un dominio que nadie nombró sigue saliendo marcado.
+  assert.ok(
+    revisarRespuesta("Y corpfiling-relay.com también está cerrado", CONTEXTO_FLACO).some((o) => o.includes("corpfiling-relay.com")),
+    "el respaldo es el CONTEXTO, no un pase libre"
+  );
+  olvidarHechosVinculantes();
 });

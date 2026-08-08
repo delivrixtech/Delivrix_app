@@ -257,6 +257,28 @@ test("el certificado vencido y el que está por vencer son los dos 'mal'", async
   assert.equal(sano.tls.estado, "ok");
 });
 
+test("EL SENSOR DE TLS MIRA DONDE EL NODO VIVE: smtp.<dominio>, no mail.<dominio>", async () => {
+  // El incidente que este test previene NO es un veredicto equivocado: es un lote que se da por
+  // terminado sin haber destapado nada. Medido con dig el 2026-08-07 (`+time=3 +tries=1`):
+  //   mail.corpfiling-infra.com   → sin registro A     smtp.corpfiling-infra.com   → 77.37.96.101
+  //   mail.filing-ops.com         → sin registro A     smtp.filing-ops.com         → 77.37.96.3
+  //   mail.annualfilings-ops.com  → sin registro A     smtp.annualfilings-ops.com  → 80.190.74.250
+  // Con `mail.`, cablear `tls: sondaTlsDelNodo()` en el orquestador cambia un "no sé" ("no tengo con
+  // qué mirar") por otro "no sé" (ENOTFOUND) en los 66 dominios, y la señal sigue sin poder valer
+  // "mal" ni con el certificado caído — que es exactamente el modo de falla de filing-ops.com, el
+  // dominio que motivó escribir `chequearTls`. `smtp.` es lo que publican el MX y el PTR de los 58.
+  const vistos: string[] = [];
+  await revisarReputacionDe(
+    entrada({
+      tls: async (host) => {
+        vistos.push(host);
+        return { vence: "2026-11-06T12:00:00Z", nombre: host };
+      }
+    })
+  );
+  assert.deepEqual(vistos, ["smtp.corpfiling-infra.com"]);
+});
+
 test("el 587 sin certificado es 'mal', y el handshake que se cuelga es 'no sé'", async () => {
   const sinCert = await revisarReputacionDe(entrada({ tls: async () => null }));
   assert.equal(sinCert.tls.estado, "mal", "responde pero no presenta certificado: STARTTLS no sirve");
@@ -282,6 +304,29 @@ test("el orden del barrido: primero los que calientan, después los cerca, despu
       cerca: ["quema.com"]
     }),
     ["calienta.com", "quema.com", "aaa.com", "zzz.com"]
+  );
+});
+
+test("el que va a ESTRENAR se mide antes que el resto, o el freno del pool no se levanta nunca", () => {
+  // LA TRAMPA QUE SE CIERRA SOLA, cerrada. Desde el 2026-08-08 `elegirPool` no arranca un dominio
+  // virgen mientras su IP no figure consultada en listas negras (el primer correo desde una IP
+  // listada construye reputación al revés y eso no se deshace). Ese dato lo junta ESTE barrido, y
+  // con el orden viejo los vírgenes caían en el grupo del final — el que se queda sin cuota: los 7
+  // `no_traffic` de producción tienen `listas: "no-se"` desde siempre, 49 de 66 filas están así.
+  // O sea que el freno era permanente y nadie lo iba a poder levantar.
+  assert.deepEqual(
+    ordenDelBarrido({
+      todos: ["zzz.com", "quema.com", "estrena.com", "calienta.com"],
+      calientanHoy: ["calienta.com"],
+      vanAEstrenar: ["estrena.com"],
+      cerca: ["quema.com"]
+    }),
+    ["calienta.com", "estrena.com", "quema.com", "zzz.com"]
+  );
+  // Y sin el campo, el orden de siempre: el barrido viejo no cambia de comportamiento.
+  assert.deepEqual(
+    ordenDelBarrido({ todos: ["zzz.com", "quema.com", "aaa.com"], calientanHoy: [], cerca: ["quema.com"] }),
+    ["quema.com", "aaa.com", "zzz.com"]
   );
 });
 

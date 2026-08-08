@@ -136,6 +136,68 @@ if echo "${cambios}" | grep -qE '^package(-lock)?\.json$|^apps/[^/]+/package(-lo
   remoto 'npm ci --silent' || { echo "FALLÓ npm ci — NO reinicio nada (los servicios siguen con la versión vieja, que funciona)" >&2; exit 1; }
 fi
 
+# --- FRENO ANTES DE REINICIAR, Y RED DE DATOS -------------------------------------------------
+# DESPLEGAR NO BAJA EL POOL. `elegirPool` no juzga la flota: LEE sender-measurement.json, y ese
+# archivo lo escribe flota-salud. Al momento de este deploy el que hay en producción está escrito
+# por el sensor VIEJO, el que absolvía a un nodo bloqueado por el calendario (dejaba de mandar
+# PORQUE estaba bloqueado, a los 5 días la evidencia se caía de la ventana y salía `healthy`).
+# Medido con el código nuevo contra el inventario real del 2026-08-08: el pool sale 32, y adentro
+# están los SIETE que anoche mandaron las vueltas #21 a #27 y cayeron en MISSING (corpfilinginfra,
+# corpregistry-control, docfiling-ops, infranationalcorp, nationalcorp-control, nationalcorp-infra,
+# nationalfilingcontrol), contra 6 de 6 en INBOX de los del pool bueno.
+#
+# Y NO LOS SACA EL DESPLIEGUE NI LA REMEDICIÓN: tienen 2-3 rechazos en toda la ventana y `MISSING`
+# significa que el proveedor los ACEPTÓ, así que ninguna puerta del sensor los alcanza (verificado
+# corriendo `assessDeliveryHealth` con sus números). Salen A MANO con `cerradoEn`, y el verificador
+# imprime el comando exacto. El paso 5 del runbook depende de eso, no de que el sensor muerda.
+#
+# El daemon manda en su PRIMER tick y flota-salud tarda ~15 MINUTOS en reescribir el archivo. Ese
+# número lo encareció ESTE MISMO cambio y por eso se corrige acá: los 198-253 s que decía esta línea
+# se midieron con el comando viejo, y la sección `## CULPA` ahora lee también `status=deferred` — el
+# estado con más líneas del log. Medido el 2026-08-08 alternando las dos versiones contra el mismo
+# nodo: 17,1 y 20,1 s la vieja contra 64,8 y 69,0 s la nueva (3,4×), y por eso el presupuesto de
+# lectura subió de 60 a 180 s (smtp-delivery-health.ts). Con concurrencia 4 y 58 bandejas eso son
+# ~15 candidatos por tanda × ~65 s ≈ 15 min, no 4.
+#
+# NO ES UN DETALLE COSMÉTICO: este número es el que le dice al operador si "la medición todavía es
+# la vieja" significa ESPERÁ o SE ROMPIÓ. Con "~4 min" en la pantalla, a los cinco minutos parece
+# roto, y el atajo obvio es soltar el freno — que es exactamente el incidente que el freno viene a
+# evitar (el pool viejo de 32 con los tres quemados adentro). El reloj de verdad es `medidoEn`.
+# O sea:
+# sin esto, el propio despliegue dispara el incidente que viene a arreglar. La secuencia obligada
+# es FRENAR → DESPLEGAR → VOLVER A MEDIR → VERIFICAR → SOLTAR.
+#
+# POR QUÉ EL KILL-FILE Y NO `launchctl bootout`: los plist tienen KeepAlive=true, launchd lo levanta
+# igual. El kill-file se relee en CADA tick (live-warmup-daemon.ts:1297) y el pool se calcula y
+# loguea ANTES del gate (:1338-1348 vs :1354), así que el daemon no manda y IGUAL deja escrito qué
+# pool habría usado — que es justo el instrumento para decidir si se puede soltar.
+#
+# Y EL `cp`: hoy no hay forma de volver el sender-measurement.json de antes. Un rollback de CÓDIGO
+# sin rollback de DATOS deja el JSON nuevo con el código viejo, y el `motivoDeExclusion` de eb6b373
+# es lista NEGRA sin rama para `insufficient_sample`: esos nodos vuelven al pool con UNA entrega.
+# Falla con aviso, nunca aborta: que falte un archivo del inventario no puede cortar un deploy a
+# mitad de camino.
+if printf '%s\n' "${reiniciar[@]}" | grep -qx warmup-daemon; then
+  remoto 'mkdir -p runtime && touch runtime/warmup-live.kill' || {
+    echo "FALLÓ: no pude frenar el emisor en producción — NO reinicio nada." >&2
+    echo "  Reiniciar el daemon sin freno lo hace mandar desde el pool viejo en su primer tick." >&2
+    exit 1
+  }
+  remoto 'cd runtime/openclaw-workspace/inventory && cp sender-measurement.json sender-measurement.pre-deploy.json && cp warmup-reputacion.json warmup-reputacion.pre-deploy.json' \
+    || echo "    aviso: no pude respaldar el inventario — el ROLLBACK DE DATOS no va a existir"
+  echo
+  echo "  ┌─ EMISOR FRENADO (runtime/warmup-live.kill) ────────────────────────────────────────┐"
+  echo "  │ El warmup NO va a mandar un solo correo hasta que lo sueltes A MANO.               │"
+  echo "  │ Antes de soltarlo: esperá a que flota-salud remida (~15 min) y verificá el pool.   │"
+  echo "  │   ssh ${SSH_DEST} 'cd ${STUDIO_DIR} && bash scripts/produccion/verificar-despliegue.sh'"
+  echo "  │ OJO: los 7 quemados NO los saca el sensor (2-3 rechazos y MISSING: ninguna puerta  │"
+  echo "  │ los agarra). El verificador te va a dar ROJO por ellos y te imprime el jq que los  │"
+  echo "  │ saca a mano. Sacalos, volvé a verificar, y RECIÉN AHÍ:                             │"
+  echo "  │   ssh ${SSH_DEST} 'rm ${STUDIO_DIR}/runtime/warmup-live.kill'"
+  echo "  └────────────────────────────────────────────────────────────────────────────────────┘"
+  echo
+fi
+
 echo "· reiniciando: ${reiniciar[*]}"
 # Reiniciar servicios de sistema exige root, y hay dos caminos según cómo esté la máquina.
 #
@@ -225,6 +287,17 @@ if [[ ${ok} == 1 ]]; then
     echo "  desplegado: ${despues:0:8} (${#reiniciar[@]} servicio(s) reiniciados)"
     echo "  el gateway sigue en ${reportado:0:8} y está BIEN: no cambió código suyo, no se reinició."
   fi
+  # LO QUE ESTE SCRIPT NO PUEDE CONTESTAR, Y HAY QUE CONTESTAR. Acá se probó UNA cosa: que el
+  # gateway reinició con el código nuevo. Los otros seis servicios no reportan commit, el daemon
+  # puede reiniciar sin mandar un correo, el agente puede quedarse sin manos, y el POOL no baja por
+  # desplegar —`elegirPool` lee sender-measurement.json, que todavía es el que escribió el sensor
+  # viejo—. Sin este puntero el verificador existe y nadie lo corre, que es como no tenerlo.
+  echo
+  echo "  FALTA VERIFICAR (esto no lo prueba el deploy). En cuanto flota-salud remida (~15 min:"
+  echo "  el barrido nuevo cuesta 3,4× el viejo; seguilo con tail -f runtime/logs/flota-salud.log):"
+  echo "    ssh ${SSH_DEST} 'cd ${STUDIO_DIR} && bash scripts/produccion/verificar-despliegue.sh'"
+  echo "  Y mientras el emisor siga frenado ese verificador va a dar ROJO a propósito: el deploy"
+  echo "  no está terminado hasta que alguien mire el pool y suelte el freno."
 elif [[ -n "${cuerpo}" ]]; then
   echo "FALLÓ: el gateway responde, pero NO está corriendo el código que acabamos de desplegar." >&2
   if [[ -n "${reportado}" ]]; then

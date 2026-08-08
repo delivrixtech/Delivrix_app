@@ -17,7 +17,7 @@
 // PISO_PARA_SOLTAR) viviendo en un solo módulo. Si acá se copiaran, el prompt le mostraría al agente
 // candidatos que el gate después rechaza: una promesa que se rompe al ejecutarla, que es peor que
 // no haberla hecho.
-import { porQueNoVuelve } from "./acciones-agente.ts";
+import { CAP_SEGURO_POR_DOMINIO, porQueNoVuelve } from "./acciones-agente.ts";
 import { clave } from "./decisiones-del-jefe.ts";
 import type { ReputacionDominio } from "./slack.ts";
 
@@ -195,6 +195,57 @@ export interface HechosWarmup {
   sinMedirVolumen?: string[];
 }
 
+/**
+ * TODOS los dominios que los hechos nombran. Es el alcance de las manos del agente.
+ *
+ * Existe para que deje de haber DOS listas escritas a mano que hay que acordarse de actualizar.
+ * `dominiosConocidos` se armaba enumerando seis campos, una vez en el carril de la guardia y otra
+ * en el del chat, y cada bloque nuevo de `construirPrompt` abría la misma grieta en los dos lados
+ * a la vez: el modelo lee un dominio en su contexto, lo nombra, y la mano le contesta "no está en
+ * el inventario". Un rechazo FALSO sobre un dato que le dimos nosotros.
+ *
+ * Medido el 2026-08-07 sobre los archivos reales: de los 5 dominios en lista negra que el prompt
+ * imprime, TRES —annualfiling-ops.com, annualfilingops.com, annualfilings-infra.com— no estaban en
+ * ninguno de los seis campos. O sea que la extensión "estar en una lista negra es daño consumado y
+ * se puede frenar" no alcanzaba a 3 de los 5 dominios para los que se escribió. Y `frenar_dominio`
+ * chequea este alcance ANTES de mirar `frenablesConDanio`, así que la barrera de adentro nunca
+ * llegaba a correr.
+ *
+ * La regla es la misma que ya usa `verificarLectura` para lo que el agente puede DECIR: si el dato
+ * salió de una medición nuestra y se lo pusimos en el contexto, puede actuar sobre él. Lo que esta
+ * lista sigue impidiendo —y por eso no se saca— es que el modelo actúe sobre un dominio que se
+ * inventó o que sacó de la conversación.
+ *
+ * `rechazos` y `pendientesAbiertos` quedan afuera a propósito: no nombran dominios de la flota.
+ */
+export function dominiosDeLosHechos(hechos: Pick<
+  HechosWarmup,
+  "plan" | "vueltas" | "flota" | "cap" | "reputacion" | "vecindarios" | "sinMedirVolumen"
+> | null | undefined): string[] {
+  if (!hechos) return [];
+  return [
+    ...new Set(
+      [
+        ...(hechos.plan ?? []).map((p) => p.dominio),
+        ...(hechos.vueltas ?? []).map((v) => v.dominio),
+        ...(hechos.flota?.cruzados ?? []),
+        ...(hechos.flota?.cerca ?? []),
+        ...(hechos.cap?.enElTope ?? []),
+        // LOS FRENADOS son el sujeto entero de soltar_dominio. Sin ellos la acción existía y no
+        // alcanzaba a nadie: ninguno aparece en el plan ni en las vueltas.
+        ...(hechos.cap?.frenados ?? []),
+        // LOS LISTADOS EN LISTA NEGRA, que es el agujero medido del 2026-08-07.
+        ...(hechos.reputacion ?? []).map((r) => r.dominio),
+        // El vecindario y el punto ciego de volumen también se imprimen con nombre y apellido.
+        ...(hechos.vecindarios ?? []).map((v) => v.dominio),
+        ...(hechos.sinMedirVolumen ?? [])
+      ]
+        .map((d) => (d ?? "").trim())
+        .filter((d) => d !== "")
+    )
+  ];
+}
+
 export interface LecturaAgente {
   generadoEn: string;
   modelo: string;
@@ -297,10 +348,22 @@ export const SISTEMA = [
   "  su nodo y te dice QUIÉN lo está rechazando (Gmail, Yahoo, Outlook) y con qué motivo. Es la",
   "  respuesta a \"por qué este dominio no entrega\". Pasivo: no manda correo. Úsala antes de",
   "  proponer frenar algo, para saber si el problema es del dominio o del receptor.",
-  "- medir_dominio | dominio=<cualquier dominio real, esté o no en el plan> | motivo=... → te dice",
-  "  dónde viene cayendo su correo y en qué día de rampa está. Pasivo. Sirve sobre todo para los",
-  "  dominios que NO figuran en el plan de arriba: de esos no tienes ningún dato, y son justamente",
-  "  los que hay que evaluar para ver si están listos para volver.",
+  // LA PROMESA SE ACHICÓ HASTA DONDE LLEGA EL CÓDIGO. Decía "cualquier dominio real, esté o no en
+  // el plan" y explicaba que servía "sobre todo para los dominios que NO figuran en el plan" — y el
+  // `case` rechaza exactamente ésos: valida contra `ctx.dominiosConocidos`, que el orquestador arma
+  // con los 30 nombres del retrato del día sobre una flota de 57 nodos medidos. O sea que el prompt
+  // mandaba al modelo justo contra la pared. No es teoría: hay 3 rechazos de ese tipo en
+  // runtime/logs/warmup-monitor.log (corpfiling-control.com ×2 y annualfilingcontrol.com).
+  //
+  // Ensanchar el gate es del lado del productor (scripts/ops/warmup-monitor.ts) y no entra en este
+  // diff, así que acá se aplica la regla del repo: una promesa en prosa que el código contradice es
+  // la mano prometida y no cableada con otra ropa. Cuando `dominiosConocidos` pase a ser el
+  // inventario entero, estas dos líneas vuelven a abrirse — y el texto de abajo dice cómo saberlo
+  // sin adivinar, que es mejor que prometerle un alcance que no tiene.
+  "- medir_dominio | dominio=<uno de los que aparecen en estos datos> | motivo=... → te dice",
+  "  dónde viene cayendo su correo y en qué día de rampa está. Pasivo. Si te vuelve rechazada por",
+  "  alcance, no es que el dominio no exista: es que esta vuelta no lo tengo a mano. Es un dato para",
+  "  contar —hay flota que no entra en este retrato— y no un error tuyo; no la repitas.",
   // `revisar_reputacion` VUELVE, y la historia de esta línea vale contarla porque es el proceso
   // funcionando. El equipo que escribió el módulo lo dejó sin cablear; el auditor lo detectó y
   // SACÓ la línea del prompt en vez de dejar una promesa suelta —la falla que este repo ya había
@@ -322,6 +385,12 @@ export const SISTEMA = [
   "  nodo cableado muy por encima de ese techo, en vez de frenarlo: por ese nodo puede estar",
   "  saliendo correo de un cliente y apagarlo sería desproporcionado. Solo BAJA — si ya está en el",
   "  techo o por debajo, se rechaza sola. El número no lo eliges tú.",
+  // EL MISMO AVISO QUE `frenar_dominio` Y `soltar_dominio`, y por el mismo motivo: `bajarCapNodo`
+  // vive detrás de WARMUP_AGENT_PUEDE_FRENAR —toca la flota por SSH igual que frenar, así que el
+  // flag es del operador y está APAGADO por defecto—. Se anunciaba PLANA, y el test de contrato que
+  // este repo escribió justo para atajar eso no la miraba (no estaba en su mapa CAPACIDAD_DE): el
+  // guardia contra la mano prometida y no cableada dejaba pasar el caso que dice cubrir.
+  "  Puede no estar habilitada en este entorno; si te vuelve por eso, no la repitas.",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única acción que sube volumen y la única que puede hacer daño de verdad, así",
   "  que antes de pedirla mira: medir_dominio para saber su historia y diagnosticar_dominio para",
@@ -494,6 +563,17 @@ export function lineasDeFrenados(
  * La clase se calcula normalizando dominios y números y pasando por `clave()`, el mismo
  * normalizador que usa `esLaMisma` — una copia local se desincroniza y empieza a agrupar distinto.
  */
+/**
+ * Un dominio nombrado en texto libre. UNA sola definición porque las copias se desincronizan: este
+ * patrón estaba escrito cuatro veces en el archivo, y la lista de dominios "conocidos" se armaba con
+ * una de ellas sobre campos elegidos a mano mientras el prompt imprimía otros.
+ *
+ * Se usa SOLO con `.match()` / `.replace()`, nunca con `.test()`: un regex con la bandera `g`
+ * compartido guarda `lastIndex` entre llamadas de `test` y empieza a saltearse coincidencias una
+ * llamada sí y otra no. `String.prototype.match` con `g` resetea, así que compartirlo es seguro acá.
+ */
+const DOMINIO = /\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi;
+
 export function agruparReparos(reparos: readonly string[]): string[] {
   const grupos = new Map<string, { texto: string; veces: number }>();
   for (const r of reparos) {
@@ -570,6 +650,24 @@ export function construirPrompt(
         (hechos.cap.enElTope.length > 0 ? ` En su tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
         (hechos.cap.sinLimite > 0 ? ` ${hechos.cap.sinLimite} nodos SIN límite puesto.` : "")
     );
+    // LOS NODOS POR ENCIMA DEL TECHO, que es LA razón de ser de `bajar_cap_nodo` y el agente no los
+    // veía. El campo se llenaba en cada vuelta, lo leía una REGLA DEL CANAL —o sea que el dato le
+    // llegaba al jefe— y `construirPrompt` no lo miraba ni una vez: le dimos la mano y le tapamos
+    // los ojos con los que se usa.
+    //
+    // Medido el 2026-08-07: infranationalreport.com está cableado en 15.000/día contra un techo de
+    // 2.000. Es la misma forma que la ceguera de reputación del mismo día, y la consecuencia acá es
+    // peor porque la mano que lo arregla ya existe y solo REDUCE: el agente podía haberlo bajado
+    // solo, sin pedirle nada a nadie, y no tenía cómo enterarse.
+    const arriba = hechos.cap.porEncimaDelTecho ?? [];
+    if (arriba.length > 0) {
+      l.push(
+        `Nodos con el cupo POR ENCIMA del techo de ${CAP_SEGURO_POR_DOMINIO.toLocaleString("es-AR")}/día ` +
+          `(bajar_cap_nodo los acota; solo baja, nunca sube): ` +
+          arriba.map((x) => `${x.dominio} en ${x.cap.toLocaleString("es-AR")}`).join(", ") +
+          "."
+      );
+    }
   } else {
     l.push("Límite físico: sin lectura.");
   }
@@ -643,6 +741,54 @@ export function construirPrompt(
       l.push(`- ${v.dominio}: subred ${v.subred}.x — ${v.nodos} nodos, ${v.noSanos} NO sanos`);
     }
   }
+  // LA REPUTACIÓN, que se venía calculando y no se le mostraba al modelo NUNCA.
+  //
+  // `hechos.reputacion` se llena en cada vuelta desde que se cableó el barrido, y esta función —la
+  // única que arma lo que el agente lee— no lo miraba ni una vez: el campo se usaba sólo para
+  // `frenablesConDanio` y para las reglas del canal. O sea que el agente opinaba sobre nodos
+  // quemados sin haber visto jamás quién figura en una lista negra.
+  //
+  // Se vio en vivo el 2026-08-07 y con el jefe delante: el canal avisó "la IP de corp-delivery.com
+  // figura en 1 lista negra: RATS Dyna. Hay 4 dominios más en la misma", Juanes preguntó lo obvio
+  // —"¿cuáles son los otros 4?"— y el agente contestó, con toda la razón, "no los tengo en mi
+  // lectura actual. No te voy a inventar dominios". Los cinco nombres estaban en el archivo, a un
+  // campo de distancia. La regla del canal sabía contarlos y el agente no podía nombrarlos.
+  //
+  // Se muestran SÓLO las filas que dicen algo —listadas o con autenticación rota— y no las 66: el
+  // resto empuja fuera del contexto justo lo que decide. Y los "no sé" van contados y separados en
+  // sus DOS clases, porque ninguna es "limpio" y confundirlas es la falla más cara de este sistema:
+  // "no pregunté" (se acabó el presupuesto del barrido, 33 filas por diseño todos los días) no es
+  // lo mismo que "pregunté y no pude".
+  if ((hechos.reputacion ?? []).length > 0) {
+    const rep = hechos.reputacion ?? [];
+    const listados = rep.filter((r) => Array.isArray(r.listas) && r.listas.length > 0);
+    const authRota = rep.flatMap((r) => {
+      const rotas = (["spf", "dkim", "ptr"] as const).filter((c) => r[c]?.estado === "mal");
+      return rotas.length === 0 ? [] : [`- ${r.dominio}: ${rotas.map((c) => `${c} MAL (${r[c]?.detalle ?? "sin detalle"})`).join(", ")}`];
+    });
+    const sinPreguntar = rep.filter((r) => r.listas === "no-se" && r.porPresupuesto === true).length;
+    const preguntadoSinRespuesta = rep.filter((r) => r.listas === "no-se" && r.porPresupuesto !== true).length;
+
+    l.push(
+      `Reputación de la flota (${rep.length} dominios en el barrido). Listas negras: ` +
+        (listados.length > 0
+          ? `${listados.length} LISTADO${listados.length === 1 ? "" : "S"}`
+          : "ninguno listado entre los que se consultaron") +
+        `, ${sinPreguntar} sin consultar por presupuesto y ${preguntadoSinRespuesta} consultados sin respuesta. ` +
+        "Esos dos últimos grupos son NO SÉ, nunca limpio: no afirmes nada sobre ellos."
+    );
+    // CADA UNO CON SU LISTA, no con la del primero. De los cinco listados del archivo real, cuatro
+    // estaban en RATS Dyna y annualfiling-ops.com en DRONE BL — decir "todos en la misma" habría
+    // sido una afirmación falsa construida por el renderizador, no por el modelo.
+    for (const r of listados) {
+      l.push(`- ${r.dominio} (${r.ip ?? "sin IP en el inventario"}): en ${(r.listas as readonly string[]).join(", ")}`);
+    }
+    if (authRota.length > 0) {
+      l.push("Autenticación ROTA (esto rompe la entrega por sí solo y se arregla sin esperar a nadie):");
+      for (const linea of authRota) l.push(linea);
+    }
+  }
+
   if ((hechos.sinMedirVolumen ?? []).length > 0) {
     l.push(
       `Dominios cuyo VOLUMEN por proveedor NO se pudo medir (el dato no existe, no es un cero): ${(hechos.sinMedirVolumen ?? []).join(", ")}.`
@@ -770,22 +916,38 @@ export function verificarLectura(
   const cuerpo = [out.ahora, out.porque, out.riesgo, out.falta].filter(Boolean).join(" ");
 
   // 1. Dominios inventados. Cualquier dominio nombrado tiene que estar en los hechos.
+  //
+  // LA LISTA SE SACA DEL PROMPT QUE LE DIMOS, no de ocho campos elegidos a mano, y el cambio nace de
+  // un agujero medido en producción el 2026-08-07.
+  //
+  // Esta lista era un ESPEJO MANUAL de `construirPrompt`: alguien enumeró acá los bloques de hechos
+  // que nombran dominios, y cada bloque nuevo que se agrega allá sin tocar esto abre una grieta en
+  // silencio. Pasó el mismo día que se cableó la reputación: `construirPrompt` empezó a imprimir
+  // "- corp-delivery.com (217.216.53.43): en RATS Dyna" y `conocidos` siguió sin mirar
+  // `hechos.reputacion`, así que el agente que NOMBRARA a los listados quedaba marcado por inventarlos.
+  //
+  // Medido contra los archivos reales de producción (warmup-reputacion.json + warmup-monitor.json):
+  // de los 5 dominios en lista negra, 3 —annualfiling-ops.com, annualfilingops.com y
+  // annualfilings-infra.com— no estaban en ninguno de los ocho campos, o sea que eran INVENTADOS
+  // para el verificador. Y como el runner solo ejecuta con `reparos.length === 0`, contestarle al
+  // jefe "¿cuáles son los otros 4?" —la pregunta literal del incidente— le costaba las manos de esa
+  // vuelta entera. Es la CUARTA instancia de la clase que este archivo declara peor que el error que
+  // previene: un reparo falso bloquea las acciones correctas y entrena al operador a ignorarlos.
+  //
+  // `construirPrompt(hechos)` es exactamente el texto que el modelo lee, así que "lo que le dimos"
+  // deja de ser una lista que hay que acordarse de actualizar y pasa a ser una consecuencia. Va con
+  // los tres extras VACÍOS a propósito: los errores previos, la bitácora y sobre todo las DECISIONES
+  // no son mediciones, y avalar un dominio porque aparece en una decisión es justo el lavado que el
+  // resto de este lote cierra del otro lado.
   const conocidos = new Set<string>([
-    ...(hechos.plan ?? []).map((p) => p.dominio.toLowerCase()),
-    ...hechos.vueltas.map((v) => v.dominio.toLowerCase()),
-    ...(hechos.flota?.cruzados ?? []).map((d) => d.toLowerCase()),
-    ...(hechos.flota?.cerca ?? []).map((d) => d.toLowerCase()),
-    ...(hechos.cap?.enElTope ?? []).map((d) => d.toLowerCase()),
-    ...(hechos.cap?.frenados ?? []).map((d) => d.toLowerCase()),
-    ...(hechos.cap?.frenadosDetalle ?? []).map((f) => f.dominio.toLowerCase()),
-    ...hechos.vueltas.map((v) => v.semilla.toLowerCase()),
+    ...(construirPrompt(hechos, [], [], []).match(DOMINIO) ?? []).map((d) => d.toLowerCase()),
     // Lo que le dimos en SU PROPIA bitácora también es un dato que le dimos. Ver el comentario del
     // parámetro: sin esta línea, nombrar lo que nosotros escribimos en el prompt era "inventar".
-    ...loQueHiciste.flatMap((l) => (l.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []).map((d) => d.toLowerCase()))
+    ...loQueHiciste.flatMap((l) => (l.match(DOMINIO) ?? []).map((d) => d.toLowerCase()))
   ]);
   // Proveedores que el agente puede nombrar como concepto (Gmail, Outlook…), no como dominio nuestro.
   const PROVEEDORES = new Set(["gmail.com", "outlook.com", "yahoo.com", "hotmail.com", "icloud.com"]);
-  for (const d of cuerpo.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []) {
+  for (const d of cuerpo.match(DOMINIO) ?? []) {
     const bajo = d.toLowerCase();
     if (!conocidos.has(bajo) && !PROVEEDORES.has(bajo) && ![...conocidos].some((c) => c.includes(bajo))) {
       out.reparos.push(`nombra "${d}", que no está en los datos`);
@@ -825,7 +987,7 @@ export function verificarLectura(
   // 4. Atribuirle a un dominio conocido un cruce del umbral que los datos NO dicen. Es la
   //    afirmación más cara del sistema, y hasta acá solo se chequeaba el CONTEO, no el nombre.
   const cruzadosReales = new Set((hechos.flota?.cruzados ?? []).map((d) => d.toLowerCase()));
-  for (const d of cuerpo.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []) {
+  for (const d of cuerpo.match(DOMINIO) ?? []) {
     const bajo = d.toLowerCase();
     if (!conocidos.has(bajo)) continue;
     const cerca = cuerpo.slice(Math.max(0, cuerpo.toLowerCase().indexOf(bajo) - 40), cuerpo.toLowerCase().indexOf(bajo) + bajo.length + 90);
@@ -860,6 +1022,48 @@ export function verificarLectura(
   const sinMuestra = (hechos.plan ?? []).length > 0 && (hechos.plan ?? []).every((p) => p.placementMuestra === 0);
   if (sinMuestra && /placement (del|de) \d+ ?%|\d+ ?% de (inbox|bandeja)/i.test(cuerpo)) {
     out.reparos.push("cita un placement medido cuando no hay ninguna medición");
+  }
+
+  // 7. DECIR QUE UN DOMINIO ESTÁ LIMPIO CUANDO EL BARRIDO DE ESTA MISMA VUELTA LO TRAE LISTADO.
+  //
+  // Hasta acá el único freno contra esto era un PÁRRAFO en `lineasParaPrompt` ("una decisión dice
+  // qué hacer, no cómo está la fábrica… gana la medición"). Y la lección que este proyecto ya pagó
+  // es exactamente ésa: un criterio en PROSA el modelo lo devuelve como hallazgo propio. Los
+  // criterios entran como DATO o como código.
+  //
+  // Verificado con los módulos reales antes de escribir esto: con `hechos.reputacion` diciendo
+  // "corp-delivery.com (217.216.53.43): en RATS Dyna" —copiado de warmup-reputacion.json, medido el
+  // 2026-08-08T00:02Z— y una decisión de hace 40 días afirmando lo contrario, la lectura
+  // "corp-delivery.com está limpio, ya salió de RATS Dyna" salía con CERO reparos. Cero reparos no
+  // es sólo una lectura falsa que va al canal: es el agente CONSERVANDO LAS MANOS para actuar sobre
+  // ella, porque el runner ejecuta justo cuando no hay reparos.
+  //
+  // Sólo mira las filas LISTADAS. Un "no sé" —presupuesto agotado o consulta sin respuesta— no
+  // habilita este reparo, porque "no medido" y "limpio" no son lo mismo pero "no medido" tampoco es
+  // "sucio": marcar ahí sería inventar daño, que es el error simétrico y también caro.
+  const listadosHoy = new Map(
+    (hechos.reputacion ?? [])
+      .filter((r) => Array.isArray(r.listas) && r.listas.length > 0)
+      .map((r) => [r.dominio.toLowerCase(), (r.listas as readonly string[]).join(", ")])
+  );
+  if (listadosHoy.size > 0) {
+    const bajoCuerpo = cuerpo.toLowerCase();
+    for (const d of cuerpo.match(DOMINIO) ?? []) {
+      const bajo = d.toLowerCase();
+      const listas = listadosHoy.get(bajo);
+      if (!listas) continue;
+      // La misma ventana que usa el control 4, y por el mismo motivo: el dominio y lo que se afirma
+      // de él tienen que estar CERCA, o "a.com entrega bien y b.com está sucio" se leería cruzado.
+      const i = bajoCuerpo.indexOf(bajo);
+      const cerca = bajoCuerpo.slice(Math.max(0, i - 40), i + bajo.length + 90);
+      // "no está limpio" es lo contrario de lo que buscamos y la frase lo contiene entero. Sin esta
+      // salida, el agente que dice la VERDAD se come el reparo — un reparo falso, que le bloquea las
+      // manos y entrena al operador a ignorarlos. Va primero a propósito.
+      if (/\bno\s+est[áa]\s+(limpi|san)|\bsigue\s+(en|listad)/i.test(cerca)) continue;
+      if (/est[áa]\s+(limpi[oa]|san[oa])|ya\s+sali[óo]\s+de|fuera\s+de\s+(la\s+|las\s+)?listas?|ya\s+no\s+(est[áa]|figura)|no\s+figura\s+en\s+(ninguna\s+)?lista/i.test(cerca)) {
+        out.reparos.push(`dice que ${d} está limpio y el barrido de esta vuelta lo trae en ${listas}`);
+      }
+    }
   }
 
   return out;

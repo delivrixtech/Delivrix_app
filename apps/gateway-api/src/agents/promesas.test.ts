@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { HORAS_PARA_VENCER, anotarPromesa, revisarPromesas, type Promesa } from "./promesas.ts";
+import {
+  HORAS_PARA_VENCER,
+  aInstante,
+  anotarPromesa,
+  porQueNoSePodraCumplir,
+  revisarPromesas,
+  type Promesa
+} from "./promesas.ts";
 
 const T0 = "2026-08-06T20:00:00.000Z";
 const mas = (horas: number, desde = T0): string => new Date(Date.parse(desde) + horas * 3_600_000).toISOString();
@@ -456,6 +463,206 @@ test("LOS 4 PENDIENTES REALES SON DOS PROMESAS: el disparador ya es la identidad
   assert.equal(lista[0]!.abiertoEn, T0);
 });
 
+// ── LA PROMESA IMPOSIBLE, DESCUBIERTA AL PROMETER ────────────────────────────────────────────────
+
+/** Textuales de warmup-promesas.json (Mac Studio, 2026-08-07): las dos sobre un dominio en cap 0. */
+const PM_1 = "resultados de medición/diagnóstico de los frenados evaluados";
+const PM_2 = "resultados de la medición de filing-ops.com y qué decisión tomé con él";
+const FRENADO = "placement:filing-ops.com";
+
+test("UNA PROMESA SOBRE UN DOMINIO EN CAP 0 SE ANOTA Y SE LO DICE EN EL MOMENTO", () => {
+  // EL INCIDENTE, con los datos del archivo real: pm-1 y pm-2 se abrieron a las 14:48 y 14:49
+  // esperando `placement:filing-ops.com` y se cerraron "vencida" a las 20:58:53.920Z. filing-ops.com
+  // tiene `cap: 0` en sender-cap.json y CERO filas en warmup_activity en toda la historia de la
+  // tabla: no puede mandar, así que nunca iba a existir una medición que avisar. El sistema hizo lo
+  // correcto —venció en voz alta— pero el jefe esperó 6 horas por algo que era imposible en el
+  // instante en que se prometió.
+  const frenados = ["filing-ops.com", "bizregistry-ops.com"];
+  const motivo = porQueNoSePodraCumplir(FRENADO, frenados);
+  assert.ok(motivo, "no dijo nada sobre un dominio que no puede mandar");
+  assert.match(motivo, /filing-ops\.com/);
+  assert.match(motivo, /cap 0/);
+  assert.match(motivo, /soltarlo/, "y dice qué hacer: la imposibilidad es CONDICIONAL, no permanente");
+
+  // LA PROMESA QUEDA IGUAL, marcada `callada`. Rechazarla la borraría en silencio y el agente YA
+  // dijo "te aviso" en el canal: eso es la queja 1 ("promete y desaparece") reconstruida adentro del
+  // arreglo de la queja 1. Y cap 0 es exactamente lo que `soltar_dominio` cambia.
+  let lista = anotarPromesa([], { que: PM_1, hilo: HILO, esperando: FRENADO, callada: motivo !== null }, T0);
+  assert.equal(lista.length, 1, "se anota igual");
+  assert.equal(lista[0]?.callada, true);
+  // La segunda es la MISMA promesa (mismo campo, mismo hilo) y no apaga la marca.
+  lista = anotarPromesa(lista, { que: PM_2, hilo: HILO, esperando: FRENADO, callada: true }, mas(0.02));
+  assert.equal(lista.length, 1);
+  assert.equal(lista[0]?.callada, true, "`callada` es de un solo sentido: nunca se apaga");
+
+  // A las 6 h se cierra SIN una segunda disculpa: ya se lo dijimos en el mismo mensaje.
+  const r = revisarPromesas(lista, RETRATO, RETRATO, mas(HORAS_PARA_VENCER + 1), PREVIO_DE);
+  assert.equal(r.aviso, null, "no le pide perdón por algo que ya le avisó al prometer");
+  assert.equal(r.lista[0]?.comoCerro, "vencida");
+});
+
+test("UNA CALLADA POR IMPOSIBLE IGUAL CUMPLE SI LO SUELTAN", () => {
+  // Es el test que hace que RECHAZAR la promesa sea la opción equivocada. `cap: 0` no es una
+  // condena: `soltar_dominio` lo cambia, y el día que el operador lo suelte va a aparecer
+  // `placement:filing-ops.com` en el retrato. La promesa tiene que estar viva para cumplirla.
+  const lista = anotarPromesa([], { que: PM_2, hilo: HILO, esperando: FRENADO, callada: true }, T0);
+  const r = revisarPromesas(lista, { "cap.frenados": 8 }, { [FRENADO]: "INBOX" }, mas(1), PREVIO_DE);
+  assert.match(r.aviso?.texto ?? "", /INBOX/, "lo soltaron, midió, y el aviso SALE con el dato");
+  assert.equal(r.lista[0]?.comoCerro, "cumplida");
+});
+
+test("NUNCA SE JUZGA POR AUSENCIA: el predicado lee PRESENCIA en una lista, no falta de dato", () => {
+  // Las dos razones por las que el chequeo contra el retrato se sacó a propósito (ver el comentario
+  // largo de `anotarPromesa`): degradaba TODA promesa legítima sobre un dominio nuevo a genérica
+  // —los tres dominios de la conversación real del 2026-08-06 no tenían un solo ciclo— y un `campos`
+  // vacío por un `.catch(() => null)` las mataba a todas. Éste mira la lista POSITIVA de frenados y
+  // solo dictamina cuando el nombre ESTÁ adentro.
+  assert.equal(porQueNoSePodraCumplir("placement:corp-delivery.com", []), null, "en el pool, todavía sin ciclos ⇒ se anota");
+  // `frenados: null` = la medición del cupo está vencida (>12 h). El 2026-08-04 sender-cap.json
+  // decía 2000 en nodos que en vivo estaban en 0, y un reparo falso enseña a ignorar todos los demás.
+  assert.equal(porQueNoSePodraCumplir(FRENADO, null), null, "sin medición fresca del cupo no hay veredicto");
+  assert.equal(porQueNoSePodraCumplir(null, ["filing-ops.com"]), null, "sin disparador no hay nada que juzgar");
+  assert.equal(porQueNoSePodraCumplir("cap.frenados", ["filing-ops.com"]), null, "una clave que no es placement: no la toca");
+});
+
+test("`plan:X.enPool` SOBRE UN FRENADO NO SE MARCA: ésa es LA promesa legítima sobre un frenado", () => {
+  // "Avísame cuando vuelva a calentar" es exactamente lo que uno promete sobre un dominio en cap 0,
+  // y `plan:X.enPool` yendo de 0 a 1 es el cumplimiento. Un predicado que mirara solo "está en
+  // frenados" la mataría — por eso mira `placement:` y nada más.
+  assert.equal(porQueNoSePodraCumplir("plan:filing-ops.com.enPool", ["filing-ops.com"]), null);
+  assert.equal(porQueNoSePodraCumplir("plan:filing-ops.com.accion", ["filing-ops.com"]), null);
+  // Y el nombre se compara en minúsculas y sin espacios: el modelo escribe como quiere.
+  assert.ok(porQueNoSePodraCumplir("placement:FILING-OPS.com", [" filing-ops.com "]));
+});
+
+// ── LA PROMESA POR FECHA ─────────────────────────────────────────────────────────────────────────
+
+/** "el lunes a las 5pm hora Colombia", ya convertido por el modelo a hora de pared. */
+const CITA = "2026-08-10T17:00";
+const CITA_UTC = "2026-08-10T22:00:00.000Z";
+
+test("LAS 5PM DE BOGOTÁ SON LAS 5PM DE BOGOTÁ, corra la máquina donde corra", () => {
+  // MEDIDO: la Studio corre en America/New_York (`ssh studio date` → EDT, offset 240) y
+  // `grep -c '^TZ=' config/gateway.env` da 0. Ahí `Date.parse("2026-08-10T17:00")` devuelve 21:00Z
+  // cuando las 5pm de Bogotá son 22:00Z: UNA HORA ANTES. Y solo de marzo a noviembre, así que en
+  // horario de invierno el bug pasa cualquier prueba. El offset de Colombia va explícito y fijo
+  // (-05:00, sin horario de verano desde 1993): la única zona que entra en la cuenta es la del jefe,
+  // que es constante; la de la máquina, que no lo es, no aparece.
+  const original = process.env.TZ;
+  try {
+    for (const tz of ["America/New_York", "Etc/UTC", "Asia/Tokyo"]) {
+      process.env.TZ = tz;
+      assert.equal(aInstante(CITA, T0), CITA_UTC, `con TZ=${tz} la cita se movió`);
+    }
+  } finally {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  }
+});
+
+test("UNA FECHA QUE NO EXISTE NO DISPARA, Y NO TUMBA LA PROMESA", () => {
+  // El 30 de febrero NO da NaN: `Date.parse("2026-02-30T17:00:00-05:00")` es aceptado y corrido al 2
+  // de marzo (verificado). El round-trip contra Intl/America-Bogota es lo único que ve esa corrida
+  // silenciosa — sin él, la cita saldría tres días tarde y nadie sabría por qué.
+  assert.equal(aInstante("2026-02-30T17:00", T0), null, "el 30 de febrero se corre solo al 2 de marzo");
+  assert.equal(aInstante("2026-08-05T17:00", T0), null, "una cita en el pasado dispararía en la vuelta siguiente");
+  assert.equal(aInstante("2026-10-20T17:00", T0), null, "a más de 30 días es el modelo inventando, no el jefe pidiendo");
+  assert.equal(aInstante("el lunes", T0), null, "el instante lo emite el modelo YA convertido a absoluto");
+  assert.equal(aInstante(null, T0), null);
+  assert.equal(aInstante("2026-08-10T24:00", T0), null, "hora fuera de rango");
+
+  // Y EN LOS TRES CASOS LA PROMESA SE ANOTA IGUAL: sin cita, vence a las 6 h y dice algo. Una fecha
+  // que no se pudo leer no puede borrar lo que el jefe pidió.
+  for (const cuando of ["2026-02-30T17:00", "el lunes", "2026-10-20T17:00"]) {
+    const lista = anotarPromesa([], { que: "el reporte de la fábrica", hilo: HILO, esperando: null, cuando }, T0);
+    assert.equal(lista.length, 1, `"${cuando}" tumbó la promesa`);
+    assert.equal(lista[0]?.cuandoEn, undefined, `"${cuando}" no puede quedar como cita`);
+    assert.equal(lista[0]?.venceEn, mas(HORAS_PARA_VENCER), `"${cuando}" tiene que vencer a las 6 h como cualquier genérica`);
+    const r = revisarPromesas(lista, RETRATO, RETRATO, mas(HORAS_PARA_VENCER + 1), PREVIO_DE);
+    assert.ok(r.aviso, `"${cuando}" venció en silencio`);
+  }
+});
+
+test("LA CITA NO SE MUERE ANTES DE LA HORA NI LA FRENA UNA DISCULPA", () => {
+  // El jefe dijo "el lunes a las 5pm hora Colombia" y el agente contestó "queda anotado" — y no
+  // había NADA que lo trajera de vuelta el lunes. Con el vencimiento colgado de `abiertoEn`, la
+  // promesa del lunes hecha el jueves se cerraba el JUEVES a la noche con una disculpa por algo que
+  // todavía no tocaba.
+  const lista = anotarPromesa([], { que: "el reporte de la fábrica", hilo: HILO, esperando: null, cuando: CITA }, T0);
+  assert.equal(lista[0]?.cuandoEn, CITA_UTC);
+  assert.equal(lista[0]?.esperando, null, "la fecha NUNCA viaja como `esperando`: no es un campo observable");
+
+  const temprano = revisarPromesas(lista, RETRATO, RETRATO, mas(HORAS_PARA_VENCER + 1), PREVIO_DE);
+  assert.equal(temprano.aviso, null, "a las 6 h todavía no es lunes");
+  assert.equal(temprano.lista[0]?.cerradaEn, undefined, "y sigue viva");
+
+  // AHORA LA HORA. Con una disculpa que salió hace 10 minutos (el freno caliente), con el snapshot
+  // previo VACÍO (el `.catch(() => null)` del orquestador) y sin saber de cuándo es: una cita se
+  // cumple con el reloj, no con un campo, así que nada de eso la puede tapar.
+  const reciente: Promesa = {
+    id: "pm-vieja",
+    que: "los dominios frenados",
+    hilo: HILO,
+    esperando: "cap.frenados",
+    abiertoEn: T0,
+    venceEn: "2026-08-10T22:00:00.000Z",
+    visto: 1,
+    cerradaEn: "2026-08-10T22:00:00.000Z",
+    comoCerro: "vencida",
+    anuncioEn: "2026-08-10T22:00:00.000Z"
+  };
+  const r = revisarPromesas([...temprano.lista, reciente], {}, {}, "2026-08-10T22:10:00.000Z", null);
+  assert.ok(r.aviso, "llegó la hora y no dijo nada");
+  assert.equal(r.aviso.texto.split("\n").length, 1, `exactamente un mensaje: ${r.aviso.texto}`);
+  assert.match(r.aviso.texto, /el reporte de la fábrica/, "recita lo que él pidió, con sus palabras");
+  assert.match(r.aviso.texto, /Aquí estoy/);
+  assert.doesNotMatch(r.aviso.texto, /2026-08-10|22:00|Z\b/, "cero formateo de fechas en la salida: `que` ya trae las palabras del jefe");
+  assert.equal(r.aviso.pide, true, "suena el móvil: la hora la eligió él");
+  assert.equal(r.lista[0]?.comoCerro, "cumplida");
+
+  // Y NO VUELVE A SONAR.
+  assert.equal(revisarPromesas(r.lista, {}, {}, "2026-08-10T22:20:00.000Z", null).aviso, null);
+});
+
+test("SI LA MÁQUINA DURMIÓ MÁS DE LA GRACIA, la cita se cierra pidiendo perdón, no en silencio", () => {
+  // Las 6 h se reusan como ventana de GRACIA: si la Studio durmió (17 reinicios en 29 h el
+  // 2026-08-06), el recordatorio sale igual al despertar dentro de esas 6 h. Pasado ese plazo ya no
+  // es un recordatorio útil, y callarse sería la queja 1 otra vez.
+  const lista = anotarPromesa([], { que: "el reporte de la fábrica", hilo: HILO, esperando: null, cuando: CITA }, T0);
+  const aDestiempo = revisarPromesas(lista, {}, {}, "2026-08-11T05:00:00.000Z", null);
+  assert.match(aDestiempo.aviso?.texto ?? "", /se me pasó la hora/);
+  assert.equal(aDestiempo.lista[0]?.comoCerro, "vencida");
+});
+
+test("CAMBIAR LA HORA NO DEJA DOS RECORDATORIOS", () => {
+  // "Mejor el martes" no es una promesa nueva: es LA MISMA cita movida. Sin identidad propia quedan
+  // dos recordatorios vivos y suenan los dos. Es lo CONTRARIO de la regla de las de campo, a
+  // propósito: re-prometer un campo prueba que todavía no cumplió (estirar el plazo sería no vencer
+  // nunca); re-prometer una fecha ES la cita nueva.
+  let lista = anotarPromesa([], { que: "el reporte de la fábrica", hilo: HILO, esperando: null, cuando: CITA }, T0);
+  lista = anotarPromesa(lista, { que: "el reporte de la fabrica, mejor el martes", hilo: HILO, esperando: null, cuando: "2026-08-11T17:00" }, mas(1));
+  assert.equal(lista.length, 1, "una sola cita viva");
+  assert.equal(lista[0]?.cuandoEn, "2026-08-11T22:00:00.000Z", "manda la última hora que dijo");
+  assert.equal(lista[0]?.venceEn, "2026-08-12T04:00:00.000Z", "y la gracia se mueve con ella");
+  assert.equal(lista[0]?.visto, 2);
+  // El lunes a las 5pm ya no suena nada.
+  assert.equal(revisarPromesas(lista, {}, {}, "2026-08-10T22:10:00.000Z", null).aviso, null);
+
+  // Y LA REGLA DE LAS DE CAMPO NO SE TOCA: re-prometer un campo NO estira el plazo.
+  const una = promesa();
+  const dos = anotarPromesa(una, { que: "el placement de corp-delivery.com", hilo: HILO, esperando: CAMPO }, mas(3));
+  assert.equal(dos[0]?.venceEn, una[0]?.venceEn);
+});
+
+test("LA VOZ DEL REPARO: colombiano con tuteo, sin claves de máquina", () => {
+  // Es lo que el agente le dice al jefe en el canal, así que pasa por el mismo embudo que el resto.
+  const t = porQueNoSePodraCumplir(FRENADO, ["filing-ops.com"]) ?? "";
+  assert.match(t, /\bquieres\b/, "tuteo colombiano");
+  assert.doesNotMatch(t, /\b(querés|tenés|podés|avisáme|dale)\b/i, "sin voseo: la voz del agente es colombiana");
+  assert.doesNotMatch(t, /placement:|cap\.frenados|sender-cap/, "la clave cruda y los nombres de archivo no salen al canal");
+  assert.doesNotMatch(t, /[*"`_]/, "y pasó por `enCastellano`: sin comillas, asteriscos ni snake_case");
+});
+
 test("el MISMO disparador en OTRO hilo es otra promesa: son dos conversaciones", () => {
   // El jefe está leyendo dos hilos, y una respuesta dentro de un hilo no suena en el otro.
   let lista = anotarPromesa([], { que: "te traigo el placement", hilo: "h1", esperando: "placement:a.com" }, T0);
@@ -466,4 +673,58 @@ test("el MISMO disparador en OTRO hilo es otra promesa: son dos conversaciones",
   let otra = anotarPromesa([], { que: "te aviso de esto", hilo: "h1", esperando: "placement:a.com" }, T0);
   otra = anotarPromesa(otra, { que: "te aviso de esto", hilo: "h1", esperando: "cap.frenados" }, T0);
   assert.equal(otra.length, 2);
+});
+
+// ── LAS DOS CLAVES JUNTAS: LO DECIDE EL CÓDIGO, NO EL PROMPT ────────────────────────────────────
+
+test("con `espero=` Y `cuando=` gana el CAMPO: la cita perdía el disparador y estiraba su vencimiento", () => {
+  // EL DEFECTO (encontrado por QA antes de desplegar, 2026-08-07). `anotarPromesa` guardaba las dos,
+  // y `revisarPromesas` abre con `if (p.cuandoEn !== undefined) { … continue; }` INCONDICIONAL: la
+  // rama del campo observable no corría NUNCA. Reproducido con el código real: promesa sobre
+  // `placement:corp-delivery.com` con cita el lunes 5pm; el placement cambia de verdad de SPAM a
+  // INBOX dos horas después y `revisarPromesas` devolvía `aviso: null`. El jefe no se enteraba del
+  // dato que pidió, y encima `venceEn` saltaba de 6 h a cuatro días: la promesa tampoco vencía.
+  //
+  // Lo único que lo prevenía era una regla EN PROSA dentro del prompt ("no se combina con espero="),
+  // que es textualmente el modo de falla que este repo declara haber pagado: un criterio en prosa el
+  // modelo lo devuelve como hallazgo propio, y si es falso lo devuelve con seguridad. Y no es un
+  // borde inventado: hay un test que EXIGE que `extraerPromesa` devuelva las dos claves juntas.
+  //
+  // GANA `esperando`, y el criterio es cuál falla mejor: con el campo, el jefe recibe el DATO que
+  // pidió —quizás antes de la hora, que no es un fallo— y la promesa conserva su vencimiento de 6 h,
+  // que al menos dice algo. Con la cita, el dato se pierde en silencio hasta el lunes.
+  const lista = anotarPromesa([], { que: "te aviso apenas caiga la medición", hilo: HILO, esperando: CAMPO, cuando: CITA }, T0);
+  assert.equal(lista[0]?.esperando, CAMPO);
+  assert.equal(lista[0]?.cuandoEn, undefined, "la cita se descarta: no puede tapar el disparador");
+  assert.equal(lista[0]?.venceEn, mas(HORAS_PARA_VENCER), "y el vencimiento sigue siendo el de una promesa de campo");
+
+  // Y EL CAMPO CUMPLE DE VERDAD: SPAM → INBOX dos horas después de prometer.
+  const r = revisarPromesas(lista, RETRATO, { ...RETRATO, [CAMPO]: "INBOX" }, mas(2), PREVIO_DE);
+  assert.ok(r.aviso, "el cambio real del campo tiene que avisar");
+  assert.match(r.aviso!.texto, /de SPAM a INBOX/);
+  assert.equal(r.lista[0]?.comoCerro, "cumplida");
+});
+
+test("una CITA con fecha ilegible se cierra, no queda abierta para siempre", () => {
+  // La rama del campo tiene ese guard desde su primer día ("Una promesa cuya fecha no se puede leer
+  // se cierra en vez de quedar abierta para siempre"); la rama de la cita nació sin él: con
+  // `cuandoEn` sin parsear no entraba a ninguna de sus tres salidas y caía al `continue`.
+  // Reproducido: 400 días de vueltas y la promesa seguía abierta, ocupando lugar en el archivo
+  // —donde `recortar` NO puede tirar una abierta— y sin decirle nada al jefe.
+  const rota: Promesa[] = [
+    {
+      id: "pm-x",
+      que: "el reporte de la fábrica",
+      hilo: HILO,
+      esperando: null,
+      abiertoEn: T0,
+      venceEn: mas(HORAS_PARA_VENCER),
+      cuandoEn: "el lunes a las 5",
+      visto: 1
+    }
+  ];
+  const r = revisarPromesas(rota, RETRATO, RETRATO, mas(24 * 400), PREVIO_DE);
+  assert.ok(r.aviso, "tiene que decir algo en vez de evaporarse");
+  assert.equal(r.lista[0]?.comoCerro, "vencida");
+  assert.ok(r.lista[0]?.cerradaEn, "y quedar cerrada");
 });

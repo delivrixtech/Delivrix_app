@@ -16,6 +16,7 @@ import {
   CUPO_ARRANQUE,
   MUESTRA_MINIMA,
   PISO_PARA_SUBIR,
+  rampaDesdeEnv,
   TECHO_DURO_POR_DOMINIO,
   type FilaPlacement
 } from "./decision-diaria.ts";
@@ -52,7 +53,12 @@ test("NO se mueve el volumen con muestra insuficiente", () => {
 test("placement sano CON EVIDENCIA: la rampa avanza", () => {
   const d = decidirCupoDeHoy({ ...base, diaN: 5, placements: inbox(8) });
   assert.equal(d.accion, "subir");
-  assert.equal(d.cupo, 10, "día 5 × paso 2");
+  // La rampa del día 5 son 10/día, pero SIN el cupo autorizado de anteayer el clamp 3×/48h asume
+  // el piso (CUPO_ARRANQUE) y topa en 6. Antes de ese cambio acá salían 10 — con el clamp
+  // desconectado, que es como está la producción de hoy (0 de 54 filas `sent` con `cupoDelDia`).
+  assert.equal(d.cupo, 6, "3× el piso del clamp, porque nadie sabe qué tenía autorizado anteayer");
+  const conHistorial = decidirCupoDeHoy({ ...base, diaN: 5, placements: inbox(8), cupoAutorizadoHace2Dias: 10 });
+  assert.equal(conHistorial.cupo, 10, "con el dato, la rampa entera del día 5 × paso 2");
   assert.equal(d.placement, 1);
 });
 
@@ -82,9 +88,16 @@ test("cupo del nodo desconocido: gobierna la rampa, y se DECLARA que no se sabe"
   // Acá no corresponde fail-closed al mínimo: la barrera es FÍSICA y no depende de nosotros — si
   // nos pasamos, Postfix responde 450 y no sale un correo. Nuestro número no es el gate. Recortar
   // a 2 solo dejaría a un dominio sano del día 20 arrastrándose sin ninguna ganancia de seguridad.
-  const d = decidirCupoDeHoy({ ...base, cupoFisico: null, diaN: 20, placements: inbox(10) });
+  const d = decidirCupoDeHoy({ ...base, cupoFisico: null, diaN: 20, placements: inbox(10), cupoAutorizadoHace2Dias: 20 });
   assert.equal(d.cupo, 40, "la rampa, que ya es un techo sano");
   assert.match(d.motivo, /desconocido/);
+
+  // Y sin saber qué tenía autorizado anteayer, el clamp fail-closed manda: 6, no 40. Las dos
+  // incertidumbres se tratan distinto A PROPÓSITO — el cupo del nodo es una pared física que
+  // responde 450 si nos pasamos, y el clamp es la única baranda contra la firma 3×/48h: perderla
+  // no rebota nada, sólo deja salir el escalón.
+  const sinSaberNada = decidirCupoDeHoy({ ...base, cupoFisico: null, diaN: 20, placements: inbox(10) });
+  assert.equal(sinSaberNada.cupo, 6);
 });
 
 test("la decisión es reproducible: mismo estado, misma decisión", () => {
@@ -148,8 +161,10 @@ test("el rebote físico sigue mandando: se chequea antes que nada", () => {
 
 // ── El turno de continuación no se come la MEDICIÓN del día ──────────────────────────────────────
 //
-// Un dominio nuevo tiene cupo 2/día y necesita MUESTRA_MINIMA mediciones propias para que la rampa
-// lo deje subir. El envío principal mide dónde cayó; el "Re:" de continuación solo graba `sent`.
+// El envío principal mide dónde cayó; el "Re:" de continuación solo graba `sent`, y cuando la
+// respuesta SÍ se mide sale etiquetada `origen = 'continuación de hilo'`, que es justo lo que
+// `filasDePlacement` (plan-diario.ts) EXCLUYE de la ventana. O sea: gasta cupo y no aporta una
+// fila a la ventana que gobierna el volumen de ese dominio.
 // Medido en producción el 2026-08-06: 18 envíos = 11 principales + 7 continuaciones, y tres de los
 // cinco dominios nuevos (annualfilings-control.com, annualfilings-ops.com, statefilings-control.com)
 // gastaron 1 de sus 2 envíos en un "Re:" y se quedaron con UNA medición en el día. A ese ritmo
@@ -161,17 +176,56 @@ test("dominio nuevo (cupo 2, van 1, 1 medición): el turno NO se lleva el últim
     medicionesPropias: 1, decision: decision({ cupo: 2, accion: "sostener" })
   });
   assert.equal(r.si, false);
-  assert.match(r.motivo, /1 de 4 mediciones propias/);
+  assert.match(r.motivo, /en el piso de la rampa \(cupo 2\/día/);
   assert.match(r.motivo, /que MIDE dónde cayó/);
 });
 
-test("el MISMO dominio con las 4 mediciones ya juntadas SÍ continúa el hilo", () => {
-  // La regla se apaga sola: no es un castigo permanente a la conversación multivuelta, que también
-  // construye reputación. Aplicada a toda la flota le sacaría la mitad de los turnos a
-  // corpfiling-infra.com, que hoy hace 4 continuaciones con 83% de bandeja.
+test("EL GATE DEL 'Re:' ES LA CONJUNCIÓN: en el piso Y SIN MUESTRA. Cortar solo por cupo apaga la flota entera", () => {
+  // EL BUG QUE ESTE TEST EXISTE PARA IMPEDIR (encontrado por QA antes de desplegar, 2026-08-07).
+  //
+  // El corte se cambió de `medicionesPropias < MUESTRA_MINIMA` a `cupo <= CUPO_ARRANQUE` a secas, y
+  // eso APAGA LA CONVERSACIÓN MULTIVUELTA EN TODA LA FLOTA por tiempo indefinido: los SEIS dominios
+  // del pool están hoy en cupo 2 y ninguno sale de ahí solo —la rampa exige un piso de Wilson de
+  // 0,60 y el mejor mide 0,51—, así que la condición de salida "cupo > 2" no la cumple nadie.
+  // Corrido con el código real sobre las seis ventanas de producción: los SEIS daban `si:false`.
+  //
+  // El costo medido: las continuaciones son el 29% del correo que sale (2026-08-05: 11 principales
+  // + 7 "Re:"; 08-06: 12 + 3), y el encargo era que la fábrica caliente MÁS. Encima el README del
+  // motor dice que lo que calienta es el TRÁFICO REAL A DESTINATARIOS ENGAGED, y un "Re:" dentro de
+  // un hilo vivo es lo más parecido a eso que la fábrica produce hoy. Apagarlo sin flag, sin alerta
+  // y sin fecha de vuelta mata la función que la memoria del proyecto registra como recién arreglada.
+  const conMuestra = puedeMandarTurno({
+    dominio: "corpfiling-infra.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 0,
+    medicionesPropias: 12, decision: decision({ cupo: 2, accion: "sostener" })
+  });
+  assert.equal(conMuestra.si, true, "corpfiling-infra.com: 12 mediciones y 83% de bandeja — éste ya se ganó conversar");
+
+  // Y LO QUE SÍ SE PROTEGE, que es el caso realmente medido: el dominio nuevo que gasta en un "Re:"
+  // la mitad de su día. `filasDePlacement` excluye la continuación de la ventana (`origen IS
+  // DISTINCT FROM 'continuación de hilo'`), así que ese correo no le aporta una sola fila a la
+  // ventana que gobierna su volumen — annualfilings-control.com terminó el día con 1 continuación,
+  // 1 principal y UNA medición.
+  const sinMuestra = puedeMandarTurno({
+    dominio: "annualfilings-control.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 0,
+    medicionesPropias: 2, decision: decision({ cupo: 2, accion: "sostener" })
+  });
+  assert.equal(sinMuestra.si, false);
+  assert.match(sinMuestra.motivo, /le falta muestra/);
+  assert.match(sinMuestra.motivo, /no entra a la ventana/, "el motivo nombra por qué el 'Re:' no sirve acá");
+
+  // Las DOS salidas, y las dos son automáticas: juntar muestra, o que la rampa lo levante del piso.
+  const yaGraduado = puedeMandarTurno({
+    dominio: "annualfilings-control.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 0,
+    medicionesPropias: 2, decision: decision({ cupo: 6, accion: "subir" })
+  });
+  assert.equal(yaGraduado.si, true);
+});
+
+test("justo en el borde: MUESTRA_MINIMA mediciones y cupo de arranque ⇒ ya puede continuar", () => {
+  // El borde exacto de la conjunción. opscorpfiling.com está acá hoy (4 mediciones, cupo 2).
   const r = puedeMandarTurno({
-    dominio: "annualfilings-ops.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 1,
-    medicionesPropias: MUESTRA_MINIMA, decision: decision({ cupo: 2, accion: "sostener" })
+    dominio: "opscorpfiling.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 1,
+    medicionesPropias: MUESTRA_MINIMA, decision: decision({ cupo: CUPO_ARRANQUE + 1, accion: "sostener" })
   });
   assert.equal(r.si, true);
 });
@@ -188,7 +242,7 @@ test("REGRESIÓN: con cupo 2 y CERO enviados, el 'Re:' tampoco sale — se comí
     medicionesPropias: 1, decision: decision({ cupo: 2, accion: "sostener" })
   });
   assert.equal(r.si, false);
-  assert.match(r.motivo, /1 de 4 mediciones propias/);
+  assert.match(r.motivo, /en el piso de la rampa/);
 });
 
 test("cupo 1 y sin mediciones: ese único envío es para el principal, que es el que mide", () => {
@@ -264,12 +318,14 @@ test("REGRESIÓN: el envío del ciclo principal cuenta para la continuación (cu
 test("y si el envío principal FALLÓ, el cupo no se gasta", () => {
   // `brokeAt === "sent"` es el único caso en que mailer.send falló. Ahí no se incrementa, porque
   // cobrar cupo por un correo que no salió frenaría al dominio sin motivo.
+  //
+  // El dominio de este test es uno YA GRADUADO (día 10, ventana limpia, cupo autorizado anteayer):
+  // con uno en el piso el turno no sale igual, y el test no probaría nada sobre el contador.
   const enviadosPorDominio = new Map<string, number>([["d.com", 1]]);
   const decision = decidirCupoDeHoy({
-    diaN: 1, placements: ["INBOX", "INBOX", "INBOX", "INBOX"], cupoFisico: 20, isoWeekday: 2
+    diaN: 10, placements: inbox(6), cupoFisico: 20, isoWeekday: 2, cupoAutorizadoHace2Dias: 6
   });
-  // no se incrementa. Las 4 mediciones son las mismas 4 placements con las que se armó la decisión:
-  // este dominio ya tiene muestra, así que la regla del último envío no aplica.
+  assert.ok(decision.cupo > CUPO_ARRANQUE, "el dominio ya salió del piso");
   const permiso = puedeMandarTurno({
     dominio: "d.com", enElPool: true, rebotadosHoy: new Set(), decision,
     enviadosHoy: enviadosPorDominio.get("d.com") ?? 0, medicionesPropias: 4
@@ -283,9 +339,13 @@ test("y si el envío principal FALLÓ, el cupo no se gasta", () => {
 // esa clasificación es PERMANENTE. Los tres caminos que producen volumen son la rampa, la
 // continuación de hilos y una orden que arme la decisión a mano; hay un test por cada uno.
 
+// `cupoAutorizadoHace2Dias` va explícito en los tres: sin él, el clamp 3×/48h fail-closed topa en
+// 6/día y el techo duro no llegaría a morder nunca — el test pasaría por la razón equivocada y
+// dejaría de vigilar lo único que tiene que vigilar.
 test("techo duro · la RAMPA no lo pasa aunque la configuren en 9000/día", () => {
   const d = decidirCupoDeHoy({
-    ...base, cupoFisico: null, diaN: 500, placements: inbox(10), limiteDiario: 9000, pasoPorDia: 100
+    ...base, cupoFisico: null, diaN: 500, placements: inbox(10), limiteDiario: 9000, pasoPorDia: 100,
+    cupoAutorizadoHace2Dias: 9000
   });
   assert.equal(d.cupo, TECHO_DURO_POR_DOMINIO);
   assert.match(d.motivo, /techo duro/);
@@ -293,7 +353,8 @@ test("techo duro · la RAMPA no lo pasa aunque la configuren en 9000/día", () =
 
 test("techo duro · la CONTINUACIÓN cuenta contra el cupo clampeado, no contra el configurado", () => {
   const d = decidirCupoDeHoy({
-    ...base, cupoFisico: null, diaN: 500, placements: inbox(10), limiteDiario: 9000, pasoPorDia: 100
+    ...base, cupoFisico: null, diaN: 500, placements: inbox(10), limiteDiario: 9000, pasoPorDia: 100,
+    cupoAutorizadoHace2Dias: 9000
   });
   const r = puedeMandarTurno({
     dominio: "d.com", enElPool: true, rebotadosHoy: new Set(), decision: d,
@@ -317,7 +378,7 @@ test("techo duro · una ORDEN que arme la decisión a mano tampoco lo pasa", () 
 test("techo duro · con los números de HOY no cambia un solo correo", () => {
   // La rampa por defecto topa en 40 y el cupo del nodo en 20: el clamp está muy por encima y no
   // toca ninguna decisión real. Existe para el día en que alguien escriba 9000 en gateway.env.
-  const d = decidirCupoDeHoy({ ...base, diaN: 30, placements: inbox(10) });
+  const d = decidirCupoDeHoy({ ...base, diaN: 30, placements: inbox(10), cupoAutorizadoHace2Dias: 20 });
   assert.equal(d.cupo, 20, "el cupo del nodo sigue mandando");
   assert.doesNotMatch(d.motivo, /techo duro/);
 });
@@ -407,9 +468,33 @@ test("1 de 4 sigue bajando enseguida: la dirección segura no necesita prueba", 
 test("sostener no castiga a un dominio sano: mantiene el volumen que ya tenía", () => {
   // Bajarlo al cupo de arranque sería castigarlo por no haber juntado muestra todavía, que es lo
   // contrario de lo que se busca.
-  const d = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, cupoHace2Dias: 14, placements: inbox(5) });
+  const d = decidirCupoDeHoy({
+    ...base, diaN: 20, cupoFisico: 2000, cupoAutorizadoHace2Dias: 14, cupoHace2Dias: 14, placements: inbox(5)
+  });
   assert.equal(d.accion, "sostener");
   assert.equal(d.cupo, 14);
+});
+
+test("SOSTENER DEJA DE DEMOTAR: el piso es el cupo AUTORIZADO, no los correos que salieron", () => {
+  // EL BUG QUE ESTE TEST EXISTE PARA IMPEDIR, y es el mismo error que este archivo ya diagnosticó
+  // y arregló para el clamp 3×/48h treinta líneas más arriba: quedó vivo dos líneas más abajo.
+  //
+  // `cupoHace2Dias` son los correos que SALIERON, y los que salen están topados por un límite
+  // GLOBAL del daemon (`WARMUP_LIVE_MAX_PER_DAY=14` para TODA la flota, verificado en el
+  // gateway.env de la Studio): dan 1-8 y casi siempre 2. Un dominio ya autorizado a 20/día que
+  // saca 5 de 6 (83%) caía a cupo 2 porque anteayer MANDÓ 2 — 'sostener' nunca sostenía, hacía
+  // sierra 20→2→6→6→18→20→2 mientras el panel decía "sostener".
+  const autorizado20 = decidirCupoDeHoy({
+    ...base, diaN: 20, cupoFisico: 2000, placements: inbox(5),
+    cupoAutorizadoHace2Dias: 20, cupoHace2Dias: 2
+  });
+  assert.equal(autorizado20.accion, "sostener", "wilson(5,5)=0,57 no cruza el piso para subir");
+  assert.equal(autorizado20.cupo, 20, "sostiene lo que tenía AUTORIZADO, no lo que el sobre global lo dejó mandar");
+
+  // Sin el dato del autorizado se cae al enviado, que es la única memoria que queda: peor, pero
+  // mejor que arrancar de cero. Es el estado de la producción de hoy.
+  const soloEnviado = decidirCupoDeHoy({ ...base, diaN: 20, cupoFisico: 2000, placements: inbox(5), cupoHace2Dias: 2 });
+  assert.equal(soloEnviado.cupo, 2);
 });
 
 // ── El clamp 3×/48h NO se alimenta de los envíos ─────────────────────────────────────────────────
@@ -429,7 +514,11 @@ test("el clamp no se alimenta de los ENVÍOS: frenaba a los sanos y soltaba a lo
     mudo.cupo,
     "haber mandado 1 correo hace dos días no puede dejarte con MENOS cupo que no haber mandado ninguno"
   );
-  assert.equal(sano.cupo, 20, "manda el cupo físico del nodo, no un múltiplo de lo que salió");
+  // 6 = 3× el PISO del clamp (`CUPO_ARRANQUE`), que es lo que se asume cuando no se sabe qué tenía
+  // autorizado anteayer. Lo que este test fija es que NO sea 3 (3× el correo que salió), que es lo
+  // que daba con los envíos adentro del clamp.
+  assert.equal(sano.cupo, 6, "el múltiplo sale del piso del clamp, jamás de lo que salió");
+  assert.notEqual(sano.cupo, 3);
 });
 
 // ── LA MONOTONÍA: peor placement NUNCA manda más correo ──────────────────────────────────────────
@@ -450,31 +539,65 @@ test("INVARIANTE: a peor placement, cupo no creciente (la escalera entera, no un
   // Un test de casos sueltos no iba a ver esto nunca: lo que falla es la RELACIÓN entre dos ramas.
   // Por eso se recorre la escalera entera, en toda la rampa, con SPAM y con MISSING (los dos bajan
   // la tasa cruda) y con varios valores de lo que mandó anteayer.
+  // EL PISO NUEVO VA ADENTRO DEL BARRIDO. `sostenido` pasó a anclarse en `cupoAutorizadoHace2Dias`
+  // (que puede ser MUCHO más grande que los envíos: 20 contra 2) y `bajar` está topado por él, así
+  // que la relación entre las dos ramas se recalcula con el cambio. Se recorre con el campo
+  // presente Y ausente, porque el estado de la producción de hoy es el ausente.
   const VENTANA_DE_PRODUCCION = 6;
   const tragado = (n: number): Placement[] => Array.from({ length: n }, () => "MISSING" as const);
 
   for (const diaN of [4, 8, 12, 20, 40]) {
     for (const cupoHace2Dias of [0, 1, 2, 8, 14]) {
-      for (const malos of [spam, tragado]) {
-        let previo = Number.POSITIVE_INFINITY;
-        for (let bien = VENTANA_DE_PRODUCCION; bien >= 0; bien--) {
-          const placements = [...inbox(bien), ...malos(VENTANA_DE_PRODUCCION - bien)];
-          const d = decidirCupoDeHoy({ ...base, diaN, cupoFisico: 2000, cupoHace2Dias, placements });
-          assert.ok(
-            d.cupo <= previo,
-            `día ${diaN}, anteayer ${cupoHace2Dias}: ${bien}/${VENTANA_DE_PRODUCCION} en bandeja dio ` +
-              `${d.accion} ${d.cupo}/día, MÁS que el ${bien + 1}/${VENTANA_DE_PRODUCCION} anterior (${previo}/día)`
-          );
-          previo = d.cupo;
+      for (const autorizado of [undefined, 0, 2, 20, 200]) {
+        for (const malos of [spam, tragado]) {
+          let previo = Number.POSITIVE_INFINITY;
+          for (let bien = VENTANA_DE_PRODUCCION; bien >= 0; bien--) {
+            const placements = [...inbox(bien), ...malos(VENTANA_DE_PRODUCCION - bien)];
+            const d = decidirCupoDeHoy({
+              ...base, diaN, cupoFisico: 2000, cupoHace2Dias, placements,
+              ...(autorizado === undefined ? {} : { cupoAutorizadoHace2Dias: autorizado })
+            });
+            assert.ok(
+              d.cupo <= previo,
+              `día ${diaN}, anteayer envió ${cupoHace2Dias} / autorizado ${autorizado}: ` +
+                `${bien}/${VENTANA_DE_PRODUCCION} en bandeja dio ${d.accion} ${d.cupo}/día, MÁS que el ` +
+                `${bien + 1}/${VENTANA_DE_PRODUCCION} anterior (${previo}/día)`
+            );
+            previo = d.cupo;
+          }
         }
       }
     }
   }
 });
 
+test("HOY NO CAMBIA UN SOLO CUPO: los seis dominios del pool siguen en 2/día", () => {
+  // LA LÍNEA BASE, y es la que hace que este lote se pueda shipear sin autorización de volumen.
+  // Las seis ventanas REALES de producción, leídas de la Postgres viva el 2026-08-07, con el cap
+  // físico de 20 que tienen instalado y SIN `cupoAutorizadoHace2Dias` (0 de 54 filas `sent` de toda
+  // la historia lo llevan, así que ése es el estado de hoy, no una hipótesis).
+  //
+  // Si alguno de estos seis se mueve, alguien cambió una regla de VOLUMEN sin decirlo — que es
+  // exactamente lo que este lote tiene prohibido hacer.
+  const HOY: { dominio: string; diaN: number; placements: Placement[] }[] = [
+    { dominio: "corpfiling-infra.com", diaN: 5, placements: [...inbox(5), ...spam(1)] },          // 83%
+    { dominio: "annualcorp-infra.com", diaN: 4, placements: [...inbox(3), ...spam(2)] },          // 60%
+    { dominio: "annualfilings-control.com", diaN: 3, placements: [...inbox(2), ...spam(2)] },     // 50%
+    { dominio: "annualfilings-ops.com", diaN: 3, placements: [...inbox(2), ...spam(2)] },         // 50%
+    { dominio: "opscorpfiling.com", diaN: 2, placements: [...inbox(3), ...spam(1)] },             // 75%
+    { dominio: "statefilings-control.com", diaN: 2, placements: inbox(3) }                        // 3 mediciones
+  ];
+  for (const d of HOY) {
+    const decision = decidirCupoDeHoy({
+      isoWeekday: 5, cupoFisico: 20, diaN: d.diaN, placements: d.placements, cupoHace2Dias: 2
+    });
+    assert.equal(decision.cupo, CUPO_ARRANQUE, `${d.dominio} salió con ${decision.cupo}/día (${decision.accion})`);
+  }
+});
+
 test("el techo irreversible gana sobre TODO, incluso sobre una rampa configurada absurda", () => {
   const d = decidirCupoDeHoy({
-    ...base, diaN: 400, cupoFisico: null, cupoHace2Dias: 9000,
+    ...base, diaN: 400, cupoFisico: null, cupoHace2Dias: 9000, cupoAutorizadoHace2Dias: 9000,
     limiteDiario: 50_000, pasoPorDia: 500, placements: inbox(20)
   });
   assert.equal(d.cupo, TECHO_DURO_POR_DOMINIO);
@@ -504,19 +627,50 @@ test("clamp 3×/48h: el cupo AUTORIZADO de anteayer topa la rampa de hoy", () =>
   // medición pasa de 2 a la rampa entera: 2 → 20 en 24 h, que es exactamente la firma que el clamp
   // existe para evitar.
   const conClamp = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 2 });
-  const sinClamp = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6) });
-  assert.equal(sinClamp.cupo, 20, "la rampa del día 10 con paso 2 son 20/día");
+  const sinTope = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 20 });
+  assert.equal(sinTope.cupo, 20, "la rampa del día 10 con paso 2 son 20/día, y 3×20 no la toca");
   assert.equal(conClamp.cupo, 6, "3× lo autorizado hace 2 días, ni uno más");
-  assert.ok(conClamp.cupo < sinClamp.cupo, "el clamp SOLO puede bajar");
+  assert.ok(conClamp.cupo < sinTope.cupo, "el clamp SOLO puede bajar");
 });
 
-test("clamp: ausente o 0 NO clampea — el comportamiento de hoy, exacto", () => {
-  // Con `0` no se puede multiplicar (un dominio frenado anteayer no tendría por dónde recuperarse),
-  // y `dailyQuota` ya lo trata así desde el diseño v1. Se fija acá para que nadie lo "arregle"
-  // convirtiendo el 0 en un freno permanente: sería una trampa de la que un dominio no sale nunca.
+test("EL CLAMP NO PUEDE DESAPARECER POR FALTA DE DATO", () => {
+  // EL AGUJERO QUE ESTE TEST EXISTE PARA IMPEDIR, y es el estado exacto de la producción de hoy.
+  // `dailyQuota` (ramp.ts:88-94) sólo clampea `if (twoDaysAgo > 0)`: SIN el dato, la válvula
+  // anti-firma 3×/48h falla ABIERTA. Y el dato no está — medido contra la Postgres viva el
+  // 2026-08-07: de las 54 filas `sent` de TODA la historia de warmup_activity, las que llevan
+  // `detail.cupoDelDia` son CERO. El árbol desplegado es eb6b373 y el daemon que lo graba se
+  // relanzó a las 17:59:27 hora local de ese mismo día: la baranda es código nuevo sin una sola
+  // vuelta de evidencia, justo antes de que la rampa se destrabe.
+  //
+  // Antes de este cambio, este caso daba 20 (la rampa entera del día 10). Ahora da 6.
+  const sinDato = decidirCupoDeHoy({ ...base, diaN: 20, placements: inbox(6) });
+  assert.ok(sinDato.cupo <= 6, `sin dato el clamp asume el piso: ${sinDato.cupo}/día`);
+  const conDato = decidirCupoDeHoy({ ...base, diaN: 20, placements: inbox(6), cupoAutorizadoHace2Dias: 2 });
+  assert.equal(conDato.cupo, 6, "3× el autorizado de anteayer");
+
+  // Y el hueco NO se cierra solo cuando el daemon empiece a grabar: con 6 dominios rotando, el que
+  // no mandó hace dos días vuelve a quedar sin dato. Por eso el piso y no un "ya lo va a grabar".
+  const ausente = decidirCupoDeHoy({ ...base, diaN: 20, placements: inbox(6), cupoAutorizadoHace2Dias: undefined });
+  assert.equal(ausente.cupo, 6);
+});
+
+test("clamp: el 0 se trata como falta de dato, no como freno permanente", () => {
+  // `dailyQuota` no puede multiplicar desde 0 (un dominio frenado anteayer no tendría por dónde
+  // recuperarse), así que el 0 cae al mismo piso que la ausencia: 3×CUPO_ARRANQUE = 6/día. Lo que
+  // este test impide es lo de siempre por los dos lados — que el 0 vuelva a significar "sin techo"
+  // (fail-open) y que alguien lo "arregle" convirtiéndolo en cupo 0 permanente, que sería una
+  // trampa de la que un dominio no sale nunca.
   const cero = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 0 });
   const ausente = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6) });
   assert.equal(cero.cupo, ausente.cupo);
+  assert.equal(cero.cupo, 6);
+  // Un valor negativo o NaN (el campo sale de un `detail->>'cupoDelDia'` parseado) tampoco abre la
+  // puerta: con `||` a secas el negativo es truthy, `clampNonNegativeInt` lo baja a 0 y el clamp
+  // desaparece — el mismo fail-open, entrando por el costado.
+  const roto = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: -5 });
+  assert.equal(roto.cupo, 6);
+  const nan = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: Number.NaN });
+  assert.equal(nan.cupo, 6);
 });
 
 test("el clamp NO se alimenta de los ENVÍOS: son dos datos distintos y se confundieron una vez", () => {
@@ -526,7 +680,9 @@ test("el clamp NO se alimenta de los ENVÍOS: son dos datos distintos y se confu
   // 05-ago ⇒ techo 3/día) y soltaba a los que no mandaron nada. Este test fija que los dos campos
   // gobiernan cosas DISTINTAS y que nadie los vuelva a unir.
   const soloEnvios = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6), cupoHace2Dias: 1 });
-  assert.equal(soloEnvios.cupo, 20, "lo que se mandó no puede topar la rampa: eso lo hace el AUTORIZADO");
+  const sinNada = decidirCupoDeHoy({ ...base, diaN: 10, placements: inbox(6) });
+  assert.equal(soloEnvios.cupo, sinNada.cupo, "para el clamp, los envíos NO son dato: es como no traer nada");
+  assert.notEqual(soloEnvios.cupo, 3, "3 = 3×1 correo enviado, que es el clamp mal alimentado");
 });
 
 test("días hábiles: la palanca existía en dailyQuota y estaba escrita a mano en `false`", () => {
@@ -534,11 +690,14 @@ test("días hábiles: la palanca existía en dailyQuota y estaba escrita a mano 
   // pero los DOS llamadores lo tenían hardcodeado: no había forma de encenderlo sin tocar código.
   // Sólo puede BAJAR el volumen (sábado y domingo dan 0), que es la única dirección que este lote
   // tiene permitido mover.
-  const sabado = decidirCupoDeHoy({ ...base, isoWeekday: 6, diaN: 10, placements: inbox(6), soloDiasHabiles: true });
+  // `cupoAutorizadoHace2Dias` explícito para que el clamp fail-closed no tape lo que este test mide:
+  // sin él los tres casos darían 6 y el sábado apagado no se distinguiría del martes.
+  const yaCalentando = { ...base, diaN: 10, placements: inbox(6), cupoAutorizadoHace2Dias: 20 };
+  const sabado = decidirCupoDeHoy({ ...yaCalentando, isoWeekday: 6, soloDiasHabiles: true });
   assert.equal(sabado.cupo, 0);
-  const martes = decidirCupoDeHoy({ ...base, isoWeekday: 2, diaN: 10, placements: inbox(6), soloDiasHabiles: true });
+  const martes = decidirCupoDeHoy({ ...yaCalentando, isoWeekday: 2, soloDiasHabiles: true });
   assert.equal(martes.cupo, 20, "de lunes a viernes no cambia nada");
-  const sinPalanca = decidirCupoDeHoy({ ...base, isoWeekday: 6, diaN: 10, placements: inbox(6) });
+  const sinPalanca = decidirCupoDeHoy({ ...yaCalentando, isoWeekday: 6 });
   assert.equal(sinPalanca.cupo, 20, "y apagada, el sábado sigue mandando como hoy");
 });
 
@@ -798,4 +957,227 @@ test("sin dato del MTA el cruce dice 'no sé', no cero", () => {
   assert.equal(c!.sinMedir, null);
   assert.match(c!.lectura, /no reporta gmail\.com en la ventana/);
   assert.match(c!.lectura, /el cruce no se puede hacer/);
+});
+
+// ── 'BAJAR' TIENE QUE BAJAR, Y EL PISO QUE EL OPERADOR PUEDE APROBAR ─────────────────────────────
+
+test("'BAJAR' BAJA DE VERDAD: con el mismo autorizado, bajar manda ESTRICTAMENTE menos que sostener", () => {
+  // EL BUG (encontrado por QA antes de desplegar, 2026-08-07). Al anclar el piso de `sostener` al
+  // cupo AUTORIZADO, la rama `bajar` quedó topada por `Math.min(rampa/2, sostenido)` — y `sostenido`
+  // se REALIMENTA, porque el autorizado de hoy es lo que esta misma rama decidió anteayer. Resultado
+  // corrido con el código real: al día 20 con autorizado 20, `sostener` (5/6 = 83%) y `bajar` (4/6 =
+  // 67%) devolvían LOS DOS cupo 20. La señal de degradación no movía un solo correo.
+  //
+  // El test de monotonía que ya existía no lo caza porque compara con `>=`: sostener == bajar pasa.
+  const conAutorizado = { ...base, diaN: 20, cupoAutorizadoHace2Dias: 20, limiteDiario: 40, pasoPorDia: 2 };
+  const sostener = decidirCupoDeHoy({ ...conAutorizado, placements: [...inbox(5), ...spam(1)] });
+  const bajar = decidirCupoDeHoy({ ...conAutorizado, placements: [...inbox(4), ...spam(2)] });
+  assert.equal(sostener.accion, "sostener");
+  assert.equal(bajar.accion, "bajar");
+  assert.ok(bajar.cupo < sostener.cupo, `bajar ${bajar.cupo} tiene que ser MENOS que sostener ${sostener.cupo}`);
+});
+
+test("y la serie realimentada DESCIENDE en vez de estacionarse: 20 → 10 → 5 → 2", () => {
+  // La otra mitad del mismo defecto, y la cara cara: un dominio que ramp-eó a 20 y después entrega
+  // 67% para siempre se estacionaba en 11-13/día INDEFINIDAMENTE (d11=11 d12=12 d13=13 d14=11 …
+  // d30=12), porque el punto fijo de `min(rampa/2, autorizado)` con autorizado = lo de anteayer no
+  // desciende. Antes de anclar el piso al autorizado se estacionaba en 3. Cuatro veces más volumen
+  // sostenido sobre un dominio que se está yendo a spam, sin decisión de nadie.
+  const historia: number[] = [];
+  for (let dia = 1; dia <= 20; dia++) {
+    const d = decidirCupoDeHoy({
+      ...base,
+      diaN: dia,
+      placements: dia <= 10 ? inbox(6) : [...inbox(4), ...spam(2)],
+      ...(historia[dia - 3] !== undefined ? { cupoAutorizadoHace2Dias: historia[dia - 3]! } : {}),
+      limiteDiario: 40,
+      pasoPorDia: 2
+    });
+    historia[dia] = d.cupo;
+  }
+  const bajando = historia.slice(11, 21);
+  assert.ok(historia[10]! >= 18, `el dominio tiene que haber ramp-eado antes de degradarse (llegó a ${historia[10]})`);
+  assert.ok(
+    Math.min(...bajando) <= CUPO_ARRANQUE,
+    `la serie tiene que converger al piso y no estacionarse arriba: ${bajando.join(" ")}`
+  );
+  assert.ok(historia[20]! < historia[11]!, `y tiene que ir hacia abajo: d11=${historia[11]} d20=${historia[20]}`);
+});
+
+test("bajar NUNCA cae por debajo del piso de arranque, o rompe la monotonía por el otro borde", () => {
+  // EL BORDE por el que dividir el piso rompía la monotonía en la dirección contraria: la rama de
+  // `muestra < MUESTRA_MINIMA` devuelve `min(rampa, CUPO_ARRANQUE)` = 2 SIN mirar el placement, así
+  // que con el suelo en 1 un dominio con peor señal (3 medidos, muestra insuficiente) mandaba 2 y el
+  // mismo dominio con muestra suficiente al 50% mandaba 1. Peor placement, más volumen — la
+  // dirección insegura, y hay dos tests del repo que la cazan. Por eso el suelo es CUPO_ARRANQUE.
+  const sinMuestra = decidirCupoDeHoy({ ...base, diaN: 8, placements: [...inbox(3), "MISSING", "MISSING", "MISSING"] });
+  const bajando = decidirCupoDeHoy({ ...base, diaN: 8, placements: [...inbox(3), ...spam(1), "MISSING", "MISSING"] });
+  assert.equal(bajando.accion, "bajar");
+  assert.ok(bajando.cupo >= CUPO_ARRANQUE, `bajar no puede caer bajo el piso de arranque: dio ${bajando.cupo}`);
+  assert.ok(sinMuestra.cupo <= bajando.cupo, `${sinMuestra.cupo} vs ${bajando.cupo}`);
+});
+
+test("EL PISO QUE EL OPERADOR PUEDE APROBAR: WARMUP_RAMPA_PISO_SOSTENER, default 2 = no cambia nada", () => {
+  // POR QUÉ EXISTE. El problema central del encargo —"36 correos en 5 días, 58 dominios comprados y
+  // 6 calentando"— se entregaba como PROSA: la propuesta al operador era "subir el piso de sostener
+  // de 2 a N" y el piso era `export const CUPO_ARRANQUE = 2`, una constante dura sin env var.
+  // `PISO_PARA_SUBIR` y `MUESTRA_MINIMA` tampoco son configurables, y lo único que el operador
+  // podía tocar —`WARMUP_LIVE_PLACEMENT_WINDOW`— no destraba: con n=20 el gate de Wilson pide 17/20
+  // = 85% y nuestro mejor dominio mide 83%. O sea: no había NADA que aprobar.
+  assert.equal(rampaDesdeEnv({}).pisoSostener, CUPO_ARRANQUE, "ausente = exactamente lo de hoy");
+  assert.equal(rampaDesdeEnv({ WARMUP_RAMPA_PISO_SOSTENER: "basura" }).pisoSostener, CUPO_ARRANQUE, "fail-closed");
+  assert.equal(rampaDesdeEnv({ WARMUP_RAMPA_PISO_SOSTENER: "8" }).pisoSostener, 8);
+
+  // La ventana REAL del mejor dominio de la flota (corpfiling-infra.com, 5 de 6 = 83%): hoy sostiene
+  // en 2 y no sale solo, porque `wilsonLowerBound(5,6)` = 0,51 < PISO_PARA_SUBIR.
+  const hoy = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(5), ...spam(1)] });
+  assert.equal(hoy.accion, "sostener");
+  assert.equal(hoy.cupo, CUPO_ARRANQUE, "el punto fijo del que nadie sale sin decisión del operador");
+
+  // Con la palanca aprobada el mismo dominio se mueve — y el clamp anti-firma 3×/48h del §10 sigue
+  // arriba de ella, que es exactamente lo que tiene que pasar: con `autorizado` en 2, el primer día
+  // topa en 6 (3×2) aunque el operador haya escrito 8. La palanca sube, el clamp marca el ritmo.
+  const primerDia = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(5), ...spam(1)], pisoSostener: 8, cupoAutorizadoHace2Dias: 2 });
+  assert.equal(primerDia.accion, "sostener");
+  assert.equal(primerDia.cupo, 6, "3× lo autorizado anteayer: la palanca no puede saltarse el clamp");
+
+  const yaSubio = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(5), ...spam(1)], pisoSostener: 8, cupoAutorizadoHace2Dias: 6 });
+  assert.equal(yaSubio.cupo, 8, "dos días después, el piso aprobado por el operador manda");
+});
+
+test("el piso del operador NO levanta al que entrega mal ni al que no tiene muestra", () => {
+  // Las dos condiciones que impiden que la palanca sea un cheque en blanco. Sin ellas, subir el piso
+  // subiría el volumen de un dominio que se está yendo a spam — que es el camino al umbral
+  // permanente de Google, el único daño que no se deshace.
+  const sinMuestra = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(2), ...spam(1)], pisoSostener: 20 });
+  assert.ok(sinMuestra.cupo <= CUPO_ARRANQUE, `con ${MUESTRA_MINIMA - 1} mediciones no sube: dio ${sinMuestra.cupo}`);
+
+  // 4 de 6 = 67%, debajo de PISO_SANO ⇒ rama `bajar`, y ahí el piso del operador entra dividido por
+  // dos como todo lo demás: nunca puede terminar mandando más que "sostener".
+  const entregandoMal = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(4), ...spam(2)], pisoSostener: 20 });
+  const sostieneBien = decidirCupoDeHoy({ ...base, diaN: 20, placements: [...inbox(5), ...spam(1)], pisoSostener: 20 });
+  assert.equal(entregandoMal.accion, "bajar");
+  assert.ok(entregandoMal.cupo < sostieneBien.cupo, `${entregandoMal.cupo} vs ${sostieneBien.cupo}`);
+});
+
+test("NaN EN EL CUPO PREVIO NO BORRA EL TOPE DEL DÍA — y la rama abierta era la de PRODUCCIÓN", () => {
+  // EL INCIDENTE QUE FIJA (encontrado por QA antes de desplegar, 2026-08-07). `??` NO atrapa NaN:
+  // `NaN ?? 2` devuelve NaN. El piso de `sostener` lo usaba —`Math.max(piso, e.cupoAutorizadoHace2Dias
+  // ?? e.cupoHace2Dias ?? CUPO_ARRANQUE)`— así que `decidirCupoDeHoy` salía con `cupo: NaN`, y con
+  // eso el TOPE DIARIO DEL DOMINIO DESAPARECE: el gate del daemon es `enviadosHoyBox >= delDia.cupo`
+  // y `n >= NaN` es false para todo n. Reproducido con el código real: `0 >= NaN`, `100 >= NaN` y
+  // `10000 >= NaN` dan los tres false, y `puedeMandarTurno` con 10.000 enviados contestaba `si: true
+  // · "tiene NaN de cupo libre hoy"`.
+  //
+  // LA VENTANA ES 5/6 Y NO 6/6, Y ESA ES LA MITAD IMPORTANTE DEL TEST. El test que decía cubrir el
+  // NaN lo probaba con `inbox(6)` —ventana perfecta ⇒ rama `subir`, que pasa por `baseDelClamp`, la
+  // ÚNICA mitad que ya estaba defendida—. La ventana real de los seis dominios del pool es 5 de 6, y
+  // ésa cae en `sostener`, que era la rama con el agujero. El test y el código compartían la
+  // suposición: es literal la lección `verificar-con-el-mismo-camino-de-produccion`, y la mutación no
+  // salva de eso porque los dos se equivocan igual.
+  //
+  // HOY NO ES ALCANZABLE desde la base (el SQL filtra `detail->>'cupoDelDia' ~ '^[0-9]+$'` y
+  // `cupoAutorizadoVigente` descarta con `Number.isFinite`). Se cierra igual porque la próxima
+  // entrada del campo —un endpoint, una orden, otro lector— no tiene por qué saber que esta función
+  // se apoyaba en el filtro de un SQL que vive en otro archivo.
+  const ventanaDeProduccion = [...inbox(5), ...spam(1)];
+  for (const roto of [{ cupoAutorizadoHace2Dias: Number.NaN }, { cupoHace2Dias: Number.NaN }]) {
+    const d = decidirCupoDeHoy({ ...base, diaN: 20, placements: ventanaDeProduccion, ...roto });
+    assert.ok(Number.isFinite(d.cupo), `${JSON.stringify(roto)} ⇒ cupo ${d.cupo}: un tope que no es número no es un tope`);
+    assert.ok(d.cupo > 0 && d.cupo <= TECHO_DURO_POR_DOMINIO);
+    // Y el gate del daemon vuelve a poder frenar: con NaN, `100 >= cupo` era false.
+    assert.equal(100 >= d.cupo, true, "el tope tiene que poder frenar a alguien que ya mandó 100");
+  }
+  // Un negativo entra por el mismo costado y sale por la misma puerta.
+  const negativo = decidirCupoDeHoy({ ...base, diaN: 20, placements: ventanaDeProduccion, cupoAutorizadoHace2Dias: -5 });
+  assert.ok(Number.isFinite(negativo.cupo) && negativo.cupo > 0);
+});
+
+test("EL 'Re:' NO SE QUEDA CON LA ÚLTIMA RANURA DEL DÍA: la que queda es la que MIDE", () => {
+  // EL AGUJERO QUE FIJA, medido en la Postgres de producción el 2026-08-07 (7 días): 51 envíos, 15
+  // continuaciones, y CERO de esas 15 produjo una fila `measured`. `filasDePlacement` (plan-diario.ts)
+  // excluye el origen 'continuación de hilo' con `IS DISTINCT FROM`, así que el "Re:" gasta cupo y no
+  // aporta un dato a la ventana que gobierna el volumen de ese mismo dominio.
+  //
+  // corpfiling-infra.com —el mejor de la flota y el dominio del que trata el encargo— hizo 21 envíos
+  // y sacó 12 mediciones en vez de ~18. El gate de Wilson le pide n≈14 para su 83%: el 29% de correo
+  // tirado le DUPLICA el tiempo hasta poder graduarse.
+  //
+  // El guarda de arriba (piso de la rampa + sin muestra) no lo tapaba: 5 de los 6 dominios del pool
+  // ya tienen 4 o más mediciones propias, así que pasaban enteros. Barrido exhaustivo con el código
+  // real (11.880 combinaciones): la conjunción de arriba no cambia UN SOLO veredicto respecto de la
+  // condición vieja — el freno que muerde es éste.
+  const conMuestraYUnaRanura = puedeMandarTurno({
+    dominio: "corpfiling-infra.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 1,
+    medicionesPropias: 12, decision: decision({ cupo: 2, accion: "sostener" })
+  });
+  assert.equal(conMuestraYUnaRanura.si, false, "12 mediciones no le dan derecho a comerse la única ranura que mide");
+  assert.match(conMuestraYUnaRanura.motivo, /UNA sola ranura libre hoy/);
+  assert.match(conMuestraYUnaRanura.motivo, /su ventana de placement lo excluye/);
+
+  // Y NO APAGA LA CONVERSACIÓN MULTIVUELTA, que es la objeción legítima contra cortar por `cupo <=
+  // CUPO_ARRANQUE` a secas (con eso los SEIS del pool daban `si:false` y ninguno sale solo del piso).
+  // Con cupo 2 el turno sigue saliendo: en la PRIMERA ranura, no en la última.
+  const primeraRanura = puedeMandarTurno({
+    dominio: "corpfiling-infra.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 0,
+    medicionesPropias: 12, decision: decision({ cupo: 2, accion: "sostener" })
+  });
+  assert.equal(primeraRanura.si, true, "el hilo vivo es el tráfico más parecido al real que produce la fábrica");
+
+  // Y con `WARMUP_RAMPA_PISO_SOSTENER` arriba de 2 se afloja solo: nadie tiene que acordarse de nada.
+  const conPisoDelOperador = puedeMandarTurno({
+    dominio: "corpfiling-infra.com", enElPool: true, rebotadosHoy: new Set(), enviadosHoy: 4,
+    medicionesPropias: 12, decision: decision({ cupo: 6, accion: "sostener" })
+  });
+  assert.equal(conPisoDelOperador.si, true);
+});
+
+test("el envelope de volumen no se mueve por calendario: el techo es el mismo y la bajada planea", () => {
+  // POR QUÉ ESTE TEST EXISTE. `sostenido` se ancló al cupo AUTORIZADO hace dos días
+  // (`cupoAutorizadoHace2Dias`) en vez de a los correos ENVIADOS, y el dato lo graba el daemon en
+  // `detail.cupoDelDia`: aparece SOLO a las ~48 h del despliegue. O sea que el cambio de volumen no
+  // llega con un deploy que alguien revisa, llega con una FECHA. Un comentario que diga "hoy no
+  // mueve nada" se vuelve falso sin que nadie toque una línea — que es la misma forma de la falla
+  // que este lote arregló en el sensor de salud (absolverse porque la evidencia se cae de la
+  // ventana). La única defensa que no vence es afirmar la serie completa.
+  //
+  // SE REALIMENTA LA DECISIÓN, y ahí está el punto: el autorizado de hace dos días es lo que ESTA
+  // función decidió ese día. Un barrido que le pase `cupoAutorizadoHace2Dias: 40` a un estado que
+  // nunca pudo llegar a 40 mide un fixture, no el sistema.
+  const correr = (ventana: (dia: number) => Placement[], dias: number): number[] => {
+    const hist: number[] = [];
+    for (let dia = 1; dia <= dias; dia++) {
+      const a2 = hist[dia - 3];
+      hist.push(
+        decidirCupoDeHoy({
+          ...base,
+          diaN: dia,
+          placements: ventana(dia),
+          ...(a2 !== undefined ? { cupoAutorizadoHace2Dias: a2 } : {})
+        }).cupo
+      );
+    }
+    return hist;
+  };
+
+  // 1. EL TECHO NO SE MUEVE. Con la ventana perfecta la serie es la rampa lineal y se planta en la
+  //    pared del nodo (`cupoFisico: 20` de `base`). Si alguien sube el techo sin querer, acá se ve.
+  const perfecta = correr(() => inbox(6), 14);
+  assert.deepEqual(perfecta, [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 20, 20, 20, 20]);
+
+  // 2. LA BAJADA PLANEA, NO CAE EN PICADA — y eso es MÁS volumen que antes, dicho con el número.
+  //    Antes de anclar al autorizado la serie se desplomaba a 2 en un día; ahora hace 20→10→5→2.
+  //    Son 4 días de descenso sobre un dominio al 50% de bandeja. Es la diferencia real del cambio.
+  const degradada = correr((dia) => (dia <= 12 ? inbox(6) : [...inbox(3), ...spam(3)]), 24);
+  assert.deepEqual(degradada.slice(12, 18), [10, 10, 5, 5, 2, 2], "20 → 10 → 5 → 2 y ahí se queda");
+  assert.equal(degradada.reduce((a, b) => a + b, 0), 196, "el presupuesto de 24 días, con nombre y número");
+
+  // 3. Y NINGÚN SALTO PUEDE SER GRANDE. Lo topa el clamp 3×/48h; acá se afirma el 2× medido, que es
+  //    lo que impide que un dato que aparece solo a las 48 h se traduzca en un escalón de volumen.
+  for (const serie of [perfecta, degradada]) {
+    for (let i = 1; i < serie.length; i++) {
+      if (serie[i - 1]! <= 0) continue;
+      assert.ok(serie[i]! / serie[i - 1]! <= 2, `salto de ${serie[i - 1]} a ${serie[i]}: ningún día puede más que duplicar`);
+    }
+  }
 });

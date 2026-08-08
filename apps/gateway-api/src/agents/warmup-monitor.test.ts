@@ -13,7 +13,7 @@ import type { HechosWarmup } from "./warmup-monitor.ts";
 
 import { ejecutarAcciones, extraerAcciones } from "./acciones-agente.ts";
 import { limpiarMaquinaria, responder, VOZ } from "./sentinel-chat.ts";
-import { agruparReparos, construirPrompt, lineasDeFrenados, SISTEMA, verificarLectura, type FrenadoDetalle } from "./warmup-monitor.ts";
+import { agruparReparos, construirPrompt, dominiosDeLosHechos, lineasDeFrenados, SISTEMA, verificarLectura, type FrenadoDetalle } from "./warmup-monitor.ts";
 
 const HECHOS_BASE: HechosWarmup = {
   generadoEn: "2026-08-04T15:00:00.000Z",
@@ -403,12 +403,24 @@ const CAPACIDAD_DE: Record<string, string | null> = {
   diagnosticar_dominio: "diagnosticarDominio",
   medir_dominio: "medirDominio",
   revisar_reputacion: "revisarReputacion",
+  // FALTABA, y el guardia dejaba pasar exactamente el caso que dice cubrir: `bajar_cap_nodo` se
+  // anuncia en SISTEMA sin advertencia y el orquestador la cablea SOLO adentro de
+  // `...(puedeFrenar ? { … } : {})`. Cero ocurrencias en este archivo, así que el bucle de arriba ni
+  // la miraba. Hoy `WARMUP_AGENT_PUEDE_FRENAR=true` en producción y por eso no muerde; el flag está
+  // apagado por defecto, y en cualquier entorno nuevo —o el día que el operador lo baje— el modelo
+  // la pide, le vuelve "no está habilitado" y la vuelve a pedir. Los 26 rechazos en 5 horas otra vez.
+  bajar_cap_nodo: "bajarCapNodo",
   // TODAVÍA NO SE ANUNCIA EN NINGÚN PROMPT, y la fila entra igual: el contrato de arriba solo mira
   // las acciones que el prompt nombra, así que esto es el guardia puesto ANTES de que haga falta.
   // El día que la línea `- proponer_subida |` entre a SISTEMA sin que el orquestador pase
   // `datosParaProponer`, este test se pone rojo — que es exactamente la falla que el repo ya pagó
   // cinco veces (la mano prometida y no cableada), atajada del lado barato.
-  proponer_subida: "datosParaProponer"
+  proponer_subida: "datosParaProponer",
+  // Por el mismo motivo que `proponer_subida`: hoy ningún prompt la nombra, así que el bucle no la
+  // mira, y el mapa completo es lo que hace que el guardia no tenga puntos ciegos. El agujero de
+  // `bajar_cap_nodo` —anunciada, cableada bajo flag, y AUSENTE de este mapa— es el precedente: el
+  // contrato dejaba pasar justo el caso que dice cubrir porque acá faltaba una línea.
+  que_paso: "quePaso"
 };
 
 test("EL CONTRATO: ninguna mano se anuncia en un prompt si el orquestador no la cablea", async () => {
@@ -666,6 +678,43 @@ test("el placement del plan NUNCA sale sin su proveedor, y el gate solo si algui
   assert.match(sinMedir, /placement SIN MEDIR \(0 mediciones\)/);
 });
 
+test("el agente VE los dominios listados por nombre: el conteo sin sustantivos no le sirve de nada", () => {
+  // EL INCIDENTE, del 2026-08-07 y con el jefe delante. El canal avisó "la IP de corp-delivery.com
+  // figura en 1 lista negra: RATS Dyna. Hay 4 dominios más en la misma", Juanes preguntó "¿cuáles
+  // son los otros 4?" y el agente contestó: "Te soy honesto, Juanes: ese dato de los otros 4 lo
+  // dije sin tener los nombres verificados delante, y no los tengo en mi lectura actual. No te voy
+  // a inventar dominios."
+  //
+  // Era LITERALMENTE CIERTO y la culpa era nuestra: `hechos.reputacion` se llenaba en cada vuelta,
+  // se usaba para `frenablesConDanio` y para las reglas del canal, y `construirPrompt` —lo único
+  // que el modelo lee— no lo miraba ni una vez. Cero ocurrencias en toda la función. El agente
+  // opinaba sobre nodos quemados sin haber visto jamás quién está en una lista negra, y cuando le
+  // preguntaron lo único que podía hacer bien era admitirlo.
+  const p = construirPrompt({
+    ...HECHOS_BASE,
+    reputacion: [
+      { dominio: "corp-delivery.com", ip: "217.216.53.43", listas: ["RATS Dyna"] },
+      { dominio: "annualfiling-ops.com", ip: "89.117.76.105", listas: ["DRONE BL"] },
+      // Los dos "no sé", que NO son lo mismo y ninguno es "limpio".
+      { dominio: "sin-preguntar.com", ip: "1.1.1.1", listas: "no-se", porPresupuesto: true },
+      { dominio: "pregunte-y-fallo.com", ip: "2.2.2.2", listas: "no-se" },
+      { dominio: "auth-rota.com", ip: "3.3.3.3", listas: [], ptr: { estado: "mal", detalle: "3.3.3.3 no tiene PTR" } }
+    ]
+  });
+
+  assert.match(p, /corp-delivery\.com \(217\.216\.53\.43\): en RATS Dyna/, "el nombre, la IP y su lista");
+  assert.match(p, /annualfiling-ops\.com \(89\.117\.76\.105\): en DRONE BL/, "cada uno con SU lista, no con la del primero");
+  assert.match(p, /2 LISTADOS/);
+  assert.match(p, /1 sin consultar por presupuesto y 1 consultados sin respuesta/, "las dos clases de 'no sé', separadas");
+  assert.match(p, /nunca limpio/, "y dicho explícitamente, que es la confusión más cara de este sistema");
+  assert.match(p, /auth-rota\.com: ptr MAL \(3\.3\.3\.3 no tiene PTR\)/, "la auth rota también, que se arregla sin esperar a nadie");
+
+  // SIN reputación no se inventa una línea tranquilizadora: silencio. Es la misma disciplina que el
+  // resto del prompt — un bloque ausente jamás se lee como "está todo limpio".
+  const sinRep = construirPrompt({ ...HECHOS_BASE });
+  assert.doesNotMatch(sinRep, /Reputación de la flota/);
+});
+
 test("los 5 reparos de la MISMA lección ocupan UNA línea con contador, no cinco", () => {
   // Medido en el archivo real: las 5 ranuras de "ERRORES QUE YA COMETISTE" estaban ocupadas por la
   // misma lección con cinco dominios distintos, o sea que la memoria de errores tenía capacidad
@@ -690,4 +739,84 @@ test("los 5 reparos de la MISMA lección ocupan UNA línea con contador, no cinc
   const p = construirPrompt(HECHOS_BASE, [...cinco, "dice que cruzaron 5 dominios y los datos dicen 9"]);
   assert.match(p, /te pasó 5 veces/);
   assert.match(p, /dice que cruzaron 5 dominios/);
+});
+
+test("el alcance de las manos cubre TODO lo que el prompt nombra, no seis campos elegidos a mano", () => {
+  // EL AGUJERO, medido el 2026-08-07 sobre los archivos reales de producción. `construirPrompt`
+  // imprime los cinco dominios en lista negra con nombre, IP y lista; `dominiosConocidos` —el
+  // alcance de las ONCE manos— se armaba enumerando seis campos que no incluían `reputacion`. De
+  // esos cinco, TRES no estaban en ninguno de los seis.
+  //
+  // Consecuencia exacta: la extensión "estar en una lista negra es daño consumado, así que se puede
+  // frenar" (scripts/ops/warmup-monitor.ts, `frenablesConDanio`) no alcanzaba a 3 de los 5 dominios
+  // para los que se escribió — porque `frenar_dominio` chequea este alcance ANTES de mirar
+  // `frenablesConDanio`, y la barrera de adentro nunca llegaba a correr.
+  //
+  // Y la misma lista estaba escrita DOS VECES a mano, una por carril, así que cada bloque nuevo del
+  // prompt abría la grieta en los dos lados a la vez. Es la clase de falla que este repo ya declaró
+  // peor que el error que previene: un rechazo falso sobre un dato que le dimos nosotros entrena a
+  // desconfiar de la barrera.
+  const hechos = {
+    ...HECHOS_BASE,
+    reputacion: [
+      { dominio: "corp-delivery.com", ip: "217.216.53.43", listas: ["RATS Dyna"] },
+      { dominio: "annualfiling-ops.com", ip: "89.117.76.105", listas: ["DRONE BL"] },
+      { dominio: "annualfilingops.com", ip: "217.216.94.132", listas: ["RATS Dyna"] },
+      { dominio: "annualfilings-infra.com", ip: "217.216.55.33", listas: ["RATS Dyna"] }
+    ],
+    vecindarios: [{ dominio: "corpfiling-infra.com", subred: "77.37.96", nodos: 4, noSanos: 1 }],
+    sinMedirVolumen: ["controldelivrix.app"]
+  } as HechosWarmup;
+
+  const alcance = dominiosDeLosHechos(hechos);
+  for (const d of ["annualfiling-ops.com", "annualfilingops.com", "annualfilings-infra.com"]) {
+    assert.ok(alcance.includes(d), `${d}: el prompt lo nombra, así que la mano tiene que alcanzarlo`);
+  }
+  assert.ok(alcance.includes("corpfiling-infra.com"), "el vecindario también se imprime con nombre");
+  assert.ok(alcance.includes("controldelivrix.app"), "y el punto ciego de volumen también");
+
+  // LA INVARIANTE, que es lo que impide que esto se vuelva a desincronizar: todo dominio que el
+  // prompt imprime tiene que estar en el alcance. Si mañana alguien agrega un bloque nuevo a
+  // `construirPrompt` y se olvida de `dominiosDeLosHechos`, este assert se pone rojo solo.
+  const DOMINIO = /\b[a-z0-9][a-z0-9-]*\.(?:com|net|org|app|io|co)\b/gi;
+  const PROVEEDORES = new Set(["gmail.com", "outlook.com", "yahoo.com", "hotmail.com", "icloud.com", "me.com", "mac.com", "aol.com"]);
+  const enElPrompt = new Set((construirPrompt(hechos, [], [], []).match(DOMINIO) ?? []).map((d) => d.toLowerCase()));
+  const enAlcance = new Set(alcance.map((d) => d.toLowerCase()));
+  const huerfanos = [...enElPrompt].filter((d) => !PROVEEDORES.has(d) && !enAlcance.has(d));
+  assert.deepEqual(huerfanos, [], "el prompt nombra dominios que ninguna mano puede tocar");
+
+  // Y NO SE ABRE DE MÁS: un dominio que nadie midió sigue afuera. Esta lista existe para que el
+  // modelo no actúe sobre algo que se inventó o que sacó de la conversación, y eso no se relaja.
+  assert.ok(!enAlcance.has("inventado-por-el-modelo.com"));
+});
+
+test("el agente VE los nodos por encima del techo: la mano que los baja ya la tenía", () => {
+  // LA CEGUERA, medida el 2026-08-07. `cap.porEncimaDelTecho` se llenaba en cada vuelta y
+  // `construirPrompt` —lo único que el modelo lee— no lo miraba ni una vez. El dato sí llegaba al
+  // jefe, porque una regla del canal lo consume; al agente no.
+  //
+  // Es peor que la ceguera de reputación del mismo día por una razón: la mano que lo resuelve
+  // (`bajar_cap_nodo`) ya existía, SOLO REDUCE, y no necesita permiso de nadie. O sea que el agente
+  // podía arreglarlo solo y lo único que le faltaba era enterarse. En producción ese día había un
+  // nodo cableado en 15.000/día contra un techo de 2.000 — siete veces y media.
+  const p = construirPrompt({
+    ...HECHOS_BASE,
+    cap: {
+      ...(HECHOS_BASE.cap as NonNullable<HechosWarmup["cap"]>),
+      porEncimaDelTecho: [
+        { dominio: "infranationalreport.com", cap: 15000 },
+        { dominio: "corpannualops.com", cap: 4000 }
+      ]
+    }
+  } as HechosWarmup);
+
+  assert.match(p, /POR ENCIMA del techo/);
+  assert.match(p, /infranationalreport\.com en 15\.000/, "con el número, que es lo que hace obvio el tamaño");
+  assert.match(p, /corpannualops\.com en 4\.000/);
+  assert.match(p, /solo baja, nunca sube/, "y que la mano no puede empeorarlo, para que no dude en usarla");
+
+  // SIN nodos por encima del techo no se inventa una línea tranquilizadora: silencio. Misma
+  // disciplina que el resto del prompt — un bloque ausente jamás se lee como "está todo bien".
+  const sinExceso = construirPrompt(HECHOS_BASE);
+  assert.doesNotMatch(sinExceso, /POR ENCIMA del techo/);
 });

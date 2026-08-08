@@ -31,6 +31,7 @@
 import {
   BLOCKED_MIN_ATTEMPTS,
   readNodeDeliveryHealth,
+  type Culpa,
   type DeliveryHealthSshRunner,
   type DeliveryHealthStatus,
   type ModoAtribucion
@@ -141,6 +142,17 @@ export interface MedicionBandeja {
    */
   entregados: number | null;
   /**
+   * De esos `entregados`, los que SALIERON DEL NODO: el total menos lo que el nodo se manda a sí
+   * mismo (su propio dominio y subdominios, el pipe de rebotes). `null` = no se leyó.
+   *
+   * Opcional porque los archivos viejos no lo traen, y quien lo lee tiene que caer a `entregados`
+   * cuando falta — no a cero, que excluiría media flota el día del despliegue.
+   *
+   * NO se le cambia el significado a `entregados`: el panel lo muestra con ese nombre y el operador
+   * lo lee como "cuánto movió el nodo". Lo que cambia es cuál de los dos DECIDE (ver plan-diario).
+   */
+  entregadosATerceros?: number | null;
+  /**
    * Mensajes trabados en la cola del nodo AHORA (no en la ventana). `null` = no se pudo leer.
    *
    * Opcional a proposito: los fixtures de sender-quota, sender-alerts y la ruta de lectura arman
@@ -152,6 +164,32 @@ export interface MedicionBandeja {
   diferidos: number | null;
   /** Receptores donde el nodo esta efectivamente cerrado. */
   cerradoEn: string[];
+  /**
+   * A QUIÉN castiga cada receptor que nos cierra o nos degrada, leído del texto de sus propios
+   * rebotes: `"ip"`, `"dominio"`, `"buzon"` o `"no-se"`. Una clave por cada nombre de `cerradoEn`
+   * más los degradados, siempre — `"no-se"` cuando el motivo no se pudo clasificar.
+   *
+   * EL DATO SE CALCULABA CADA 6 HORAS EN LOS 58 NODOS Y SE TIRABA A LA BASURA. `readNodeDeliveryHealth`
+   * ya lo publica en su veredicto (smtp-delivery-health.ts, `culpaPorProveedor`), y este mapeador —el
+   * único que persiste— lo omitía: medido sobre la copia de producción del 2026-08-08, 0 de 58
+   * bandejas lo traen. Consecuencia exacta: el archivo podía decir "cerrado en gmail.com, icloud.com"
+   * y NO tenía con qué contestar la única pregunta que cuesta plata — ¿es la IP, es el dominio, o son
+   * buzones que no existen? Que es literalmente la diferencia entre "comprá un dominio nuevo" y "no
+   * gastes un peso". Sin esto, eso sólo se contesta abriendo el mail.log crudo de un nodo por SSH,
+   * que es la pregunta que dejó a tres agentes bloqueados por política en la corrida del 2026-08-07.
+   *
+   * `{}` y NUNCA la clave ausente cuando el nodo no se pudo leer: un bloque que no está se lee como
+   * "está todo bien", y esa confusión ya costó 38 nodos cerrados leídos como sanos (2026-07-25).
+   *
+   * EL TAMAÑO ESTÁ ACOTADO POR CONSTRUCCIÓN, no por un techo que haya que mantener: las claves son
+   * exactamente `blockedProviders + degradedProviders`, y en toda la flota eso son ~30 entradas
+   * (contadas sobre la foto del 2026-08-08: 30 receptores en `cerradoEn` entre 58 bandejas).
+   *
+   * Opcional por el mismo motivo que `encolados` y `porReceptor`: hay fixtures que arman este objeto
+   * a mano. Quien lo lea tiene que tratar la AUSENCIA como "esta medición es vieja y no lo trae",
+   * jamás como "no hay culpa".
+   */
+  culpaPorProveedor?: Record<string, Culpa>;
   /**
    * Entregados/rechazados/diferidos POR RECEPTOR. Opcional, igual que `encolados` y por el mismo
    * motivo: hay fixtures que arman este objeto a mano.
@@ -260,6 +298,12 @@ export async function medirBandeja(input: {
 
   const leyoSalud = salud.status !== "unreadable";
 
+  /**
+   * Los receptores cuya fila NO se puede filtrar por tamaño, porque son justo los que decidieron el
+   * veredicto. Ver el filtro de `porReceptor` abajo para el por qué de cada lista.
+   */
+  const decidieron = new Set([...salud.blockedProviders, ...salud.degradedProviders, ...salud.sinMuestra]);
+
   return {
     domain: input.domain,
     serverSlug: input.serverSlug,
@@ -268,6 +312,10 @@ export async function medirBandeja(input: {
     ventana: salud.window,
     // null y no 0 cuando no se pudo leer: es la regla de toda la pantalla.
     entregados: leyoSalud ? salud.stats.totals.delivered : null,
+    // La misma cuenta pero SIN el correo que el nodo se manda a sí mismo. Viene calculada del
+    // veredicto en vez de rehacerse acá: la regla de qué es "propio" (dominio + subdominios) vive en
+    // smtp-delivery-health y duplicarla es que se separen sin que nadie se entere.
+    entregadosATerceros: leyoSalud ? salud.entregadosATerceros : null,
     // La cola viaja al archivo porque es la unica senal de "esta atascado AHORA": los totales de la
     // ventana dicen que paso, no que esta pasando. Sin esto el operador solo veia el veredicto.
     encolados: leyoSalud ? salud.encolados : null,
@@ -286,6 +334,11 @@ export async function medirBandeja(input: {
       : { entregados: null, rechazados: null, diferidos: null },
     ultimoEnvioNuestro: input.ultimoEnvioNuestro ?? null,
     cerradoEn: salud.blockedProviders,
+    // POR QUÉ nos cierra cada uno, no sólo quién. Sale del veredicto en vez de reclasificarse acá: la
+    // tabla de motivos (`MOTIVOS_DE_CULPA`) vive en smtp-delivery-health y tener dos copias es que se
+    // separen sin que nadie se entere. El `{}` de la rama de abajo es la mitad que importa: ausencia
+    // de bloque NO es "no hay culpa".
+    culpaPorProveedor: leyoSalud ? salud.culpaPorProveedor : {},
     // El filtro por BLOCKED_MIN_ATTEMPTS no es cosmetico: acota el TAMANO del archivo. `byProvider`
     // trae una fila por dominio receptor visto, sin techo — 58 bandejas por cientos de receptores
     // inflarian el JSON que el panel sirve entero. 20 es exactamente el minimo de intentos que el
@@ -295,9 +348,38 @@ export async function medirBandeja(input: {
     // Y suma los DIFERIDOS al conteo del filtro, aunque el clasificador no los cuente para su
     // `attempts`: si no, el receptor que solo difiere —el caso Yahoo, el que este campo existe para
     // destapar— quedaria filtrado por el mismo punto ciego que vino a arreglar.
+    //
+    // ── EL PISO NO APLICA A QUIEN DECIDIÓ EL VEREDICTO (2026-08-08) ─────────────────────────────
+    //
+    // El piso de 20 es un techo de TAMAÑO DE ARCHIVO, no una medición, y por eso no puede tapar a los
+    // receptores sobre los que el veredicto YA se pronunció: ahí un `porReceptor` vacío se lee como
+    // "no mandó nada" cuando lo que dice es "no llegó al piso". Es el modo de falla que este repo ya
+    // pagó tres veces, y tiene un lector concreto: `cruzarEntregaConPlacement` (decision-diaria.ts)
+    // imprime "nuestro MTA no reporta X en la ventana ... el cruce no se puede hacer" justo sobre el
+    // receptor que nos cerró la puerta.
+    //
+    // CUÁL DE LAS TRES LISTAS MUERDE DE VERDAD, medido y no supuesto — importa porque las dos
+    // primeras se ven necesarias y NO lo son:
+    //   · `blockedProviders` y `degradedProviders` sólo se pueblan DESPUÉS del `if (attempts <
+    //     BLOCKED_MIN_ATTEMPTS) continue` del clasificador, o sea con `delivered + blocked >= 20`.
+    //     Como el filtro de acá suma además los diferidos, todo lo que entra ahí ya pasaba: es un
+    //     no-op POR CONSTRUCCIÓN. Verificado sobre la foto de producción del 2026-08-08: 30 de 30
+    //     receptores de `cerradoEn` ya estaban en `porReceptor`, cero ausentes. Se dejan igual porque
+    //     el que lee esta línea no puede deducir eso sin ir al otro archivo, y si algún día los dos
+    //     pisos se separan, la garantía tiene que estar acá y no en una coincidencia.
+    //   · `sinMuestra` es la que muerde, y es exactamente la inversa: se puebla SÓLO por abajo del
+    //     piso (el receptor rechazó casi todo y no alcanzó para acusarlo), así que sus filas son las
+    //     únicas que el filtro tiraba siempre. Es el veto que desde el 2026-08-08 convierte `healthy`
+    //     en `insufficient_sample`, y sin su fila el archivo publicaba el estado nuevo sin UN solo
+    //     número que lo respaldara. El caso reproducido por el camino de producción: 1 entrega + 9
+    //     rechazos 550-5.7.1 de Gmail (10 intentos, la mitad del piso) — el nodo queda vetado y
+    //     `porReceptor` salía `[]`.
+    //
+    // La cola larga de NFC —miles de receptores con dos o tres líneas— sigue con el piso de 20
+    // intacto, que es lo que mantiene acotado el JSON que el panel sirve entero.
     porReceptor: leyoSalud
       ? salud.stats.byProvider
-          .filter((p) => p.delivered + p.blocked + p.deferred >= BLOCKED_MIN_ATTEMPTS)
+          .filter((p) => p.delivered + p.blocked + p.deferred >= BLOCKED_MIN_ATTEMPTS || decidieron.has(p.provider))
           .map((p) => ({
             receptor: p.provider,
             entregados: p.delivered,
@@ -403,15 +485,33 @@ export async function medirFlota(input: {
   // sobreescribe el archivo entero, una lectura de volumen fallida borraria un cruce conocido y la
   // fabrica venderia verde un dominio quemado para siempre. Unimos con la corrida anterior: un
   // cruce solo se AGREGA (cuando el volumen lo lee sobre el umbral), nunca se quita.
+  //
+  // Y EL CIERRE DEL RECEPTOR SE ARRASTRA IGUAL, por el mismo motivo con otra forma. `estado`,
+  // `cerradoEn` y `porReceptor` se recalculan enteros sobre la ventana de 5 días por fecha de
+  // linea: un nodo que DEJA de mandar vuelve solo a `no_traffic` 0/0/0 con `cerradoEn: []`, o sea
+  // que se auto-absuelve por el paso del tiempo. No es teorico y tiene fecha: NFC dejo de inyectar
+  // por el /24 80.190.73.x el 2026-08-05, asi que alrededor del 9-11 de agosto sus TRES nodos
+  // pasan solos a `no_traffic` — y `no_traffic` es justo la puerta por la que `elegirPool` deja
+  // entrar a los dominios nuevos. controlstatecorp.com tiene 56 rechazos 550-5.7.1 de Gmail de
+  // hace cuatro dias y quedaria leido como "nodo nuevo, candidato natural a arrancar". Ya paso
+  // una vez: nationalfiling-infra.com estuvo en el pool el 2026-08-05 y mando un correo real.
+  //
+  // ponytail: sin caducidad — un cierre se olvida solo si alguien borra el campo a mano. Es la
+  // misma regla que `cruzados` y nadie se quejo; si algun dominio se recupera de verdad, el
+  // des-pegado es un acto humano deliberado, que es lo correcto para algo casi irreversible.
   const previa = await leerUltimaMedicion(input.workspace);
   if (previa) {
     const cruzadosPrevios = new Map<string, ProviderFamily[]>();
+    const cerradosPrevios = new Map<string, string[]>();
     for (const b of previa.bandejas) {
       if (b.cruzados.length > 0) cruzadosPrevios.set(b.domain, b.cruzados);
+      if ((b.cerradoEn ?? []).length > 0) cerradosPrevios.set(b.domain, b.cerradoEn);
     }
     for (const b of bandejas) {
       const antes = cruzadosPrevios.get(b.domain);
       if (antes) b.cruzados = [...new Set([...b.cruzados, ...antes])];
+      const cerradoAntes = cerradosPrevios.get(b.domain);
+      if (cerradoAntes) b.cerradoEn = [...new Set([...b.cerradoEn, ...cerradoAntes])];
     }
   }
 

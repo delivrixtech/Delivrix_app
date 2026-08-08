@@ -180,6 +180,7 @@ export function rampaDesdeEnv(env: NodeJS.ProcessEnv): {
   limiteDiario: number;
   pasoPorDia: number;
   soloDiasHabiles: boolean;
+  pisoSostener: number;
 } {
   const leer = (raw: string | undefined, fallback: number): number => {
     const t = (raw ?? "").trim();
@@ -199,7 +200,20 @@ export function rampaDesdeEnv(env: NodeJS.ProcessEnv): {
     // Default `false` = exactamente lo de hoy: no cambia un solo correo hasta que alguien lo escriba.
     // Y cuando se escriba SOLO PUEDE BAJAR el volumen (sábado y domingo dan 0), que es la única
     // dirección que este lote tiene permitido mover sin pasar por el operador.
-    soloDiasHabiles: (env.WARMUP_RAMPA_SOLO_DIAS_HABILES ?? "").trim().toLowerCase() === "true"
+    soloDiasHabiles: (env.WARMUP_RAMPA_SOLO_DIAS_HABILES ?? "").trim().toLowerCase() === "true",
+    // CUARTA PALANCA, Y ES LA ÚNICA QUE PUEDE DESTRABAR LA FÁBRICA. Ver la nota larga arriba de
+    // `pisoConEvidencia` en `decidirCupoDeHoy`.
+    //
+    // Existe porque el problema central del encargo —"36 correos en 5 días, 58 dominios comprados y
+    // 6 calentando"— se entregaba como PROSA: la propuesta era "subir el piso de sostener de 2 a N"
+    // y el piso era `export const CUPO_ARRANQUE = 2`, una constante dura. Lo único configurable era
+    // `WARMUP_LIVE_PLACEMENT_WINDOW`, que no destraba nada (con n=20 el gate de Wilson pide 17/20 =
+    // 85% y el mejor dominio de la flota mide 83%). O sea que no había NADA que el operador pudiera
+    // aprobar: una decisión sin implementación detrás.
+    //
+    // Default `CUPO_ARRANQUE` ⇒ hoy no cambia un solo cupo. Y `leer` ya es fail-closed: basura cae
+    // al default, así que un valor mal escrito no puede subir el volumen por accidente.
+    pisoSostener: leer(env.WARMUP_RAMPA_PISO_SOSTENER, CUPO_ARRANQUE)
   };
 }
 
@@ -264,6 +278,13 @@ export interface EntradaDecision {
    * `rampaDesdeEnv` para que el daemon y el panel no puedan divergir.
    */
   soloDiasHabiles?: boolean;
+  /**
+   * EL PISO DE "SOSTENER" QUE EL OPERADOR PUEDE APROBAR (`WARMUP_RAMPA_PISO_SOSTENER`).
+   *
+   * Ausente ⇒ `CUPO_ARRANQUE`, o sea exactamente el comportamiento de hoy. Sólo se aplica a un
+   * dominio con muestra suficiente Y entrega sana; ver `pisoConEvidencia` abajo.
+   */
+  pisoSostener?: number;
 }
 
 /**
@@ -301,8 +322,43 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   // que el clamp existe para evitar. Y con el ENVIADO como base ya se probó que hace lo contrario
   // (frena a los sanos, suelta a los que no mandaron); ver el campo en `EntradaDecision`.
   //
-  // Ausente o 0 ⇒ `dailyQuota` no clampea (no se puede multiplicar desde cero), o sea el
-  // comportamiento de hoy exacto. Sólo puede BAJAR.
+  // Y ACÁ EL CLAMP DEJA DE FALLAR ABIERTO, que es el estado en el que está la producción HOY.
+  //
+  // `dailyQuota` (ramp.ts:88-94) sólo clampea `if (twoDaysAgo > 0)`: SIN el dato el clamp
+  // desaparece y la rampa salta libre. Y el dato no está — medido contra la Postgres viva el
+  // 2026-08-07: de las 54 filas `sent` de TODA la historia de warmup_activity, las que llevan
+  // `detail.cupoDelDia` son CERO. El árbol desplegado es eb6b373 y el daemon que lo graba se
+  // relanzó a las 17:59:27 hora local de ese día, o sea que la baranda es código nuevo sin una
+  // sola vuelta de evidencia. Corrido con el código real: día 20 con ventana 6/6 y sin el campo
+  // daba cupo 20; con el campo en 2 da 6. Ésa es la firma 10× en 24 h que el §10 existe para
+  // evitar, y estaba abierta justo en el momento en que se va a destrabar la rampa.
+  //
+  // Y el hueco NO se cierra solo cuando el daemon empiece a grabar: con 6 dominios rotando, uno
+  // que no mandó hace dos días vuelve a quedar sin dato y sin clamp.
+  //
+  // FALTA DE DATO ⇒ SE ASUME EL PISO (`CUPO_ARRANQUE`), no "sin techo". Con el piso, la primera
+  // subida de un dominio no puede pasar de 3×2 = 6/día. Sólo puede BAJAR el cupo respecto de lo
+  // que salía antes: nunca sube ninguno.
+  //
+  // El `> 0` explícito y no un `||` a secas: un valor negativo o NaN (el campo sale de un
+  // `detail->>'cupoDelDia'` parseado) es truthy o cae en `clampNonNegativeInt` a 0, y las dos
+  // formas devuelven el fail-open que esta línea vino a cerrar.
+  //
+  // UNA SOLA REGLA PARA LOS DOS CONSUMIDORES DEL DATO (el clamp de acá y el piso de `sostenido`,
+  // 120 líneas abajo). Estaban escritas distinto y la segunda usaba `??`, que NO atrapa NaN: `NaN ??
+  // x` devuelve NaN. Con eso `decidirCupoDeHoy` salía con `cupo: NaN` por la rama `sostener` y el
+  // tope diario del dominio DESAPARECÍA — el gate del daemon es `enviadosHoyBox >= delDia.cupo` y
+  // `n >= NaN` es false para todo n. Reproducido con el código real: ventana 5/6 (la de producción)
+  // + `cupoAutorizadoHace2Dias: NaN` ⇒ `sostener cupo=NaN`, y `puedeMandarTurno` con 10.000 enviados
+  // contestaba `si:true · "tiene NaN de cupo libre hoy"`.
+  //
+  // No es alcanzable HOY desde la base (el SQL filtra con `~ '^[0-9]+$'` y `cupoAutorizadoVigente`
+  // descarta con `Number.isFinite`), y por eso mismo va acá y no allá: la próxima entrada del campo
+  // —un endpoint, una orden, otro lector— no tiene por qué saber que este archivo se apoya en el
+  // filtro del SQL. `x > 0` ya rechaza NaN, negativos y el 0 (que en `dailyQuota` significa "sin
+  // clamp"); lo que faltaba era usarlo en los DOS lugares.
+  const positivo = (x: number | undefined): number | null => (typeof x === "number" && x > 0 ? x : null);
+  const baseDelClamp = positivo(e.cupoAutorizadoHace2Dias) ?? CUPO_ARRANQUE;
   const rampa = dailyQuota(
     {
       dailyLimit: e.limiteDiario ?? RAMPA_LIMITE_DIARIO_DEFAULT,
@@ -314,7 +370,7 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
       weekdaysOnly: e.soloDiasHabiles ?? false
     },
     e.isoWeekday,
-    { quotaTwoDaysAgo: e.cupoAutorizadoHace2Dias ?? 0 }
+    { quotaTwoDaysAgo: baseDelClamp }
   );
 
   const contra = (n: number, accion: AccionDiaria, motivo: string): DecisionDiaria => {
@@ -379,7 +435,79 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   // El comentario de la rama de la tasa cruda ya declaraba el invariante ("'Bajar' no puede
   // terminar mandando más que 'sostener'") y lo cuidaba en el borde de MUESTRA_MINIMA; la puerta
   // abierta era la de al lado. Ahora vale POR CONSTRUCCIÓN: subir ≥ sostener ≥ bajar ≥ frenar.
-  const sostenido = Math.min(rampa, Math.max(CUPO_ARRANQUE, e.cupoHace2Dias ?? CUPO_ARRANQUE));
+  //
+  // Y EL PISO SE ANCLA AL CUPO AUTORIZADO, NO A LOS ENVÍOS — es el MISMO error que este archivo ya
+  // diagnosticó y arregló para el clamp treinta líneas más arriba, y que quedó vivo acá abajo.
+  // `cupoHace2Dias` son los correos que SALIERON, y los que salen están topados por un límite
+  // GLOBAL del daemon (`WARMUP_LIVE_MAX_PER_DAY=14` para TODA la flota, verificado en el
+  // gateway.env de la Studio), así que dan 1-8 y casi siempre 2 sin relación con lo que el dominio
+  // tenía permitido. Medido con el código real: un dominio ya autorizado a 20/día que saca 5 de 6
+  // (83%) caía a cupo 2 porque anteayer mandó 2 y no 20 — o sea que "sostener" DEMOTABA, y el plan
+  // hacía sierra 20→2→6→6→18→20→2 mientras el panel decía "sostener".
+  //
+  // ── CUÁNTO VOLUMEN MUEVE ESTO, CON EL NÚMERO PUESTO ────────────────────────────────────────
+  //
+  // La versión anterior de este comentario decía "HOY NO MUEVE UN SOLO CUPO", y era cierto el día
+  // que se escribió: con autorizado = enviado = 2 en los seis del pool, no cambia nada. Pero
+  // `cupoAutorizadoHace2Dias` sale de `detail.cupoDelDia`, que el daemon YA graba en producción, así
+  // que el dato aparece solo a las ~48 h y ahí la frase pasa a ser falsa sin que nadie toque nada.
+  // Absolverse por el calendario es EXACTAMENTE la falla que este mismo lote vino a matar en el
+  // sensor de salud (un nodo bloqueado deja de mandar, a los 5 días la evidencia se cae de la
+  // ventana y sale `healthy`). Así que va el envelope medido en vez de una frase que vence.
+  //
+  // MEDIDO corriendo las DOS versiones día por día, realimentando la decisión como
+  // `cupoAutorizadoHace2Dias` (que es como funciona de verdad: el autorizado de hace dos días es lo
+  // que ESTA función decidió ese día), con los valores de producción (limiteDiario 40, paso 2):
+  //   · ventana perfecta 6/6 INBOX ⇒ NUEVO y HEAD dan la MISMA serie, 2 4 6 8 … hasta el techo.
+  //     El techo no se mueve: sigue siendo `limiteDiario` o la pared del nodo, lo que llegue antes.
+  //   · sube 12 días y se degrada al 50% ⇒ HEAD cae 20→2 en UN día; NUEVO planea 20→10→5→2 en
+  //     cuatro. Sobre 24 días: 196 correos contra 174, +13%.
+  //   · salto máximo día-a-día en toda la trayectoria alcanzable: 2×, y lo topa el clamp 3×/48h.
+  //
+  // O SEA: no hay un salto de 2 a 20 en un día. Un barrido del producto cartesiano SÍ lo encuentra
+  // (autorizado 40 contra un HEAD que ve 2), pero ese par de estados no puede coexistir: para tener
+  // 40 autorizado hace dos días hay que haber rampeado hasta 40 pasando el gate de Wilson cada vez.
+  // Alimentar las dos versiones con historias que no pueden ser simultáneas mide la diferencia entre
+  // dos fixtures, no entre dos comportamientos — la misma trampa del fixture de Bedrock, un piso
+  // más arriba. La diferencia REAL es planear en vez de caer en picada, y son +22 correos en 24 días.
+  //
+  // El test `el envelope de volumen no se mueve por calendario` pinta esas series y las afirma.
+  //
+  // El orden es autorizado → enviado → piso, y no autorizado a secas: mientras el daemon no tenga
+  // dos días grabando `cupoDelDia`, el enviado es la única memoria que hay de que este dominio ya
+  // venía mandando algo.
+  //
+  // EL PISO DEL OPERADOR (`WARMUP_RAMPA_PISO_SOSTENER`) SÓLO ENTRA ACÁ, Y SÓLO CON EVIDENCIA. Es la
+  // ÚNICA palanca que puede destrabar la fábrica sin tocar código: hoy los seis del pool sostienen
+  // en `CUPO_ARRANQUE`=2 porque la rampa pide `wilsonLowerBound >= 0,60` y el mejor dominio mide 5
+  // de 6 (0,51 de piso), o sea que "sostener 2" es un punto fijo del que nadie sale solo. Sin la
+  // env var la propuesta al operador era un párrafo: "subir el piso de 2 a N" sobre una constante
+  // dura, sin nada que aprobar.
+  //
+  // Las dos condiciones no son decoración, son lo que impide que la palanca sea un cheque en blanco:
+  //   · `muestra >= MUESTRA_MINIMA` ⇒ un dominio SIN medición nunca sube por esta puerta (esa rama
+  //     retorna arriba con `Math.min(rampa, CUPO_ARRANQUE)` y ni llega hasta acá);
+  //   · `cruda >= PISO_SANO` ⇒ el piso NO levanta al que está entregando mal. Las ramas `frenar` y
+  //     `bajar` viven abajo y `bajar` topa en `sostenido/2`, así que subir el piso no puede subir el
+  //     volumen de un dominio que se está yendo a spam más allá de la mitad.
+  // Y sigue topado por `rampa` y por la pared del nodo, como todo lo demás.
+  //
+  // Default 2 = `CUPO_ARRANQUE` ⇒ HOY NO CAMBIA UN SOLO CORREO. Ése es el punto: la decisión de
+  // subirlo es del operador (regla 6 del encargo: lo que aumenta volumen se PROPONE), y ahora tiene
+  // dónde escribirse.
+  const pisoConEvidencia =
+    muestra >= MUESTRA_MINIMA && cruda >= PISO_SANO
+      ? Math.max(CUPO_ARRANQUE, e.pisoSostener ?? CUPO_ARRANQUE)
+      : CUPO_ARRANQUE;
+  // `positivo(...)` y NO `?? ... ?? ...`: ver el comentario del `positivo` allá arriba. Ésta era la
+  // mitad sin defender, y es la que gobierna la rama `sostener` — o sea la rama por la que pasa la
+  // ventana REAL de producción (5 de 6). La otra mitad, el clamp, ya estaba cerrada, y el test que
+  // decía cubrir el NaN lo probaba con `inbox(6)`: ventana perfecta ⇒ rama `subir` ⇒ la única que no
+  // tenía el agujero. El test y el código compartían la suposición.
+  const sostenido = Math.min(
+    rampa,
+    Math.max(pisoConEvidencia, positivo(e.cupoAutorizadoHace2Dias) ?? positivo(e.cupoHace2Dias) ?? CUPO_ARRANQUE)
+  );
   const detalleCrudo =
     `${inbox} de ${e.placements.length} correos llegaron a bandeja` +
     (tragados > 0 ? ` (${tragados} se los tragaron sin dejar rastro)` : "");
@@ -395,8 +523,31 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   if (cruda < PISO_SANO) {
     // A la MITAD, no a cero. Un dominio que deja de mandar no recupera reputación: se queda
     // quieto. Lo que reconstruye es volumen bajo con buena señal.
+    //
+    // SE DIVIDE EL PISO TAMBIÉN, NO SÓLO EL TECHO, Y ESO ES LO QUE HACE QUE "BAJAR" BAJE.
+    //
+    // El clamp decía `Math.min(rampa/2, sostenido)`, y desde que `sostenido` se ancló al cupo
+    // AUTORIZADO (treinta líneas más arriba) esa cota se REALIMENTA: autorizado(hoy) = lo que esta
+    // misma rama decidió anteayer, así que la serie llega a un punto fijo y se queda ahí para
+    // siempre. Medido corriendo el código real, sin tocar producción:
+    //   · día 20 con autorizado 20 y ventana de 6: `sostener` (5/6, 83%) y `bajar` (4/6, 67%) daban
+    //     LOS DOS cupo 20 — la señal de degradación no movía un solo correo;
+    //   · un dominio que rampea a 20 y después entrega 67% para siempre se estacionaba en 11-13/día
+    //     indefinidamente (d11=11 d12=12 d13=13 d14=11 … d30=12). Antes de anclar el piso al
+    //     autorizado se estacionaba en 3. Cuatro veces más volumen sostenido sobre un dominio que se
+    //     está yendo a spam, y sin decisión de nadie.
+    // El test de monotonía existente no lo cazaba porque compara con `>=`: `sostener == bajar` pasa.
+    //
+    // Con el piso dividido la serie DESCIENDE: 20 → 10 → 5 → 2 en cuatro pasos, y ahí se queda.
+    //
+    // EL SUELO DE LA DIVISIÓN ES `CUPO_ARRANQUE`, NO 1, Y NO ES COSMÉTICA. Con `1` se rompía la
+    // monotonía por el OTRO borde, y hay dos tests que lo cazan: la rama de `muestra <
+    // MUESTRA_MINIMA` devuelve `min(rampa, CUPO_ARRANQUE)` = 2 sin mirar el placement, así que un
+    // dominio con 4 correos TRAGADOS (peor señal, muestra chica) mandaba 2 y el mismo dominio con 2
+    // tragados y 4 medidos al 67% mandaba 1. Peor placement, más volumen: la dirección insegura, la
+    // misma puerta por la que este archivo ya se metió una vez.
     return contra(
-      Math.min(Math.max(1, Math.floor(rampa / 2)), sostenido),
+      Math.min(Math.max(1, Math.floor(rampa / 2)), Math.max(CUPO_ARRANQUE, Math.floor(sostenido / 2))),
       "bajar",
       `placement ${pct(cruda)}: ${detalleCrudo}. Se baja a la mitad y se sigue mandando`
     );
@@ -435,6 +586,14 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
     );
   }
 
+  // LO QUE ESTE CAMINO NO TIENE Y NO ES UN PENDIENTE OLVIDADO — va escrito acá para que nadie lo
+  // agregue creyendo que falta:
+  //   · NO hay un paso máximo de subida (`min(rampa, ayer + paso)`). Sería un segundo freno sobre
+  //     exactamente lo mismo que ya frena el clamp 3×/48h, que desde este lote es fail-closed y por
+  //     lo tanto EFECTIVO: la primera subida de un dominio sin historial topa en 6/día.
+  //   · NO se toca `diasCorridos` (rotacion.ts) para contar días-con-envío en vez de días de
+  //     calendario. Mueve el volumen de TODOS los dominios a la vez —eso se le propone al operador,
+  //     no se ejecuta— y el clamp fail-closed ya neutraliza el salto por calendario.
   return contra(
     rampa,
     e.diaN > 1 ? "subir" : "arrancar",
@@ -466,8 +625,9 @@ export function puedeMandarTurno(e: {
   decision: DecisionDiaria;
   enviadosHoy: number;
   /**
-   * Las mediciones PROPIAS de este dominio en la ventana. Obligatorio a propósito: con un default
-   * generoso, el llamador que se olvide de pasarlo desactiva la regla de abajo sin enterarse.
+   * Las mediciones PROPIAS de este dominio en la ventana. Ya NO es el gate del turno —lo es el cupo,
+   * ver la regla de abajo— pero sigue siendo obligatorio y sigue viajando al motivo: es el número
+   * que explica POR QUÉ el dominio está en el piso, y el log del daemon es donde esto se audita.
    */
   medicionesPropias: number;
   /**
@@ -507,36 +667,88 @@ export function puedeMandarTurno(e: {
       motivo: `${e.dominio} → ${e.decision.accion}, cupo ${cupo}/día (van ${e.enviadosHoy})`
     };
   }
-  // EL TURNO DE CONTINUACIÓN NO SE COME LA MEDICIÓN DEL DÍA.
+  // EL TURNO DE CONTINUACIÓN NO SE COME LA MEDICIÓN DEL DÍA MIENTRAS EL DOMINIO ESTÉ EN EL PISO.
   //
-  // Un dominio nuevo tiene cupo 2/día y necesita MUESTRA_MINIMA mediciones PROPIAS para que la
-  // rampa lo deje subir. El envío principal (`runLiveCycle`) mide dónde cayó; el turno de
-  // continuación solo graba `sent` y no mide nada — no hay paso de medición en ese camino.
+  // El envío principal (`runLiveCycle`) mide dónde cayó; el turno de continuación solo graba `sent`
+  // y no mide nada — no hay paso de medición en ese camino. Peor: cuando la respuesta del hilo SÍ
+  // se mide, la fila sale etiquetada `origen = 'continuación de hilo'` y `filasDePlacement`
+  // (plan-diario.ts) la EXCLUYE de la ventana con `(detail->>'origen') IS DISTINCT FROM
+  // 'continuación de hilo'`. O sea que el "Re:" gasta cupo y no aporta una sola fila a la ventana
+  // que gobierna el volumen de ese dominio.
   //
-  // Medido en producción el 2026-08-06: de 18 envíos, 11 principales y 7 continuaciones, y tres de
-  // los cinco dominios nuevos (annualfilings-control.com, annualfilings-ops.com,
-  // statefilings-control.com) gastaron 1 de sus 2 envíos en un "Re:". Se quedaron con UNA medición
-  // en el día: juntan las 4 en cuatro días en vez de dos. No cuesta un correo más — es el mismo
-  // volumen mejor gastado.
+  // LA CONDICIÓN ES EL CUPO, NO LA MUESTRA, y el cambio es el corazón de este lote. La primera
+  // versión cortaba por `medicionesPropias < MUESTRA_MINIMA`, o sea que la regla se APAGABA justo
+  // cuando el dominio empezaba a servir. Medido en la Postgres viva el 2026-08-07: de 51 envíos de
+  // 10 días, 15 fueron continuaciones, y corpfiling-infra.com —el mejor de la flota, 12 mediciones
+  // propias, 83% de bandeja— gastó 6 de sus 21 envíos en un "Re:" que no entra a su ventana. A
+  // cupo 2 con una continuación por día su ritmo útil cae de 2 a 1 medición/día: 10 mediciones
+  // vivas contra las ~14 que el gate de Wilson le pediría para graduarse. EL DOMINIO QUE MEJOR
+  // ENTREGA NO PUEDE GRADUARSE MIENTRAS CONVERSA, y con el corte viejo era el único al que la
+  // regla no lo protegía.
   //
-  // Se acota a los que todavía no juntaron muestra: apenas la tienen, vuelven a continuar hilos.
-  // Aplicarla a toda la flota le sacaría la mitad de la conversación a corpfiling-infra.com, que
-  // hoy hace 4 continuaciones con 83% de bandeja — y la conversación multivuelta también construye
-  // reputación.
+  // No cuesta un correo más: es el MISMO volumen mejor gastado (por eso no necesita autorización
+  // del operador). Y la salida es automática, nadie tiene que acordarse de nada: apenas la rampa
+  // levanta al dominio del piso (cupo > CUPO_ARRANQUE) la conversación multivuelta vuelve sola, y
+  // ahí ya le sobra cupo para las dos cosas.
   //
-  // LA CONDICIÓN ES "todavía no junté muestra", A SECAS. La primera versión decía
-  // `medicionesPropias < MUESTRA_MINIMA && enviadosHoy + 1 >= cupo`, o sea que solo atajaba el
-  // ÚLTIMO envío del día — y con cupo 2 y 0 enviados el "Re:" salía igual, que es justo el caso
-  // medido: `hilosParaContinuar` devuelve hilos de cualquier dominio de la semilla en 7 días, así
-  // que el turno cae rutinariamente en un dominio que todavía no mandó hoy y le come la PRIMERA de
-  // sus dos oportunidades. annualfilings-control.com se quedó en 1 continuación, 1 principal, 1
-  // medición: la mitad del día gastada en un turno que no mide nada.
-  if (e.medicionesPropias < MUESTRA_MINIMA) {
+  // El caso que la primera versión NO atajaba y éste tampoco puede volver a abrir: con cupo 2 y 0
+  // enviados el "Re:" salía igual, porque `hilosParaContinuar` busca por SEMILLA y ventana de 7
+  // días, no por el box de la vuelta — el turno cae rutinariamente en un dominio que todavía no
+  // mandó hoy y le come la PRIMERA de sus dos oportunidades (annualfilings-control.com: 1
+  // continuación, 1 principal, 1 medición en el día).
+  //
+  // ES LA CONJUNCIÓN, NO LA SUSTITUCIÓN, Y ACÁ ESTÁ EL PORQUÉ. Cortar sólo por `cupo <=
+  // CUPO_ARRANQUE` APAGA LA CONVERSACIÓN MULTIVUELTA EN TODA LA FLOTA: los SEIS dominios del pool
+  // están hoy en cupo 2 y ninguno se mueve de ahí solo (la rampa exige un piso de Wilson de 0,60 y
+  // el mejor mide 0,51), así que la condición de salida "cupo > 2" no la cumple nadie y la regla
+  // deja de tener fecha de vuelta. Corrido con el código real sobre las seis ventanas de producción:
+  // los seis daban `si:false`, incluido corpfiling-infra.com con 12 mediciones propias y 83% de
+  // bandeja.
+  //
+  // LO QUE ESTA CONJUNCIÓN **NO** ES: el freno que devuelve la medición perdida. Ése es el guarda de
+  // abajo, y la distinción se pagó con un comentario falso. La conjunción es HOY EQUIVALENTE a la
+  // condición de HEAD (`medicionesPropias < MUESTRA_MINIMA` sola) en todo estado alcanzable:
+  // `decidirCupoDeHoy` devuelve `Math.min(rampa, CUPO_ARRANQUE)` mientras `muestra < MUESTRA_MINIMA`,
+  // así que `cupo > CUPO_ARRANQUE` IMPLICA `muestra >= MUESTRA_MINIMA`, y `medicionesPropias` sale
+  // del MISMO array que `muestra` (live-warmup-daemon.ts pasa `propias.length`). Barrido exhaustivo
+  // con el código real —11.880 combinaciones de ventana × diaN × cupoFisico × isoWeekday ×
+  // pisoSostener—: CERO estados con `cupo > 2` y menos de 4 mediciones, y CERO veredictos distintos
+  // contra HEAD. Se conserva igual porque expresa la REGLA (con cupo de sobra, un "Re:" no le saca
+  // la medición a nadie) y esa regla tiene que seguir valiendo el día que la rampa se destrabe; lo
+  // que no puede seguir es leerse como si cambiara algo hoy.
+  if (cupo <= CUPO_ARRANQUE && e.medicionesPropias < MUESTRA_MINIMA) {
     return {
       si: false,
       motivo:
-        `${e.dominio} tiene ${e.medicionesPropias} de ${MUESTRA_MINIMA} mediciones propias: sus ${cupo} envíos del día ` +
-        `van al ciclo principal, que MIDE dónde cayó — el "Re:" no mide nada`
+        `${e.dominio} está en el piso de la rampa (cupo ${cupo}/día) y todavía le falta muestra ` +
+        `(${e.medicionesPropias} de ${MUESTRA_MINIMA} mediciones propias): sus envíos del día van al ciclo ` +
+        `principal, que MIDE dónde cayó — el "Re:" no entra a la ventana que gobierna su volumen`
+    };
+  }
+  // Y EL "Re:" NUNCA SE QUEDA CON LA ÚLTIMA RANURA DEL DÍA. Éste es el guarda que muerde de verdad,
+  // y es el que devuelve la medición que se estaba perdiendo en los dominios que YA tienen muestra —
+  // los que la conjunción de arriba deja pasar enteros.
+  //
+  // Medido en la Postgres viva (7 días): 51 envíos, 15 continuaciones, y CERO de ellas produjo una
+  // fila `measured`. `filasDePlacement` (plan-diario.ts) excluye el origen 'continuación de hilo' de
+  // la ventana con `IS DISTINCT FROM`, así que ese correo gasta cupo y no aporta un dato a la ventana
+  // que gobierna su propio volumen. corpfiling-infra.com —el mejor de la flota, y el dominio del que
+  // trata el encargo— hizo 21 envíos y sacó 12 mediciones en vez de ~18: 29% del correo tirado justo
+  // donde el gate de Wilson le está pidiendo n≈14 para graduarse. Con la conjunción sola, 5 de los 6
+  // dominios del pool seguían habilitados a hacer exactamente eso.
+  //
+  // NO apaga la conversación multivuelta, que es la objeción legítima contra `cupo <= CUPO_ARRANQUE`
+  // a secas: con cupo 2 el turno sigue saliendo, sólo que en la PRIMERA ranura y no en la última, así
+  // que siempre queda una para el ciclo principal, que es el único que mide. Y con
+  // `WARMUP_RAMPA_PISO_SOSTENER` arriba de 2 se afloja solo.
+  //
+  // Sólo puede BAJAR volumen ⇒ no necesita autorización del operador (regla 6 del encargo).
+  if (cupo - e.enviadosHoy <= 1) {
+    return {
+      si: false,
+      motivo:
+        `${e.dominio} tiene UNA sola ranura libre hoy (cupo ${cupo}/día, van ${e.enviadosHoy}) y esa es ` +
+        `la que MIDE: el "Re:" se graba como 'continuación de hilo' y su ventana de placement lo excluye`
     };
   }
   return { si: true, motivo: `${e.dominio} tiene ${cupo - e.enviadosHoy} de cupo libre hoy` };

@@ -187,6 +187,81 @@ test("el estado que significa 'no sé' NO vende cupo: sin muestra propia es gris
   assert.equal(c.asignada, 2000, "lo que el operador asigno no se pierde, solo no se sirve");
 });
 
+// ── Un estado que este modulo no conoce no puede nacer verde ────────────────────────────────────
+//
+// Estos dos tests no protegen un estado que exista: protegen al que TODAVIA NO EXISTE. La cadena de
+// `if` de evaluarBandeja nombra estados de a uno y lo que no coincide con ninguno cae al verde final,
+// asi que `DeliveryHealthStatus` puede crecer sin que el compilador diga una palabra. Ya paso dos
+// veces (`no_own_traffic` el 2026-08-06, `stalled` antes), y hay un tercero en camino.
+//
+// El cast a `MedicionBandeja["estado"]` es a proposito: si el estado estuviera en la union, el test
+// probaria la rama que alguien acaba de escribir. Lo que hay que probar es el DEFAULT.
+
+test("el caso annualcorp-control.com: cuando el sensor deje de decir 'healthy', la fila no vende cupo", () => {
+  // LA FILA ES REAL Y ESTA COPIADA, no inventada: es el objeto tal cual esta hoy en
+  // /Users/Shared/delivrix/runtime/openclaw-workspace/inventory/sender-measurement.json de la
+  // Studio, medicion del 2026-08-08T02:08:43.786Z, leido en solo lectura para este ticket.
+  //
+  // El nodo: 80.190.76.57, contabo-203443552. En la ventana del 2026-08-07 20:05 UTC el sensor lo
+  // vio 165 entregados / 136 rechazados y dijo `blocked_by_provider`. Tres horas despues la ventana
+  // de 5 dias solto el 3 de agosto —el dia de la rafaga, 149 entregados y 135 rechazos— y quedaron
+  // 16/1. Con 17 intentos, por debajo de BLOCKED_MIN_ATTEMPTS=20, el sensor NO EMITE VEREDICTO: el
+  // bucle hace `continue`, la ausencia sale `blockedProviders: []` y la funcion cae al
+  // `return veredicto("healthy", ...)` del final. De los 136 rechazos, 134 decian literalmente
+  // "Gmail has detected that this message is likely suspicious due to the very low reputation of
+  // the sending domain". Los 16 "entregados" son 16 de 16 al pipe local de rebotes: entregas reales
+  // a un tercero, CERO.
+  //
+  // Y `cerradoEn` esta VACIO: el trinquete pegajoso de sender-measurement NO lo tapa. O sea que hoy
+  // esta bandeja esta verde y sirve su asignada entera.
+  //
+  // Este test no puede arreglar el sensor —eso es otro lote— pero fija el cable: el dia que el
+  // veredicto sea "no se" en vez de "sano", aca ya esta cerrado. Si alguien lo abre, esto se pone
+  // rojo antes de que la fabrica venda cupo sobre un dominio que Gmail tiene cerrado.
+  const filaReal: MedicionBandeja = {
+    domain: "annualcorp-control.com",
+    serverSlug: "contabo-203443552",
+    estado: "insufficient_sample" as MedicionBandeja["estado"],
+    detalle: "16 entregados, 1 rechazados",
+    ventana: "últimos 5 días de mail.log (por fecha de la línea)",
+    entregados: 16,
+    encolados: 2,
+    rechazados: 1,
+    diferidos: 17,
+    atribucion: { modo: "todo", queueIds: 0, descartados: 0 },
+    ajeno: { entregados: 0, rechazados: 0, diferidos: 0 },
+    ultimoEnvioNuestro: null,
+    cerradoEn: [],
+    porReceptor: [],
+    picos: [],
+    cruzados: [],
+    cerca: []
+  };
+  const c = evaluarBandeja(inv({ domain: "annualcorp-control.com" }), filaReal, 2000, TECHO);
+  assert.notEqual(c.color, "verde", "un veredicto que este modulo no sabe leer NUNCA nace verde");
+  assert.equal(c.color, "gris");
+  assert.equal(c.hoyPuede, 0, "la fabrica no vende cupo sobre un veredicto que no entiende");
+  assert.equal(c.editable, false, "no hay numero que asignar con fundamento sobre un 'no sé'");
+  assert.equal(c.asignada, 2000, "lo que el operador asigno no se pierde, solo no se sirve");
+  assert.match(c.motivo ?? "", /insufficient_sample/, "el motivo tiene que nombrar lo que no supo leer");
+});
+
+test("cualquier estado desconocido cae gris, no solo el que ya sabemos que viene", () => {
+  // El de arriba usa el nombre que se espera del proximo lote; este usa uno que nadie va a escribir
+  // nunca. Es la unica forma de chequear la lista blanca para los estados que todavia no existen —
+  // que es exactamente de lo que este bug es una instancia.
+  const c = evaluarBandeja(inv(), med({ estado: "lo_que_venga" as MedicionBandeja["estado"] }), 1200, TECHO);
+  assert.equal(c.color, "gris");
+  assert.equal(c.hoyPuede, 0);
+
+  // Y LA CONTRACARA, que importa igual: la lista blanca no puede volverse una manta. Un sensor que
+  // frena todo es tan inutil como uno que no frena nada — el mismo `med()` con el estado que el
+  // modulo SI conoce sigue vendiendo su asignada entera.
+  const sano = evaluarBandeja(inv(), med(), 1200, TECHO);
+  assert.equal(sano.color, "verde");
+  assert.equal(sano.hoyPuede, 1200, "cerrar la puerta al desconocido no puede apagar la fabrica");
+});
+
 
 // ── El cable rampa → cuota ───────────────────────────────────────────────────────────────────────
 

@@ -63,15 +63,25 @@ export const VOZ = [
   // "listo Juanes, voy" — incluso ante un saludo y ante "¿cómo vamos?", donde no significa nada. De
   // paso pisaba la regla del vocativo de más abajo: "Juanes" salió en 4 de 4 de la primera tanda.
   // Un ejemplo entrecomillado en un prompt es una plantilla disfrazada de instrucción.
+  // SE FUE "y cuenta cómo salió", y no es un recorte de estilo. Hay UNA sola llamada al modelo por
+  // turno: las manos se ejecutan DESPUÉS de que él terminó de escribir, así que el resultado no
+  // existe todavía cuando redacta. Pedirle que cuente cómo salió es pedirle que fabrique — es la
+  // línea que produjo "salieron con IP limpia y autenticación ok" el 2026-08-07 sobre dos nodos que
+  // gmail, hotmail y outlook rechazan hoy. El resultado lo escribe el código (`comoEstaEsteNodo`) y
+  // le vuelve a él por el prompt del turno siguiente.
   "CUANDO TE DAN UNA ORDEN, CONTESTA PRIMERO. Antes de nada, di que ya la tienes — con tus palabras,",
-  "distintas cada vez. Después hazlo y cuenta cómo salió. Que alguien te pida algo y te quedes mudo",
-  "mientras trabajas es lo peor que puedes hacer: parece que lo ignoraste.",
+  "distintas cada vez. Que alguien te pida algo y te quedes mudo mientras trabajas es lo peor que",
+  "puedes hacer: parece que lo ignoraste.",
   "Y si NO te dieron una orden —un saludo, una pregunta, un comentario— no anuncies que vas a nada:",
   "contesta lo que te preguntaron y ya.",
   "",
   // LA LÍNEA QUE PAGA LA DE ARRIBA, y de paso saca dos frases más de la misma clase: eran otro par
   // de ejemplos entrecomillados listos para copiar, en la regla que se dispara justo después.
-  "CUANDO TERMINAS ALGO, DILO en una línea. Y si no salió, también: sin dramatizarlo y sin esconderlo.",
+  // ACOTADA A LAS PROMESAS, que es lo único que él sí puede saber al escribir. Decía "CUANDO
+  // TERMINAS ALGO, DILO", y "algo que terminó" en este carril es siempre el resultado de una mano
+  // que todavía no corrió: la regla se cumplía inventando. Lo que él sí tiene es lo que había
+  // prometido en un turno anterior y le volvió como hecho por el prompt.
+  "SI HABÍAS QUEDADO EN VOLVER CON ALGO Y YA LO TIENES, CIÉRRALO en una línea. Si no salió, también.",
   "",
   "SÉ AUTÓNOMO. Si lo puedes resolver tú, resuélvelo y cuenta qué hiciste — no pidas permiso para",
   "cada cosa. Pide ayuda solo cuando de verdad no tengas cómo. Y si ves algo que conviene hacer,",
@@ -143,12 +153,14 @@ export const VOZ = [
   "  declararte incapaz.",
   "- LEE EL HILO ANTES DE CONTESTAR. Si Juanes ya te dijo algo antes, no se lo hagas repetir.",
   "  Contesta LO QUE ACABA DE DECIR, no lo que venías diciendo tú.",
-  "- SI TE ESCRIBIÓ VARIAS VECES SEGUIDAS, ES UNA SOLA CONVERSACIÓN. 'Hey', '¿cómo vamos?' y",
-  "  'necesito el informe' no son tres preguntas: es una persona esperando que le contestes, cada",
-  "  vez con menos paciencia. Contesta UNA vez, a lo que de verdad quería, que suele ser el mensaje",
-  "  más específico y no el último. Un saludo a secas ahí es peor que no contestar.",
-  "- Y si en esos mensajes hay cosas distintas, resuélvelas TODAS en la misma respuesta, en dos o",
-  "  tres líneas. Nunca una respuesta por mensaje: eso te hace sonar como un robot repitiéndose.",
+  // DOS REGLAS EN UNA, y las dos siguen enteras: eran dos viñetas separadas que decían la misma
+  // conducta (contestar una sola vez, a todo) con el ejemplo de tres mensajes en el medio. Se
+  // comprimió de 6 líneas a 4 para pagar las que agrega el marcador de fecha, allá abajo — la regla
+  // de este prompt es que cada línea que entra saca una.
+  "- SI TE ESCRIBIÓ VARIAS VECES SEGUIDAS, ES UNA SOLA CONVERSACIÓN: es una persona esperando que le",
+  "  contestes, cada vez con menos paciencia. Contesta UNA vez y resuelve TODAS sus cosas ahí mismo,",
+  "  en dos o tres líneas, empezando por el mensaje más específico y no el último. Nunca una respuesta",
+  "  por mensaje: eso te hace sonar como un robot repitiéndose, y un saludo a secas es peor que nada.",
   "",
   "IDIOMA. Responde en el mismo idioma del último mensaje de tu jefe. Si no hay de quién copiar,",
   "inglés. En español, colombiano natural — nada de güey, tío, vale, coño ni che: son de otros",
@@ -185,9 +197,11 @@ export const VOZ = [
   "- revisar_reputacion | dominio=<uno del inventario> | motivo=... → mira listas negras, SPF, DKIM,",
   "  DMARC y el PTR de su IP y su dominio. Pasiva: no manda correo ni cambia nada, úsala cuando",
   "  quieras y sin pedir permiso.",
-  "  Dos cosas que cambian cómo se lee: una lista negra LIMPIA no quiere decir que estemos",
-  "  entregando —hubo 38 nodos cerrados en Gmail con cero blacklists— y un chequeo que no se pudo",
-  "  hacer vuelve como \"no sé\", que no es \"limpio\". Dilo como viene, no lo redondees.",
+  // Tres líneas a dos, sin perder ninguna de las dos advertencias: se fue el rótulo que las anunciaba
+  // ("Dos cosas que cambian cómo se lee") y el cierre, que repite lo que ya dice la regla de no
+  // redondear números de más arriba. Es parte del pago del marcador de fecha.
+  "  Ojo con dos cosas: una lista negra LIMPIA no quiere decir que estemos entregando —38 nodos",
+  "  cerrados en Gmail con cero blacklists— y un chequeo que no se pudo hacer es \"no sé\", no \"limpio\".",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única que sube volumen. El cupo no lo eliges tú, es fijo, y antes de",
   "  ejecutarla el sistema verifica solo tres cosas contra los nodos vivos: que esté realmente",
@@ -232,11 +246,41 @@ export const VOZ = [
   // que nunca pidió. El costo honesto de esta decisión: si el modelo no emite la línea, no se
   // registra nada y quedamos como hoy — sin regresión, pero sin arreglo. Por eso el orquestador
   // cuenta cuántas emite: si en 48 h no emitió ninguna, el problema es este prompt, no el mecanismo.
-  "SI VAS A ESPERAR UN DATO, DILO CON LA LÍNEA. Nunca escribas \"te aviso\", \"apenas caiga te",
-  "digo\" ni \"quedo de guardia\" sin agregar al final:",
+  //
+  // ── ACÁ VIVÍA `cuando=<AAAA-MM-DDTHH:MM>`, Y SE SACÓ ANTES DE DESPLEGARLO ────────────────────
+  //
+  // La promesa por FECHA está entera del lado del código —`aInstante`, `Promesa.cuandoEn`, la rama de
+  // la cita en `revisarPromesas`, el `cuando` de `anotarPromesa`, todo con tests— y NO tiene un solo
+  // llamador: el único que anota promesas es `scripts/ops/warmup-monitor.ts:1475` y sigue llamando
+  // `anotarPromesa(actual ?? [], { que, hilo, esperando }, …)` sin `cuando`. Verificado:
+  // `git diff --stat scripts/ops/warmup-monitor.ts` está vacío.
+  //
+  // Con estas líneas puestas y el cableado sin hacer, el agente quedaba ESTRICTAMENTE PEOR que hoy:
+  // el prompt le ordenaba PREGUNTARLE al jefe el día y la hora exactos —o sea sonar más confiable—,
+  // `extraerPromesa` parseaba la fecha, el orquestador la tiraba al piso y a las 6 h salía una
+  // disculpa. Es literal la lección que este repo dice haber pagado cuatro veces: una mano prometida
+  // y no cableada es peor que no darla.
+  //
+  // LAS DOS MITADES SALEN JUNTAS. Vuelve en el commit que agregue, en warmup-monitor.ts:
+  //   anotarPromesa(actual ?? [], { que, hilo, esperando, cuando: r.promesa!.cuando, callada }, …)
+  // y la mención `<@…>` cuando `aviso.pide`. El texto que se saca, para no reescribirlo:
+  //   "PROMETI: <qué le vas a avisar> | cuando=<AAAA-MM-DDTHH:MM>"
+  //   "cuando= es hora de Colombia, va COMPLETA (fecha y hora) y no se combina con espero=. Si no te"
+  //   "dieron día y hora exactos (\"mañana\", \"el lunes\" a secas) PREGÚNTASELOS: rellenar tú una fecha es"
+  //   "prometer en falso con hora exacta."
+  "SI VAS A ESPERAR UN DATO, DILO CON LA LÍNEA. Nunca escribas \"te aviso\" ni \"quedo de guardia\" sin",
+  "la línea: sin ella prometiste y nadie lo anotó y el jefe se queda esperando.",
   "PROMETI: <qué le vas a avisar> | espero=<el campo que estás esperando>",
-  "Esa línea es la ÚNICA forma de que ese aviso exista de verdad. Sin ella, prometiste y nadie lo",
-  "anotó: el jefe se queda esperando algo que no quedó guardado en ninguna parte.",
+  // LAS DOS MITADES SALIERON JUNTAS, que era la condición que dejó escrita el equipo anterior.
+  // `scripts/ops/warmup-monitor.ts` ya pasa `cuando: r.promesa!.cuando` a `anotarPromesa`, y el
+  // recordatorio menciona al jefe cuando el aviso lo pide, así que esta línea ya no promete nada
+  // que el otro lado no cumpla. Antes de eso el agente quedaba ESTRICTAMENTE PEOR que sin ella: el
+  // prompt le ordenaba pedir día y hora exactos —o sea sonar más confiable—, `extraerPromesa`
+  // parseaba la fecha, el orquestador la tiraba al piso, y a las 6 h salía una disculpa.
+  "PROMETI: <qué le vas a avisar> | cuando=<AAAA-MM-DDTHH:MM>",
+  "cuando= es hora de Colombia, va COMPLETA (fecha y hora) y no se combina con espero=. Si no te",
+  "dieron día y hora exactos (\"mañana\", \"el lunes\" a secas) PREGÚNTASELOS: rellenar tú una fecha es",
+  "prometer en falso con hora exacta.",
   // La lista va como DATO —valores literales, uno al lado del otro— y no como explicación de qué es
   // un campo. Es la lección que este proyecto ya pagó dos veces: un criterio escrito en prosa
   // dentro del prompt vuelve como hallazgo propio del modelo, y si es falso vuelve con seguridad.
@@ -282,12 +326,55 @@ export interface ContextoChat {
 }
 
 /**
+ * QUÉ DÍA Y QUÉ HORA ES **EN COLOMBIA**, que es la única que existe para las fechas de este agente.
+ *
+ * Va con `timeZone` explícito, así que la zona de la máquina no participa. Y esa es toda la razón
+ * por la que existe: la Studio corre en America/New_York (offset 240 hoy) y no hay `TZ=` en
+ * gateway.env. Medido: `new Date("2026-08-10T04:30:00Z").getDay()` da 1 ahí —lunes— cuando en
+ * Colombia todavía es domingo 9. O sea que hay una ventana de una hora cada noche en la que la
+ * máquina ya cambió de día y el jefe no, y en horario de invierno la ventana desaparece sola: un bug
+ * que pasa cualquier prueba que se corra en la mitad del año equivocada.
+ *
+ * Sin esta línea el modelo no puede convertir "el lunes" en una fecha, y si lo intenta la inventa —
+ * que es peor que no tenerla, porque una fecha inventada es una promesa falsa con hora exacta.
+ *
+ * Y NO se arregla poniendo `TZ=America/Bogota` en gateway.env: eso haría que el parse ingenuo
+ * acierte por accidente dejando el código mal, y encima es una palanca global del proceso.
+ */
+function hoyEnColombia(ahoraISO: string): string | null {
+  const t = Date.parse(ahoraISO);
+  // Un reloj ilegible NO tumba el turno del chat. `Intl.format` sobre un Invalid Date TIRA un
+  // RangeError, y el resto de esta función ya convive con un `Date.parse` que devuelve NaN sin
+  // romper nada (`edadMin` sale NaN y se imprime). Un contexto sin la línea del calendario es una
+  // degradación; una excepción acá es el jefe sin respuesta.
+  if (!Number.isFinite(t)) return null;
+  return new Intl.DateTimeFormat("es-CO", {
+    timeZone: "America/Bogota",
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).format(new Date(t));
+}
+
+/**
  * Arma el mensaje de usuario. Los hechos van marcados como tales y con su antigüedad: un dato de
  * hace horas presentado como "ahora" es la falsedad más barata de cometer y la más cara de creer.
  */
 export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
   const l: string[] = [];
   const s = ctx.snapshot;
+
+  // EL CALENDARIO VA PRIMERO y va como DATO pelado, no como instrucción de cómo calcular fechas.
+  // También entra al texto contra el que `revisarRespuesta` verifica, y eso es correcto: si el
+  // agente escribe "te escribo el lunes 10", el 10 es un hecho de hoy y tiene que estar respaldado.
+  // El costo, dicho: el día, el mes, la hora y el minuto quedan como números conocidos del turno, o
+  // sea que un número inventado que coincida con alguno de esos cuatro pasa limpio ese turno.
+  const hoy = hoyEnColombia(ahoraISO);
+  if (hoy) l.push(`Hoy es ${hoy} en Colombia. Esa es la hora de Juanes y la única que existe para las fechas.`);
 
   // TODO ESTE CONTEXTO VA EN TUTEO, igual que VOZ y que SISTEMA, y era la tercera fuga del registro:
   // Kimi leía voseo de TRES lados en el mismo turno en el que le pedimos Medellín — las cabeceras de
@@ -445,11 +532,26 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
  */
 export function revisarRespuesta(respuesta: string, contexto: string): string[] {
   const observaciones: string[] = [];
+  // EL HECHO VINCULANTE NO RESPALDA NADA ACÁ, y meterlo fue una regresión de la misma clase que el
+  // incidente. La idea era no castigar lo que la máquina midió: el carril chat guarda `detalle:
+  // null`, así que los receptores verdaderos no entraban al contexto y el reparo caía sobre la
+  // respuesta CORRECTA.
+  //
+  // Pero el respaldo no distingue "nombrar el dato" de "mentir con el dato". Medido: la frase
+  // "bizreport-control.com ya viene con 337 entregas limpias esta semana y la IP 86.48.29.176 está
+  // sin marcas: móntale el dominio nuevo tranquilo" —falsa de punta a punta, los 337 son RECHAZOS—
+  // daba 6 observaciones sin el hecho vivo y CERO con él. El respaldo blindaba cualquier frase que
+  // tocara esos dígitos, y el contador `inventadas` quedaba subestimado justo en los turnos que
+  // deciden una compra.
+  //
+  // El hecho ya viaja PUBLICADO encima del mensaje: no necesita además absolver la prosa. Lo que se
+  // recupera del problema original es que los reparos del chat se cuentan, no bloquean.
+  const respaldo = contexto;
   for (const d of respuesta.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []) {
-    if (!contexto.toLowerCase().includes(d.toLowerCase())) observaciones.push(`nombra ${d}, que no está en el contexto`);
+    if (!respaldo.toLowerCase().includes(d.toLowerCase())) observaciones.push(`nombra ${d}, que no está en el contexto`);
   }
   for (const n of respuesta.match(/\b\d{2,}\b/g) ?? []) {
-    if (!contexto.includes(n)) observaciones.push(`cita el número ${n}, que no está en el contexto`);
+    if (!respaldo.includes(n)) observaciones.push(`cita el número ${n}, que no está en el contexto`);
   }
   // LA ACCIÓN QUE DICE HABER HECHO Y NO HIZO, que hasta hoy pasaba limpia porque el detector solo
   // miraba NÚMEROS y DOMINIOS. Textual de las corridas del 2026-08-07 con este mismo prompt: "Ya le
@@ -471,7 +573,7 @@ export function revisarRespuesta(respuesta: string, contexto: string): string[] 
     if (!/\b(ejecut[ée]|corr[íi]|lanc[ée]|program[ée]|dispar[ée]|activ[ée]|puse a correr)(?!\p{L})/iu.test(frase)) continue;
     for (const mano of ACCIONES_VALIDAS) {
       if (!frase.toLowerCase().includes(mano)) continue;
-      if (contexto.toLowerCase().includes(mano)) continue;
+      if (respaldo.toLowerCase().includes(mano)) continue;
       observaciones.push(`dice que ya ejecutó ${mano}, y nada en el contexto respalda que se haya ejecutado`);
     }
   }
@@ -497,25 +599,53 @@ export function extraerRecordar(texto: string): string | null {
  * El acento se acepta (PROMETI y PROMETÍ) porque el modelo escribe en castellano y va a tildarlo:
  * un marcador que se pierde por una tilde es el mismo agujero con otra cara.
  */
-export function extraerPromesa(texto: string): { que: string; esperando: string | null } | null {
+export function extraerPromesa(texto: string): { que: string; esperando: string | null; cuando: string | null } | null {
   const m = texto.match(/^\s*PROMET[IÍ]:\s*(.+)$/im);
   if (!m?.[1]) return null;
   const partes = m[1].split("|").map((p) => p.trim());
   const que = partes[0] ?? "";
   if (!que) return null;
+  /** La mitad después del "|", si el modelo la puso. Misma tolerancia para las dos claves. */
+  const valorDe = (clave: string): string | null =>
+    partes
+      .slice(1)
+      .map((p) => new RegExp(`^${clave}\\s*=\\s*(.+)$`, "i").exec(p)?.[1]?.trim())
+      .find((v): v is string => Boolean(v)) ?? null;
   // `espero=` puede venir o no: una promesa sin campo que esperar SIGUE siendo una promesa (se
   // anota y solo puede vencer). Perderla porque el modelo olvidó la segunda mitad sería castigar
   // al jefe por un error del modelo.
-  const esperando =
-    partes
-      .slice(1)
-      .map((p) => /^espero\s*=\s*(.+)$/i.exec(p)?.[1]?.trim())
-      .find((v): v is string => Boolean(v)) ?? null;
-  return { que, esperando };
+  //
+  // `cuando=` sale CRUDO, sin convertir a instante. La conversión necesita saber en qué zona está
+  // esa hora de pared y qué momento es ahora, y este extractor no tiene reloj — es puro sobre un
+  // string. Quien lo convierte es el que sí tiene el reloj; acá se pasa tal como el modelo lo
+  // escribió, incluso si escribió "el lunes", que es un valor que no parsea y tiene que llegar
+  // entero para que el otro lado decida qué hacer con él (anotar la promesa sin cita, no tirarla).
+  return { que, esperando: valorDe("espero"), cuando: valorDe("cuando") };
 }
 
 /** Los marcadores que VOZ le pide al modelo. El test de contrato los saca de acá. */
 export const MARCADORES: readonly string[] = ["ACCION", "RECORDAR", "PROMET[IÍ]"];
+
+/**
+ * LOS PREFIJOS CON LOS QUE HABLA EL CÓDIGO, prohibidos en la prosa del modelo.
+ *
+ * El orquestador publica el resultado de cada mano como `hecho: <frase>` / `no pude: <frase>` y lo
+ * pega al mensaje con un `\n` pelado, sin saneador. O sea que NADA distinguía una línea escrita por
+ * el sensor de una escrita por el modelo — y el modelo puede firmar las suyas con el mismo prefijo,
+ * incluso con los `·` del formato viejo que el jefe ya aprendió a leer como salida de máquina.
+ * Probado: sale al canal con las falsas ARRIBA de las verdaderas (porque `cuerpo` va antes que
+ * `hechas`), y lo único que dispara son cuatro observaciones por los octetos de la IP, que se leen
+ * como el ruido de siempre del detector.
+ *
+ * Toda la premisa del arreglo —"la frase la escribe el código"— se cae si el lector no puede saber
+ * cuál la escribió el código. Estos van SEPARADOS de `MARCADORES` a propósito: aquellos son lo que
+ * VOZ le PIDE al modelo y hay un test de contrato que los recorre; estos son lo que el modelo tiene
+ * PROHIBIDO imitar.
+ *
+ * TECHO DECLARADO: no impide que el modelo diga lo mismo en prosa. Le saca el disfraz de sensor, no
+ * la mentira.
+ */
+export const VOZ_DE_MAQUINA: readonly string[] = ["hecho", "no pude"];
 
 /**
  * Saca del texto las líneas que son MAQUINARIA, no conversación. Mostrarle al jefe "PROMETI: … |
@@ -529,7 +659,9 @@ export const MARCADORES: readonly string[] = ["ACCION", "RECORDAR", "PROMET[IÍ]
  * suyo: ACCION y RECORDAR los lee el orquestador de `texto`, así que ahí no se pueden sacar todavía.
  */
 export function limpiarMaquinaria(texto: string, soloEstos?: readonly string[]): string {
-  return texto.replace(new RegExp(`^[ \\t]*(${(soloEstos ?? MARCADORES).join("|")}):.*$`, "gim"), "").trim();
+  // El `\n?` se come el salto de la línea borrada: si no, queda un renglón vacío justo donde estaba
+  // la maquinaria, o sea el agujero que delata que ahí había algo.
+  return texto.replace(new RegExp(`^[ \\t]*(${(soloEstos ?? MARCADORES).join("|")}):.*$\\n?`, "gim"), "").trim();
 }
 
 /**
@@ -635,8 +767,16 @@ export function aColombiano(texto: string): string {
 }
 
 /**
- * LA ÚLTIMA PUERTA ANTES DE SLACK. Todo lo que se publica en el canal —los dos carriles— pasa por
- * acá. Deja el texto como lo escribiría una persona en un chat.
+ * EL EMBUDO DE VOZ. Deja el texto como lo escribiría una persona en un chat.
+ *
+ * DECÍA "todo lo que se publica en el canal —los dos carriles— pasa por acá" Y ERA FALSO, medido en
+ * producción el 2026-08-07: el orquestador arma `paraSlack = [cuerpo, ...hechas].join("\n")` y solo
+ * `cuerpo` pasa por esta función. El bloque de máquina se concatena DESPUÉS y sale crudo — con
+ * prefijo "hecho:", con `·` de separador y con el enum del sensor. Al jefe le llegó así la cláusula
+ * del receptor, dos veces, y no la leyó: venía con forma de cola de log.
+ *
+ * O sea que el invariante hay que APLICARLO en quien publica (ver `como_cablearlo`: los `hechas`
+ * pasan por acá igual que la prosa), no declararlo en este comentario.
  *
  * POR QUÉ EXISTE. El reclamo textual del jefe: "esa manera o lexico de escribir esta muy bot del
  * 2000… recuerdo que openclaw me respondia con asteriscos, muy horrible genericamente, y luego
@@ -667,7 +807,7 @@ export function aColombiano(texto: string): string {
  * tienen que llegar acá — se sacan en origen, no se disfrazan.
  */
 export function limpiarParaSlack(texto: string): string {
-  const sinFormato = limpiarMaquinaria(texto)
+  const desnudo = texto
     // Negritas e itálicas. El `*` de énfasis se saca ANTES que las viñetas: si no, una línea
     // `*importante* esto` perdería el primer asterisco como si fuera un bullet y quedaría
     // "importante* esto", que es peor que el markdown original.
@@ -677,9 +817,31 @@ export function limpiarParaSlack(texto: string): string {
     // `__negrita__` cae y `frenar_dominio` sobrevive entero.
     .replace(/(?<![\w_])__([^_\n]+)__(?![\w_])/g, "$1")
     .replace(/(?<![\w_])_([^_\n]+)_(?![\w_])/g, "$1")
+    // LA CITA ES DEL CÓDIGO, y por eso se borra ENTERA en vez de desmarcarse. `>` al principio de
+    // línea es la tipografía con la que `anteponerHechoVinculante` publica lo que midió la máquina.
+    // Que el modelo la escriba en su prosa es firmar con una voz que no es la suya, y el punto de
+    // reservar una FORMA en vez de un vocabulario es que acá se la sacan siempre.
+    // El `\n?` del final es lo que hace que BORRAR una línea la borre: sin él queda un renglón vacío
+    // en medio del mensaje, o sea el agujero exacto donde estaba lo que se sacó.
+    .replace(/^[ \t]*>[ \t]*.*$\n?/gm, "")
     // Títulos y viñetas: la línea deja de ser un ítem de informe y pasa a ser una frase.
     .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
     .replace(/^[ \t]*[-*•][ \t]+/gm, "");
+
+  // LA VOZ DEL CÓDIGO SE LE SACA AL MODELO ACÁ, y solo acá sirve: esta función corre ÚNICAMENTE
+  // sobre `cuerpo` (el texto del modelo), nunca sobre el bloque `hechas` que el orquestador
+  // concatena después. O sea que sacar el prefijo mata la falsificación sin tocar las líneas
+  // verdaderas. Ver `VOZ_DE_MAQUINA`.
+  //
+  // Y VA DESPUÉS DEL MARKDOWN, no antes, que es donde estaba y donde no servía. El regex ancla en
+  // `^[ \t]*(hecho|no pude):`, así que CUALQUIER decoración adelante lo salvaba… y la decoración se
+  // borraba a continuación, dejando el prefijo limpio. Medido: de seis formas, cinco pasaban
+  // —`- hecho:`, `• hecho:`, `* hecho:`, `**hecho:**`, `## hecho:`— y la única que no pasaba era la
+  // pelada, que es justo la que el modelo NO escribe: el propio archivo cita su mensaje real de
+  // producción "- **corpfiling-infra.com** — el mejor: 83% inbox". Peor todavía desde que el embudo
+  // antepone líneas de verdad: el modelo relee su propio hilo con `leerHilo` y aprende el formato
+  // que tiene que imitar. Sobre el texto ya desnudo no queda dónde esconderse.
+  const sinFormato = limpiarMaquinaria(desnudo, [...MARCADORES, ...VOZ_DE_MAQUINA]);
 
   const sinVocativo = sinFormato.replace(/^[¡\s]*juanes[ \t]*[,!:]+[ \t]*/i, "");
   // LA MAYÚSCULA SOLO REPARA LO QUE ESTA FUNCIÓN ROMPIÓ, y las dos condiciones costaron un test en
@@ -773,8 +935,12 @@ export interface RespuestaChat {
    *
    * Quien cablea la anota con `anotarPromesa`; NO tiene que volver a parsear `texto`, que ya no la
    * trae.
+   *
+   * `cuando` viaja CRUDO, tal como lo escribió el modelo: es una hora de pared de Colombia y
+   * convertirla necesita un reloj que este módulo no tiene. Un `cuando` que no parsea llega igual —
+   * la promesa se anota sin cita y vence a las 6 h diciendo algo, que es mejor que perderla.
    */
-  promesa: { que: string; esperando: string | null } | null;
+  promesa: { que: string; esperando: string | null; cuando: string | null } | null;
   /**
    * Prometió volver en prosa y no marcó la línea. Solo para el log: no crea ninguna promesa.
    *

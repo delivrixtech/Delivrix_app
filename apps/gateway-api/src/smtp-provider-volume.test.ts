@@ -32,9 +32,31 @@ test("familias: un receptor se cuenta junto, aunque llegue por dominios distinto
   assert.equal(providerFamilyFor("aol.com"), "yahoo_aol");
   assert.equal(providerFamilyFor("comcast.net"), "comcast");
   assert.equal(providerFamilyFor("xfinity.com"), "comcast");
-  assert.equal(providerFamilyFor("tampabay.rr.com"), "otros", "un subdominio no es la familia");
   assert.equal(providerFamilyFor("rr.com"), "charter_rr");
   assert.equal(providerFamilyFor("empresa-cualquiera.com"), "otros");
+
+  // ESTA LÍNEA DECÍA LO CONTRARIO ("un subdominio no es la familia") y era el defecto, no la regla.
+  // `rr.com` tiene decenas de variantes regionales y en la flota hay tres con volumen medido
+  // (2026-08-08): tampabay.rr.com 29 entregas / 108 diferidos en 5 nodos, cfl.rr.com 32/85 en 4,
+  // wi.rr.com. Con el match exacto caían en "otros", y "otros" apaga el veto de
+  // `insufficient_sample` en smtp-delivery-health: un nodo cuyo único receptor con rechazo del 100%
+  // fuera uno de ésos salía `healthy`.
+  assert.equal(providerFamilyFor("tampabay.rr.com"), "charter_rr");
+  assert.equal(providerFamilyFor("cfl.rr.com"), "charter_rr");
+  assert.equal(providerFamilyFor("wi.rr.com"), "charter_rr");
+  // Y EL SUFIJO VA SOBRE EL LABEL, con el punto. Sin él `"askherr.com".endsWith("rr.com")` da true y
+  // un dominio de cliente cualquiera arrastraría el umbral de Charter. Me pasó armando la medición.
+  assert.equal(providerFamilyFor("askherr.com"), "otros");
+  assert.equal(providerFamilyFor("notgmail.com"), "otros");
+
+  // Los buzones de AT&T/Verizon los OPERA Yahoo: comparten MX, política y el umbral de 5.000/día.
+  // Volumen medido en la flota (5 días, 58 nodos): bellsouth.net 671 entregas / 982 diferidos en 7
+  // nodos, verizon.net 461/555 en 7, att.net 388/490 en 7, sbcglobal.net 112/93 en 6.
+  for (const d of ["bellsouth.net", "att.net", "sbcglobal.net", "verizon.net", "myyahoo.com", "yahoo.com.mx"]) {
+    assert.equal(providerFamilyFor(d), "yahoo_aol", d);
+  }
+  assert.equal(providerFamilyFor("hotmail.fr"), "microsoft");
+  assert.equal(providerFamilyFor("outlook.com.br"), "microsoft");
 });
 
 test("Comcast NO tiene umbral declarado, y eso es a proposito", () => {

@@ -82,6 +82,21 @@ export async function handleSenderMeasurementHttp(deps: SenderMeasurementRouteDe
         b.estado === "stalled" ||
         b.estado === "blocked_by_provider" ||
         b.estado === "degraded" ||
+        // EL ESTADO POR EL QUE SE HACE ESTE DESPLIEGUE, y sin esta línea el agente no lo ve.
+        //
+        // El sensor se absolvía solo por el calendario: lee el mail.log con ventana de 5 días, y un
+        // nodo bloqueado deja de mandar PORQUE está bloqueado, así que a los 5 días la evidencia se
+        // cae de la ventana y salía `healthy`. Pasó en vivo el 2026-08-07: 20:05 UTC la flota tenía
+        // 35 bloqueados, 02:08 tenía 1, el pool saltó de 6 a 29 y el warmup mandó desde nodos
+        // quemados (vueltas #21/#22/#23, ninguna cerró COMPLETA). El arreglo es que la muestra
+        // insuficiente diga `insufficient_sample` en vez de `healthy`.
+        //
+        // Pero el agente recibía sólo el CONTEO por estado, no los NOMBRES: sabía que había N nodos
+        // sin juzgar y no podía nombrar uno solo para hablarle al jefe. La señal por la que se
+        // despliega no le llegaba a quien tiene que contarla. El tope de 30 filas y el orden que
+        // pone primero a los cruzados no se tocan: lo irreversible sigue sin caerse del tope y lo
+        // omitido se cuenta en `accionablesOmitidas`.
+        b.estado === "insufficient_sample" ||
         b.estado === "unreadable"
     );
     // Los cruces del umbral permanente van SIEMPRE primero: son irreversibles, nunca deben caer

@@ -868,6 +868,12 @@ const warmupCapFile =
 const warmupSaludFile =
   process.env.WARMUP_SALUD_FILE?.trim() ||
   resolvePath(openClawWorkspace.getRootDir(), "inventory", "sender-measurement.json");
+// La foto de autenticación, MISMA env var y mismo default que el daemon (live-warmup-daemon.ts:196).
+// Sin esto el panel calculaba el pool sin las exclusiones de `authRota`: medido sobre la foto del
+// 2026-08-08, la ruta decía 36 dominios y el daemon corría 32 (3 IPs en lista negra + 1 sin PTR).
+const warmupReputacionFile =
+  process.env.WARMUP_REPUTACION_FILE?.trim() ||
+  resolvePath(openClawWorkspace.getRootDir(), "inventory", "warmup-reputacion.json");
 // Pool de respaldo, usado SOLO si no hay ninguna medición del cupo. Misma env var que el daemon,
 // para que el panel y el daemon no puedan discrepar sobre qué se está calentando. Va en
 // config/gateway.env, que es lo que cargan LOS DOS procesos: definirla solo en el launcher del
@@ -2970,6 +2976,7 @@ const server = createServer(async (request, response) => {
         pgClient: episodicScratchPool,
         capFile: warmupCapFile,
         saludFile: warmupSaludFile,
+        reputacionFile: warmupReputacionFile,
         poolConfigurado: warmupPoolConfigurado,
         // La MISMA ventana que usa el daemon. Con defaults distintos, el panel mostraría una
         // decisión calculada sobre otra muestra que la que se ejecuta.

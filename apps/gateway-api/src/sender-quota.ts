@@ -222,6 +222,47 @@ export function evaluarBandeja(
     return { ...base, color: "gris", estado: "sin tráfico", motivo: "no registró envíos en la ventana", hoyPuede: 0, editable: true };
   }
 
+  // ── LA PUERTA SE CIERRA POR LISTA BLANCA, NO POR LISTA NEGRA ─────────────────────────────────
+  //
+  // Todo lo de arriba nombra estados DE A UNO (`stalled`, `blocked_by_provider`, `degraded`,
+  // `unreadable`, `no_own_traffic`, `no_traffic`), y lo que no coincidia con ninguno caia hasta el
+  // `return` verde de abajo. Esto es una cadena de `if` sobre un string, NO un `switch` exhaustivo:
+  // agregarle un miembro a `DeliveryHealthStatus` no rompe la compilacion de este archivo. O sea que
+  // todo estado FUTURO nace VERDE, "entrega", editable y sirviendo su asignada entera.
+  //
+  // No es hipotetico: es la forma exacta del bug que este mismo archivo ya tuvo dos veces.
+  // `no_own_traffic` se agrego el 2026-08-06 sin rama propia y cayo al verde — 36 bandejas quemadas
+  // por el otro inquilino pasaban de roja a verde con UNA linea de cambio en el script de medicion.
+  // Y antes `stalled` no existia, asi que 920 mensajes atascados se leian `no_traffic`.
+  //
+  // Y hay uno en camino, con nombre, numero y fecha. El sensor no emite veredicto por debajo de
+  // BLOCKED_MIN_ATTEMPTS y esa ausencia sale `blockedProviders: []`. La fila REAL de produccion del
+  // 2026-08-08 02:08 UTC es annualcorp-control.com con `estado: "healthy"`, `detalle: "16 entregados,
+  // 1 rechazados"`, `porReceptor: []` y `cerradoEn: []` — sobre un nodo al que Gmail le rechazo 136
+  // mensajes con 550-5.7.1 cuatro dias antes, y que hoy vende cupo. El trinquete pegajoso NO lo tapa:
+  // `cerradoEn` esta vacio. El dia que ese "no se" tenga estado propio, tiene que nacer gris.
+  //
+  // Gris y NO editable a proposito, igual que `no_own_traffic`: sobre un veredicto que este modulo no
+  // sabe leer no hay numero que el operador pueda asignar con fundamento, y dejarlo editable es
+  // cargar el cupo que se sirve solo el dia que alguien le agregue la rama que falta.
+  //
+  // COMPORTAMIENTO IDENTICO HOY, verificado leyendo la cadena entera y no de memoria: de los siete
+  // estados de la union, los OTROS SEIS ya retornaron arriba (`stalled` :164, `blocked_by_provider`
+  // :167, `degraded` :170, `unreadable` :202, `no_own_traffic` :216, `no_traffic` :219), asi que lo
+  // unico que llegaba hasta aca era `healthy`. Ni una bandeja de produccion cambia de color.
+  //
+  // ponytail: cubre `hoyPuede`, que es lo que la fabrica VENDE. Un estado desconocido con una rampa
+  // corriendo sigue cayendo en la rama `calentando` de arriba (tambien con hoyPuede 0, pero
+  // mostrando "rampa dia X/N"); moverlo antes de la rampa cambiaria el semaforo de `unreadable`,
+  // `no_traffic` y `no_own_traffic`, que hoy la rampa gana a proposito. Si algun dia un estado
+  // desconocido tiene que PARAR la rampa, va como rama roja arriba de :178, no aca.
+  if (med.estado !== "healthy") {
+    return gris(
+      "estado no reconocido",
+      `el sensor devolvió \`${med.estado}\`: sin veredicto conocido no se vende cupo`
+    );
+  }
+
   // healthy. Sin cuota asignada la bandeja verde vende 0: nunca un numero por defecto.
   return {
     ...base,

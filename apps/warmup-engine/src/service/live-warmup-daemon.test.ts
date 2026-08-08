@@ -7,6 +7,8 @@ import {
   pickBox,
   elegirBoxDeLaVuelta,
   lineaDeArranque,
+  avisoDeSobre,
+  poolSinSalud,
   lineaDeSemillas,
   elegirSemillaDelRegistro,
   puedeMedir,
@@ -113,6 +115,94 @@ test("ARRANCA AVISA cuando el tope no se puede alcanzar con ese intervalo", () =
   const l = lineaDeArranque(cfg);
   assert.match(l, /OJO: el tope de 50 NO se puede alcanzar/);
   assert.match(l, /solo permite 16/);
+});
+
+// ── El sobre de volumen: dominios × cupo contra min(tope, ciclos) ────────────────────────────────
+
+// ── UN ARCHIVO ILEGIBLE NO PUEDE ABRIR EL POOL ─────────────────────────────────────────────────
+
+test("sin salud legible el pool cae al CONFIGURADO: un JSON cortado metía al pool a los que YA cruzaron", () => {
+  // EL DEFECTO (encontrado por QA antes de desplegar, 2026-08-07). `leerSalud` devuelve `undefined`
+  // ante cualquier fallo de lectura o parseo, y `elegirPool` se saltea entero el bloque `if (salud &&
+  // salud.size > 0)` — o sea que se apagan TODAS las exclusiones, incluida la de `cruzados`, que es
+  // la única irreversible. Medido con los archivos reales de producción y el `elegirPool` de verdad:
+  // con salud ⇒ 6 boxes; con `salud: undefined` ⇒ 44, y entre esos 44 entra nationalfiling-infra.com,
+  // que tiene `cruzados: ["google"]` en sender-measurement.json. No es hipotético: `medirFlota`
+  // reescribe el archivo ENTERO, así que una escritura cortada deja JSON inválido.
+  const crudo = {
+    boxes: ["corpfiling-infra.com", "nationalfiling-infra.com", "controlstatecorp.com"],
+    motivo: "44 de 57 nodos medidos aptos"
+  };
+  const conSalud = poolSinSalud(crudo, ["corpfiling-infra.com"], true, "/x/sender-measurement.json");
+  assert.deepEqual(conSalud.boxes, crudo.boxes, "con salud legible no toca nada");
+
+  const sinSalud = poolSinSalud(crudo, ["corpfiling-infra.com"], false, "/x/sender-measurement.json");
+  assert.deepEqual(sinSalud.boxes, ["corpfiling-infra.com"], "cae a la lista explícita del operador");
+  assert.ok(!sinSalud.boxes.includes("nationalfiling-infra.com"), "el que cruzó el umbral permanente NO puede entrar por un archivo roto");
+  assert.match(sinSalud.motivo, /no sé quién cruzó el umbral permanente/, "y el log dice por qué se achicó");
+});
+
+test("CONTRATO: el loop RECUERDA la última lectura buena de salud, así un hipo de una vuelta no achica el pool", async () => {
+  // La baranda barata que va antes del fail-closed: con `ultimaSalud` cacheada, un archivo ilegible
+  // en UNA vuelta no cambia el pool. El fail-closed es para el caso en que nunca hubo lectura buena
+  // en esta corrida (un reinicio con el archivo ya roto).
+  //
+  // Va como contrato sobre la fuente y no como corrida: el cuerpo del loop abre su propio Pool, sus
+  // mailers y su IMAP, así que "simular el for" sería una COPIA del loop — y una copia comparte el
+  // error con el original (la lección del fixture de Bedrock).
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile("apps/warmup-engine/src/service/live-warmup-daemon.ts", "utf8");
+  assert.match(src, /const saludLeida = await leerSalud\(cfg\.saludFile\);/);
+  assert.match(src, /if \(saludLeida\) ultimaSalud = saludLeida;/, "la lectura buena se guarda");
+  assert.match(src, /const saludFlota = saludLeida \?\? ultimaSalud;/, "y se reusa cuando la nueva falla");
+  assert.match(src, /poolSinSalud\(poolCrudo, poolConfigurado, saludFlota !== undefined/, "y el fail-closed es la función testeada, no una copia inline");
+});
+
+test("sobre: los 6 dominios de producción entran, y sobra lugar para UNO solo", () => {
+  // La foto medida el 2026-08-07 contra la Postgres viva: 12 ciclos con `sent` en el día UTC contra
+  // un tope de 14, y CERO líneas "tope diario" en todo el log del daemon. O sea que hoy el tope NO
+  // es lo que ata: atan los cupos por dominio (6 × 2 = 12).
+  const aviso = avisoDeSobre({ dominios: 6, maxPerDay: 14, intervalMs: 5_400_000, cupoArranque: 2 });
+  assert.match(aviso!, /6×2=12 correos\/día ≤ 14 ciclos/);
+  assert.match(aviso!, /entran 1 dominio\(s\) más/);
+  assert.doesNotMatch(aviso!, /NO ALCANZA/);
+
+  // LA UNIDAD SE DICE, y no es una nota al pie: el ticket que sale de este aviso pide "tope ≥ N", y
+  // el tope se paga en CICLOS mientras la demanda está en CORREOS. `countCyclesToday` es
+  // `COUNT(DISTINCT cycle_id)` y las continuaciones se graban con el cycleId de la vuelta actual, así
+  // que N "Re:" dentro de una vuelta cuestan CERO del tope. Medido en la Postgres de producción:
+  // 2026-08-05 fueron 18 envíos en 11 ciclos y 08-06, 15 en 12. Sin la aclaración, el operador
+  // dimensiona un presupuesto de ciclos para una demanda de correos.
+  assert.match(aviso!, /el sobre son CICLOS y la demanda CORREOS/);
+  assert.match(aviso!, /no gastan ciclo/);
+});
+
+test("sobre: con 11 dominios NO alcanza, y el aviso pide LAS DOS palancas", () => {
+  // El incidente que previene: "arrancar 5 dominios más" con el tope y el intervalo intactos NO
+  // arranca 5 — reparte 14 envíos entre 11 dominios (1,27 cada uno), nadie junta las 4 mediciones
+  // que la rampa pide, y los 6 que HOY calientan pasan de 2/día a 1,27. El daemon no se rompe ni
+  // avisa: simplemente todos calientan menos. Antes de este aviso, el log no decía una palabra.
+  const aviso = avisoDeSobre({ dominios: 11, maxPerDay: 14, intervalMs: 5_400_000, cupoArranque: 2 })!;
+  assert.match(aviso, /EL SOBRE NO ALCANZA/);
+  assert.match(aviso, /11 dominios × 2\/día = 22 correos/);
+  assert.match(aviso, /el sobre es 14 ciclos/);
+  assert.match(aviso, /el sobre son CICLOS y la demanda CORREOS/);
+  assert.match(aviso, /~1\.27\/día/);
+  // LAS DOS, y con números. Mover una sola no agrega un correo — que es exactamente la trampa que
+  // este aviso existe para cerrar.
+  assert.match(aviso, /intervalo ≤ 65min Y tope ≥ 22/);
+});
+
+test("sobre: subir el tope SIN bajar el intervalo no mueve el sobre — 14→50 sigue dando 16", () => {
+  // La trampa aritmética, del lado del sobre: `min(tope, ciclos)` está gobernado por el intervalo.
+  // Con 90 min entran 16 ciclos en el día, así que un tope de 50 sigue rindiendo 16, y 19 dominios
+  // siguen sin entrar. El que suba solo el tope va a mirar el log y no va a ver nada distinto.
+  const con50 = avisoDeSobre({ dominios: 19, maxPerDay: 50, intervalMs: 5_400_000, cupoArranque: 2 })!;
+  assert.match(con50, /el sobre es 16/, "el tope 50 se clampea a los 16 ciclos que permite el intervalo");
+  assert.match(con50, /intervalo ≤ 37min Y tope ≥ 38/);
+  // Y con las DOS movidas, los 19 entran.
+  const conLasDos = avisoDeSobre({ dominios: 19, maxPerDay: 38, intervalMs: 36 * 60_000, cupoArranque: 2 })!;
+  assert.doesNotMatch(conLasDos, /NO ALCANZA/);
 });
 
 // ── La línea de semillas: en qué RECEPTORES se mide ──────────────────────────────────────────────
@@ -549,6 +639,58 @@ test("una vuelta fallida NO mata el daemon: loguea y sigue", async () => {
   assert.ok(c.lineas.some((l) => /vuelta fallida, sigo/.test(l)), "se declara la vuelta perdida");
 });
 
+test("una vuelta fallida NO clava la rotación de TODA la flota en el mismo dominio", async () => {
+  // EL DEFECTO. `elegirBoxDeLaVuelta` elige por `seq % disponibles.length`, y dos de los `continue`
+  // del cuerpo ocurren DESPUÉS de haber elegido box sin avanzar `seq`: el de `filasDePlacement` y el
+  // catch de la vuelta. Sin el incremento, la vuelta siguiente elige EXACTAMENTE el mismo box, y así
+  // cada 90 minutos, en silencio — un solo dominio envenenado (una fila con basura en `detail`, un
+  // statement_timeout sobre su consulta) deja a los otros cinco sin calentar y nadie lo dice.
+  //
+  // Que es un olvido y no un diseño lo prueba el TERCER camino de fallo, el de la credencial SMTP,
+  // que sí hace `seq += 1`.
+  //
+  // ES UNA CORRIDA REAL DEL LOOP, no una simulación: el incremento sólo se observa a través de
+  // varias vueltas del mismo proceso, y una copia del `for` compartiría el error con el original —
+  // que es textual la lección que este repo ya pagó con el fixture de Bedrock. El precio son ~6 s:
+  // `intervaloConJitter` tiene un piso duro de 1 s por vuelta y hacen falta 6 para tocar 6 dominios.
+  const pool = ["d1.com", "d2.com", "d3.com", "d4.com", "d5.com", "d6.com"];
+  let locks = 0;
+  const pg = {
+    async query(sql: string) {
+      // El lock se suelta después de 6 vueltas: es la forma de terminar el daemon sin `--once`
+      // (con `--once` la primera vuelta rompe y la rotación no se puede observar).
+      if (/pg_try_advisory_lock/.test(sql)) { locks += 1; return { rows: [{ ok: locks <= pool.length + 1 }] }; }
+      // SÓLO `filasDePlacement` falla: lleva `node_domain = $1`, que `recentPlacements` no tiene.
+      // Si fallara también la lectura global, la vuelta moriría ANTES de elegir box y el test
+      // probaría otra cosa.
+      if (/node_domain = \$1/.test(sql)) throw new Error("57014 statement timeout");
+      if (/COUNT\(DISTINCT cycle_id\)/.test(sql)) return { rows: [{ n: 0 }] };
+      return { rows: [] };
+    },
+    async end() {}
+  };
+  const c = capturarLog();
+  try {
+    await startLiveWarmupDaemon({
+      // El intervalo va EXPLÍCITO en 1000: `intEnv` tiene mínimo 1000, así que el "50" de ENV_BASE
+      // cae al default de 4 HORAS y el test se cuelga esperando la segunda vuelta. Es el mismo piso
+      // que `intervaloConJitter`, o sea que 6 vueltas cuestan ~6 s y no hay forma de bajarlas.
+      env: { ...ENV_BASE, WARMUP_LIVE_BOXES: pool.join(","), WARMUP_LIVE_INTERVAL_MS: "1000" } as NodeJS.ProcessEnv,
+      argv: ["n", "d"],
+      dobles: { pg: pg as never, saltearMigraciones: true }
+    });
+  } finally { c.restaurar(); }
+
+  const tocados = new Set(
+    c.lineas.flatMap((l) => {
+      const m = /no pude leer el placement de (\S+)/.exec(l);
+      return m ? [m[1]!] : [];
+    })
+  );
+  assert.equal(tocados.size, pool.length, `la rotación tocó ${[...tocados].join(", ")} en vez de los ${pool.length} del pool`);
+  assert.ok(c.lineas.some((l) => /perdí el lock/.test(l)), "el daemon terminó por donde el test lo cortó");
+});
+
 test("el pool de pg tiene listener de 'error': un socket ocioso roto no tumba el proceso", async () => {
   // pg-pool emite 'error' en clientes ociosos FUERA de todo await: sin listener, EventEmitter lanza
   // y ningún try/catch lo ve. Es el caso normal cuando Postgres se reinicia durante las 4h de espera.
@@ -840,4 +982,36 @@ test("las semillas SOLO-DESTINO no pueden ser el instrumento: no miden nada", ()
 
 test("sin ninguna semilla que mida no hay instrumento", () => {
   assert.equal(instrumentoDeMedicion([semilla("solodestino@gmail.com", "none")]), null);
+});
+
+test("EL AVISO DEL SOBRE MIRA EL PISO DEL OPERADOR, no la constante: si no, se vuelve ciego justo al usarlo", async () => {
+  // EL INCIDENTE QUE FIJA (encontrado por QA antes de desplegar, 2026-08-07). El daemon pasaba
+  // `cupoArranque: CUPO_ARRANQUE` fijo, así que el aviso calculaba la demanda como dominios×2
+  // SIEMPRE — incluso corriendo con `WARMUP_RAMPA_PISO_SOSTENER=6`, que es la ÚNICA palanca capaz de
+  // destrabar la fábrica y el motivo entero de este trabajo.
+  //
+  // Con piso 6 la demanda real de los 6 dominios del pool es 36 correos/día (medido corriendo
+  // `decidirCupoDeHoy` con las 6 ventanas reales de la Postgres viva) contra un sobre de 14 ciclos, y
+  // el log seguía diciendo "entran 1 dominio(s) más". El operador que lea eso agrega un séptimo
+  // dominio y produce exactamente la dilución que el aviso existe para evitar: nadie junta las 4
+  // mediciones que la rampa pide, y sumar dominios le SACA volumen a los que ya calientan.
+  const ciego = avisoDeSobre({ dominios: 6, maxPerDay: 14, intervalMs: 5_400_000, cupoArranque: 2 })!;
+  assert.match(ciego, /entran 1 dominio\(s\) más/, "con el piso por defecto el sobre alcanza — ése es el estado de hoy");
+
+  const conLaPalanca = avisoDeSobre({ dominios: 6, maxPerDay: 14, intervalMs: 5_400_000, cupoArranque: 6 })!;
+  assert.match(conLaPalanca, /EL SOBRE NO ALCANZA/, `con el piso en 6 el MISMO sobre no alcanza: ${conLaPalanca}`);
+  assert.match(conLaPalanca, /6 dominios × 6\/día = 36 correos/);
+  assert.match(conLaPalanca, /Hacen falta LAS DOS/, "y sube el tope Y baja el intervalo, no una sola");
+
+  // Y LAS DOS MITADES ATADAS: el aviso puede estar perfecto y no servir si el daemon le pasa la
+  // constante. Va como contrato sobre la fuente porque el `sobreCfg` se arma dentro del loop, que
+  // abre Pool, mailers e IMAP — simularlo sería una COPIA del loop, y una copia comparte el error con
+  // el original (la lección del fixture de Bedrock).
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile("apps/warmup-engine/src/service/live-warmup-daemon.ts", "utf8");
+  assert.match(
+    src,
+    /cupoArranque: cfg\.pisoSostener/,
+    "el daemon tiene que pasarle el piso del entorno al aviso, no CUPO_ARRANQUE"
+  );
 });

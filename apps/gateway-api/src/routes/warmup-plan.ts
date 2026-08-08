@@ -27,6 +27,20 @@ export interface WarmupPlanDeps {
   capFile: string;
   /** Medición de salud de la flota: saca del pool lo que no se puede calentar. */
   saludFile?: string;
+  /**
+   * Foto de autenticación de la flota (warmup-reputacion.json), la MISMA que lee el daemon
+   * (live-warmup-daemon.ts:196). Sin ella, `planDelDia` no aplica `authRota` y el panel muestra un
+   * pool más grande que el que corre.
+   *
+   * MEDIDO SOBRE LA FOTO DE PRODUCCIÓN DEL 2026-08-08 (solo lectura, con la función real del
+   * árbol): la ruta devolvía 36 dominios y el daemon calentaba 32. Los 4 de más eran
+   * annualfiling-ops.com (DRONE BL), annualfilingops.com y annualfilings-infra.com (RATS Dyna) y
+   * controldelivrix.app (sin PTR) — justo lo que `authRota` existe para sacar. O sea: el panel y
+   * el agente le reportaban al jefe cuatro dominios que en realidad nadie estaba calentando.
+   *
+   * Sólo puede ACHICAR el pool mostrado: es una lista de exclusiones y nunca agrega a nadie.
+   */
+  reputacionFile?: string;
   /** Pool configurado; solo se usa si no hay ninguna medición del cupo. */
   poolConfigurado: readonly string[];
   ventanaPlacement?: number;
@@ -68,6 +82,7 @@ export async function handleWarmupPlan(
       pg: deps.pgClient,
       capFile: deps.capFile,
       ...(deps.saludFile ? { saludFile: deps.saludFile } : {}),
+      ...(deps.reputacionFile ? { reputacionFile: deps.reputacionFile } : {}),
       poolConfigurado: deps.poolConfigurado,
       ventanaPlacement: deps.ventanaPlacement ?? 6,
       ahora

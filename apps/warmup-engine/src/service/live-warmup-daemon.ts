@@ -18,6 +18,8 @@ import { Pool, Client as PgClientDirecto } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import {
+  CUPO_ARRANQUE,
+  MUESTRA_MINIMA,
   decidirCupoDeHoy,
   esInbox,
   evaluarGate,
@@ -119,6 +121,14 @@ export interface LiveDaemonConfig {
   /** ¿La rampa da 0 el fin de semana? Sale de `rampaDesdeEnv` para no divergir del panel. */
   soloDiasHabiles: boolean;
   /**
+   * El piso de "sostener" que el operador puede aprobar (`WARMUP_RAMPA_PISO_SOSTENER`). Viaja hasta
+   * `decidirCupoDeHoy` por el mismo motivo que las otras tres: si el daemon la leyera y el panel no,
+   * `/v1/warmup/plan` anunciaría un cupo distinto del que se ejecuta.
+   */
+  pisoSostener: number;
+  /** El orden explícito de la cola de arranque (`WARMUP_LIVE_ARRANCA_PRIMERO`). Vacío = alfabeto. */
+  arrancaPrimero: string[];
+  /**
    * Franja horaria UTC en la que se permite enviar (`"08-22"`). `null` = las 24 h, que es lo de hoy.
    *
    * §3 del doc lista "spread horario" entre los levers y "cadencia de máquina" entre los errores que
@@ -170,6 +180,11 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     placementFloor: floatEnv(env.WARMUP_LIVE_PLACEMENT_FLOOR, 0.5),
     placementWindow: intEnv(env.WARMUP_LIVE_PLACEMENT_WINDOW, 6, 1),
     boxes,
+    // QUIÉN ARRANCA PRIMERO cuando hay más de un dominio nuevo esperando turno. Vacío = el alfabeto,
+    // que es lo de hoy. Ver `arrancaPrimero` en `elegirPool`: sin esto, soltar los 7 vírgenes de
+    // golpe hace entrar a bizregistry-ops.com por ser el primero por nombre, y es el peor de los
+    // siete (11 de 13 nodos no sanos en su /24).
+    arrancaPrimero: (env.WARMUP_LIVE_ARRANCA_PRIMERO ?? "").split(",").map((x) => x.trim()).filter(Boolean),
     // Semilla de respaldo. La fuente real es el REGISTRO (warmup-seeds.json): esta env var queda
     // solo para el caso en que el registro no exista todavía, y para saber cuál es la que MIDE
     // (la que tiene el refresh token OAuth de config/warmup-oauth.local.json).
@@ -286,6 +301,109 @@ export function lineaDeArranque(
     ` · rampa por dominio hasta ${cfg.limiteDiario}/día (+${cfg.pasoPorDia}/día), techo duro ${TECHO_DURO_POR_DOMINIO}/día` +
     ` · piso placement ${(cfg.placementFloor * 100).toFixed(0)}% · seed ${cfg.seedInbox} (el pool se decide en cada vuelta)`
   );
+}
+
+/**
+ * ¿El sobre de volumen alcanza para los dominios del pool? Devuelve el aviso, o `null` si alcanza.
+ *
+ * LA MITAD QUE FALTABA. `lineaDeArranque` ya avisa cuando el tope no se puede alcanzar con ese
+ * intervalo (tope > ciclos posibles), pero ése es el lado barato del problema: el caro es el de
+ * abajo, y hasta este cambio no lo decía nadie. El sobre es `min(tope, ciclos que entran en el día)`
+ * y la demanda es `dominios × cupo de arranque`; cuando la demanda lo pasa, el daemon NO se rompe
+ * ni avisa: reparte. Cada dominio recibe menos de sus 2 envíos, nadie junta las `MUESTRA_MINIMA`
+ * mediciones que la rampa pide para moverse, y el resultado de "arrancar 5 dominios más" es que
+ * los que YA calentaban calientan MENOS. Medido el 2026-08-07 en producción: 6 dominios × 2 = 12
+ * contra un sobre de 14 ⇒ entra uno solo más; con los 19 limpios adentro serían 38 contra 14, o sea
+ * 0,74 envíos/día por dominio.
+ *
+ * Va acá y no en la línea ARRANCA a propósito: al arrancar el pool NO se conoce (se decide en cada
+ * vuelta, desde la medición del cupo físico), y en producción `WARMUP_LIVE_BOXES` trae un dominio
+ * solo. El número honesto existe recién cuando `elegirPool` corrió.
+ *
+ * Los DOS valores van juntos en el aviso porque están ACOPLADOS: subir el tope sin bajar el
+ * intervalo no agrega un correo, y bajar el intervalo sin subir el tope tampoco. El que mueva uno
+ * solo va a mirar el log y no va a ver nada distinto. Pura: se testea sin arrancar nada.
+ *
+ * LAS DOS MAGNITUDES NO SON LA MISMA UNIDAD Y EL AVISO LO TIENE QUE DECIR. El sobre son CICLOS
+ * (`WARMUP_LIVE_MAX_PER_DAY`), y `countCyclesToday` lo mide con `COUNT(DISTINCT cycle_id)`; la
+ * demanda son CORREOS. No es una sutileza de redacción: los turnos de continuación se graban con el
+ * cycleId de la vuelta ACTUAL (deliberado, ver el `recorder.record` del hilo), así que N "Re:"
+ * dentro de una vuelta cuestan CERO del tope. Medido en la Postgres de producción — 2026-08-05: 18
+ * envíos en 11 ciclos; 08-06: 15 en 12 — y una sola semilla tiene 8 hilos abiertos con
+ * corpfiling-infra.com, o sea que una vuelta puede emitir 1 principal + 8 continuaciones y contar 1.
+ *
+ * El techo REAL de correo/día es Σ cupo_por_dominio, no `maxPerDay`. Hoy está tapado porque el piso
+ * de la rampa frena las continuaciones de los dominios sin muestra; se destapa cuando la rampa se
+ * destrabe. Cambiar el freno a `COUNT(*)` bajaría volumen ⇒ se le PROPONE al operador, no se hace acá.
+ */
+export function avisoDeSobre(e: {
+  dominios: number;
+  maxPerDay: number;
+  intervalMs: number;
+  cupoArranque: number;
+}): string | null {
+  const ciclosPosibles = Math.floor(86_400_000 / e.intervalMs);
+  const sobre = Math.min(e.maxPerDay, ciclosPosibles);
+  const demanda = e.dominios * e.cupoArranque;
+  // La aclaración de unidad va en las DOS ramas: el ticket que sale de acá pide "tope ≥ N", y el
+  // tope se paga en CICLOS. Sin esto se dimensiona un presupuesto de ciclos para una demanda de
+  // correos, que es exactamente el error que este aviso vino a evitar.
+  const unidad =
+    ` (el sobre son CICLOS y la demanda CORREOS: cada ciclo puede llevar continuaciones de hilo, que ` +
+    `no gastan ciclo, así que el tope de ciclos NO acota el correo)`;
+  if (demanda <= sobre) {
+    return `sobre: ${e.dominios}×${e.cupoArranque}=${demanda} correos/día ≤ ${sobre} ciclos del sobre — entran ${Math.floor(sobre / e.cupoArranque) - e.dominios} dominio(s) más${unidad}`;
+  }
+  // El intervalo que haría falta se dice en minutos y REDONDEADO PARA ABAJO: uno de más y la cuenta
+  // no cierra por un ciclo. Es el número que va al ticket, no una orientación.
+  const intervaloNecesarioMin = Math.floor(86_400_000 / demanda / 60_000);
+  return (
+    `OJO — EL SOBRE NO ALCANZA: ${e.dominios} dominios × ${e.cupoArranque}/día = ${demanda} correos, ` +
+    `y el sobre es ${sobre} ciclos (tope ${e.maxPerDay}, intervalo ${Math.round(e.intervalMs / 60000)}min ⇒ ${ciclosPosibles} ciclos). ` +
+    `Cada dominio va a recibir ~${(sobre / e.dominios).toFixed(2)}/día y NADIE junta las ${MUESTRA_MINIMA} mediciones que la rampa pide: ` +
+    `sumar dominios acá le saca volumen a los que ya calientan. ` +
+    `Hacen falta LAS DOS: intervalo ≤ ${intervaloNecesarioMin}min Y tope ≥ ${demanda} — cambiar una sola no sirve${unidad}`
+  );
+}
+
+/**
+ * EL POOL CUANDO NO HAY MEDICIÓN DE SALUD LEGIBLE. Sin ella el pool se acota al CONFIGURADO.
+ *
+ * `leerSalud` devuelve `undefined` ante cualquier fallo de lectura o de parseo (y también con
+ * `bandejas` vacío), y `elegirPool` se saltea entero el bloque `if (salud && salud.size > 0)`. Eso
+ * no apaga sólo las exclusiones de salud: apaga la exclusión por `cruzados`, que es la ÚNICA
+ * irreversible. Medido con los archivos reales de producción del 2026-08-07 y el `elegirPool` de
+ * verdad: con salud ⇒ 6 boxes; con `salud: undefined` ⇒ 44, y entre esos 44 entran los 8 dominios
+ * con `cruzados` no vacío (nationalfiling-infra.com entre ellos), los 6 marcados cerrados por el
+ * receptor y el de la cola atascada. No es un riesgo futuro: hoy hay 49 nodos con cap > 0 y
+ * `medirFlota` reescribe el archivo ENTERO, así que una escritura cortada deja JSON inválido.
+ *
+ * Y las DOS barandas nuevas del lote —el arrastre de `cerradoEn` y `MAX_ARRANCANDO_A_LA_VEZ`— viven
+ * adentro de ese mismo `if`, o sea que nacían heredando el fail-open: el día que el archivo falle no
+ * entra "un dominio nuevo por vez", entran todos.
+ *
+ * SE DEGRADA AL POOL CONFIGURADO Y NO A TODO LO QUE TENGA CUPO: fallar a la lista explícita del
+ * operador (hoy `WARMUP_LIVE_BOXES=corpfiling-infra.com`) es fallar cerrado sin apagar el warmup.
+ *
+ * VIVE ACÁ Y NO ADENTRO DE `elegirPool` a propósito. El que MANDA es el loop del daemon;
+ * `planDelDia` —el panel y lo que el agente le reporta al jefe— es LECTURA, y dejarlo sin plan no
+ * protege nada y encima esconde. Y adentro de `elegirPool` habría que decidir lo mismo para los dos.
+ */
+export function poolSinSalud(
+  pool: { boxes: string[]; motivo: string },
+  configurado: readonly string[],
+  haySalud: boolean,
+  saludFile: string
+): { boxes: string[]; motivo: string } {
+  if (haySalud) return pool;
+  const acotado = pool.boxes.filter((b) => configurado.includes(b));
+  return {
+    boxes: acotado,
+    motivo:
+      `SIN medición de salud legible (${saludFile}) y sin una lectura buena en esta corrida: me quedo con los ` +
+      `${acotado.length} del pool CONFIGURADO en vez de los ${pool.boxes.length} nodos con cap > 0 — sin ese ` +
+      `archivo no sé quién cruzó el umbral permanente`
+  };
 }
 
 /**
@@ -618,6 +736,28 @@ interface HiloPrevio {
 }
 
 /**
+ * CUÁNTOS HILOS MIRA UNA VUELTA. NO es el freno de volumen — el freno es el `break` del `for`.
+ *
+ * Acá vivía `MAX_HILOS_POR_VUELTA = 3` justificado con "una sola vuelta podía emitir 1 principal + 8
+ * Re: y contar como 1 ciclo". Ese escenario NO era alcanzable: el `for (const hiloPrevio of
+ * abiertos)` termina en un `break` INCONDICIONAL después del primer turno enviado, y ese break está
+ * en HEAD desde antes (`git show HEAD:… | grep -n 'Un turno por vuelta'` ⇒ línea 1684). Una vuelta
+ * nunca pudo mandar más de UNA continuación.
+ *
+ * Y el techo inventado sí podía restar correo, porque el LIMIT se aplica en el SQL —o sea ANTES de
+ * que `puedeMandarTurno` filtre—: si los 3 hilos más nuevos son de dominios no elegibles (fuera del
+ * pool, sin muestra, con una sola ranura libre), la vuelta manda CERO continuaciones aunque el 4º
+ * hilo sí calificara. Hoy no muerde porque el primero de la lista es elegible, pero
+ * statefilings-control.com ya no lo es y basta con un hilo más arriba para que la vuelta se quede
+ * sin "Re:". Era un techo agregado sobre un riesgo inexistente, en la tarea cuyo encargo es que la
+ * fábrica caliente MÁS.
+ *
+ * Queda un tope HOLGADO y sobre el RESULTSET, no sobre el correo: una semilla con cientos de hilos
+ * de 7 días no tiene por qué viajar entera para que se mande uno solo.
+ */
+const MAX_HILOS_A_MIRAR = 20;
+
+/**
  * Los hilos recientes de ESTA semilla, del más nuevo al más viejo, sin el de la vuelta actual.
  *
  * Se limita a 7 días: un hilo más viejo que eso ya no es una conversación, es un desentierro — y
@@ -643,7 +783,8 @@ async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: strin
           AND test_id IS NOT NULL
           AND occurred_at > now() - interval '7 days'
         ORDER BY test_id, occurred_at ASC
-     ) h ORDER BY h.primero DESC`,
+     ) h ORDER BY h.primero DESC
+     LIMIT ${MAX_HILOS_A_MIRAR}`,
     [seed, cycleActual]
   );
   return rows
@@ -839,6 +980,15 @@ function createPgRecorder(pg: PgClient): ActivityRecorder {
 function createBoxMailer(boxDomain: string, store: InventoryCredentialStore, key: Buffer): WarmupMailer {
   const { record, password } = findAndDecryptBox(store, boxDomain, key);
   const nodemailer = require("nodemailer");
+  // `rejectUnauthorized: false` ES DELIBERADO, y lo que se pierde con él hay que decirlo.
+  //
+  // Los nodos son NUESTROS y muchos presentan un certificado autofirmado o vencido; con `true`, el
+  // envío falla y eso sería una reducción de volumen por accidente sobre nuestra propia flota. Lo
+  // que se paga: el EMISOR nunca se entera de un certificado caído, porque se lo traga. El veredicto
+  // de TLS tiene que venir del BARRIDO de reputación (`warmup-reputacion.json` → `authRota`), que es
+  // el único que mira de verdad. Y hoy ese barrido devuelve `no-se` en los 66 dominios, así que la
+  // señal no existe por ningún camino: filing-ops.com se quedó sin certificado y se descubrió A MANO
+  // semanas después. Cablear la sonda es el lote 4; esta línea sola no puede cubrirlo.
   const transport = nodemailer.createTransport({
     host: record.host, port: 587, secure: false, requireTLS: true,
     auth: { user: record.username, pass: password }, tls: { rejectUnauthorized: false }
@@ -1059,6 +1209,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   // corre `limite-fisico` a media semana y libera otros nodos, un pool congelado al arrancar deja
   // al daemon girando días sin calentar nada — mientras `/v1/warmup/plan` ya muestra los nuevos.
   const poolConfigurado = [...cfg.boxes];
+  // LA ÚLTIMA LECTURA BUENA DE LA SALUD. Ver el bloque `saludFlota` en el loop: un archivo ilegible
+  // por una vuelta no puede abrir el pool de 6 a 44.
+  let ultimaSalud: Awaited<ReturnType<typeof leerSalud>>;
   let poolAnterior = "";
   log(lineaDeArranque(cfg));
 
@@ -1080,6 +1233,21 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   // a media tarde: eso espera al cambio de día, y son diez días de espera contra unas horas más.
   const agotados = new Set<string>();
   let diaDeAgotados = "";
+
+  // El sobre no cambia dentro de una corrida (tope e intervalo son config), así que se arma UNA vez.
+  // Lo único que cambia por vuelta es cuántos dominios entraron al pool. Y va ANTES del loop a
+  // propósito: el contrato "ninguna espera usa el intervalo pelado" cuenta cada `cfg.intervalMs` del
+  // cuerpo del loop, y tiene razón en contarlos todos — la forma de no debilitarlo es no agregar
+  // lecturas del intervalo ahí adentro, no aflojar el barrido.
+  //
+  // `cfg.pisoSostener` Y NO LA CONSTANTE `CUPO_ARRANQUE`, o el aviso se vuelve ciego JUSTO cuando se
+  // usa la única palanca que puede destrabar la fábrica. Con `WARMUP_RAMPA_PISO_SOSTENER=6` —el
+  // motivo entero de este trabajo— la demanda real pasa a 6 dominios × 6 = 36 correos/día, y con la
+  // constante el log seguía diciendo "12 correos/día ≤ 14 ciclos del sobre — entran 1 dominio(s)
+  // más". El operador que lea eso agrega un séptimo dominio y produce exactamente la dilución que el
+  // aviso existe para evitar. Verificado corriendo `avisoDeSobre` con los dos valores: con 2 dice
+  // "entran 1 dominio(s) más"; con 6 dice "OJO — EL SOBRE NO ALCANZA … hacen falta LAS DOS".
+  const sobreCfg = { maxPerDay: cfg.maxPerDay, intervalMs: cfg.intervalMs, cupoArranque: cfg.pisoSostener };
 
   // EL METRÓNOMO SE ROMPE ACÁ. Todas las esperas del intervalo pasan por esta función: dejar una
   // sola con `sleep(cfg.intervalMs)` alcanzaría para que el patrón vuelva a aparecer en el log, que
@@ -1141,18 +1309,45 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       const capsFisicos = await leerCuposFisicos(cfg.capFile);
       // La salud saca del pool lo que no se puede calentar: cruzado el umbral, cerrado por el
       // receptor, o con la cola atascada. Tener cupo no es lo mismo que valer la pena.
-      const saludFlota = await leerSalud(cfg.saludFile);
+      // UN ARCHIVO ILEGIBLE NO PUEDE ABRIR EL POOL DE 6 A 44, Y ABRÍA.
+      //
+      // `leerSalud` devuelve `undefined` ante CUALQUIER fallo de lectura o parseo (y también con
+      // `bandejas` vacío), y `elegirPool` se saltea entero el bloque `if (salud && salud.size > 0)`.
+      // Eso no apaga sólo las exclusiones de salud: apaga la exclusión por `cruzados`, que es la
+      // ÚNICA irreversible. Medido con los archivos reales de producción del 2026-08-07 y el
+      // `elegirPool` de verdad: con salud ⇒ 6 boxes; con `salud: undefined` ⇒ 44, y entre esos 44
+      // entran los 8 dominios con `cruzados` no vacío (nationalfiling-infra.com entre ellos), los 6
+      // marcados cerrados por el receptor y el de la cola atascada. No es un riesgo futuro: hoy hay
+      // 49 nodos con cap > 0 y `medirFlota` reescribe el archivo ENTERO, así que una escritura
+      // cortada deja JSON inválido.
+      //
+      // Dos barandas, la barata primero:
+      //  1. la última lectura BUENA de esta corrida se reusa — un hipo de una vuelta no cambia nada;
+      //  2. y si nunca hubo una buena, se degrada al pool CONFIGURADO (la lista explícita del
+      //     operador, hoy `WARMUP_LIVE_BOXES=corpfiling-infra.com`) en vez de a toda la flota con
+      //     cap > 0. Fallar a la lista del operador, no a los 44.
+      // Se acota acá y no adentro de `elegirPool` a propósito: el que MANDA es este loop, y
+      // `planDelDia` (el panel, el agente) es lectura — dejarlo sin plan no protege nada y esconde.
+      const saludLeida = await leerSalud(cfg.saludFile);
+      if (saludLeida) ultimaSalud = saludLeida;
+      const saludFlota = saludLeida ?? ultimaSalud;
       // Y la AUTENTICACIÓN, que es la exclusión que faltaba: hasta hoy el warmup mandaba sin
       // verificar que DKIM/PTR/cert siguieran vivos. Lo escribe el barrido diario de reputación;
       // si el archivo no está, no excluye a nadie y el pool sale igual que antes.
       const authFlota = await leerReputacion(cfg.reputacionFile);
-      const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota, authFlota);
+      const poolCrudo = elegirPool(capsFisicos, poolConfigurado, saludFlota, authFlota, cfg.arrancaPrimero);
+      const poolElegido = poolSinSalud(poolCrudo, poolConfigurado, saludFlota !== undefined, cfg.saludFile);
       if (poolElegido.boxes.join(",") !== poolAnterior) {
         poolAnterior = poolElegido.boxes.join(",");
         // El pool cambió ⇒ hay medición nueva del cupo o de la salud, así que la foto de agotados
         // es vieja: un nodo que marcamos agotado con cap 0 puede tener cupo real ahora mismo.
         agotados.clear();
         log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
+        // El sobre se dice CON EL POOL AL LADO, en la misma vuelta en que el pool cambia: es el
+        // único momento en que el número es real. Ver `avisoDeSobre`.
+        if (poolElegido.boxes.length > 0) {
+          log(avisoDeSobre({ dominios: poolElegido.boxes.length, ...sobreCfg })!);
+        }
       }
 
       const { action, reason } = decideDaemonAction({
@@ -1296,10 +1491,19 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
             isoWeekday,
             limiteDiario: cfg.limiteDiario,
             pasoPorDia: cfg.pasoPorDia,
-            soloDiasHabiles: cfg.soloDiasHabiles
+            soloDiasHabiles: cfg.soloDiasHabiles,
+            pisoSostener: cfg.pisoSostener
           });
         } catch (err) {
           log(`no pude leer el placement de ${box} (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
+          // EL CURSOR AVANZA AUNQUE LA VUELTA FALLE. `elegirBoxDeLaVuelta` elige por `seq %
+          // disponibles.length`: si el cursor no se mueve, la vuelta siguiente elige EXACTAMENTE el
+          // mismo box, y así cada 90 minutos, en silencio. Un solo dominio envenenado —una fila con
+          // basura en `detail`, un statement_timeout sobre su consulta— clava la rotación de TODA la
+          // flota y los otros cinco dejan de calentar sin que nadie lo diga.
+          // Que es un olvido y no un diseño lo prueba el tercer camino de fallo, el de la credencial
+          // SMTP unas líneas más abajo, que sí hace `seq += 1`.
+          seq += 1;
           if (once) break;
           await dormirIntervalo();
           continue;
@@ -1509,7 +1713,8 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                   isoWeekday,
                   limiteDiario: cfg.limiteDiario,
                   pasoPorDia: cfg.pasoPorDia,
-                  soloDiasHabiles: cfg.soloDiasHabiles
+                  soloDiasHabiles: cfg.soloDiasHabiles,
+                  pisoSostener: cfg.pisoSostener
                 });
               } catch (err) {
                 log(`hilo ${marca}: no pude leer el estado de ${hiloPrevio.nodeDomain}, no mando — ${err instanceof Error ? err.message : String(err)}`);
@@ -1706,6 +1911,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
 
       } catch (err) {
         log(`WARN vuelta fallida, sigo: ${err instanceof Error ? err.message : String(err)}`);
+        // MISMO MOTIVO QUE ARRIBA: si la excepción cayó DESPUÉS de elegir box (que es lo normal —
+        // el IMAP que corta, el mailer que revienta, el recorder), no avanzar el cursor deja a la
+        // rotación clavada en ese mismo dominio para siempre. Avanzarlo cuando el fallo fue ANTES
+        // de elegir no cuesta nada: lo único que hace es correr un lugar la rueda.
+        seq += 1;
         if (once) break;
         // INTERVALO COMPLETO, nunca un reintento rápido. Con Postgres aceptando lecturas y
         // rechazando escrituras (disco lleno, failover parcial), el correo SALE y la fila `sent` no

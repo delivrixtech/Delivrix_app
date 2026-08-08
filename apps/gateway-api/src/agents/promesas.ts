@@ -55,8 +55,26 @@ export interface Promesa {
   /**
    * Se cierra SIN mensaje al vencer, porque ya hubo una disculpa por lo mismo hace poco. Ver el
    * dedupe contra las CERRADAS en `anotarPromesa`. No afecta a las cumplidas: esas traen dato.
+   *
+   * TAMBIÉN la marca el llamador cuando `porQueNoSePodraCumplir` dictaminó al PROMETER: ahí el jefe
+   * ya se enteró en el mismo mensaje, así que la disculpa de las 6 h sería la segunda vez que le
+   * decimos lo mismo.
    */
   callada?: boolean;
+  /**
+   * LA CITA, en instante UTC absoluto. `undefined` = esta promesa espera un campo, no un reloj.
+   *
+   * Campo APARTE y NUNCA `esperando: "fecha:…"`, por tres razones verificadas: sentinel-chat.test.ts
+   * cruza todo valor ofrecido en `espero=` contra `camposObservables` y un `fecha:` lo reventaría;
+   * `claveLegible` sin entrada en `ETIQUETA` manda el objeto pelado, o sea el ISO crudo al canal; y
+   * el `medible` de abajo diría "nadie está midiendo eso" sobre un recordatorio.
+   *
+   * El incidente: el jefe dijo "el lunes a las 5pm hora Colombia", el agente contestó "queda
+   * anotado", y no había NADA que lo trajera de vuelta el lunes — `revisarPromesas` solo sabía
+   * comparar un campo observable entre dos snapshots, y el único reloj que existía era el
+   * vencimiento de 6 h, que habría convertido la cita en una disculpa el mismo viernes.
+   */
+  cuandoEn?: string;
   cerradaEn?: string;
   /** Cuándo salió el mensaje que la anunció. Es el reloj de `MINUTOS_ENTRE_DISCULPAS`. */
   anuncioEn?: string;
@@ -115,6 +133,92 @@ const MAX_LINEAS = 5;
 /** Un `que` demasiado corto no es una promesa: es un marcador mal emitido por el modelo. */
 const MINIMO_QUE = 5;
 
+/**
+ * ¿ESTA PROMESA NACE MUERTA? Devuelve el motivo en castellano, o `null` si no hay nada que objetar.
+ *
+ * EL INCIDENTE, en warmup-promesas.json de producción (Mac Studio, 2026-08-07): pm-1 y pm-2 se
+ * abrieron a las 14:48 y 14:49 esperando `placement:filing-ops.com` y se cerraron "vencida" a las
+ * 20:58:53.920Z. filing-ops.com está en `cap: 0` en sender-cap.json y no tiene UNA sola fila en
+ * warmup_activity en toda la historia de la tabla: no puede mandar, así que nunca iba a existir una
+ * medición de placement que avisar. El sistema hizo lo correcto —venció en voz alta en vez de
+ * evaporarse— pero el jefe esperó 6 horas por algo que era imposible en el instante en que se
+ * prometió. Eso se descubre AL PROMETER.
+ *
+ * LA INVARIANTE QUE LO SEPARA DEL CHEQUEO QUE YA SE BORRÓ (ver el comentario largo de
+ * `anotarPromesa`): este predicado NO recibe ni mira ningún retrato. Lee UNA LISTA POSITIVA y solo
+ * dictamina cuando el nombre ESTÁ en la lista de cosas apagadas. El viejo leía AUSENCIA ("no está
+ * medido"), y por eso degradaba toda promesa legítima sobre un dominio nuevo; éste lee PRESENCIA
+ * ("está frenado"). Ausencia de dato no es evidencia — es la lección de los 38 nodos cerrados en
+ * Gmail con las IPs limpias en todas las listas negras.
+ *
+ * SOLO `placement:`, y no "cualquier clave que nombre un frenado": `plan:X.enPool` yendo de 0 a 1 es
+ * "volvió a calentar", que es LA promesa legítima sobre un dominio frenado, y `revisarPromesas`
+ * cuenta esa clave como cumplimiento. Un predicado que mirara solo "está en frenados" la mataría.
+ *
+ * NO hay clase 'campo-que-nadie-escribe' ni 'fuera-del-inventario': la primera ya la cubre el
+ * vencimiento a 6 h, que dice "nadie está midiendo eso"; la segunda no tiene un solo incidente
+ * medido. Se agregan cuando aparezca el primero.
+ *
+ * `frenados` en `null` es "la medición del cupo está vencida" y NO produce veredicto: el 2026-08-04
+ * sender-cap.json decía 2000 en nodos que en vivo estaban en 0, y un reparo falso enseña a ignorar
+ * todos los demás.
+ */
+export function porQueNoSePodraCumplir(esperando: string | null, frenados: readonly string[] | null): string | null {
+  if (!esperando || !esperando.startsWith("placement:")) return null;
+  if (!Array.isArray(frenados) || frenados.length === 0) return null;
+  const dominio = esperando.slice("placement:".length).trim().toLowerCase();
+  if (dominio === "" || !frenados.some((d) => (d ?? "").trim().toLowerCase() === dominio)) return null;
+  // Colombiano con tuteo: es lo que el agente le dice al jefe, y hay un test que lo fija. Pasa por
+  // el mismo embudo de la voz que el resto de este archivo.
+  return enCastellano(
+    `Te lo anoto, pero ojo: ${dominio} está en cap 0, así que no va a mandar nada y no va a haber qué medir. ` +
+      `Si quieres ese dato, primero hay que soltarlo.`
+  );
+}
+
+/** Nadie promete una cita a más de un mes: más allá de eso es el modelo inventando una fecha. */
+const DIAS_MAXIMOS_DE_CITA = 30;
+
+/**
+ * LA HORA DE PARED DEL JEFE → INSTANTE ABSOLUTO. `"2026-08-10T17:00"` → `"2026-08-10T22:00:00.000Z"`.
+ * `null` cuando no se puede afirmar el instante, y entonces la promesa se anota igual pero sin cita.
+ *
+ * EL OFFSET ES EXPLÍCITO Y FIJO (-05:00) A PROPÓSITO. Colombia no tiene horario de verano desde
+ * 1993, así que la única zona que entra en la cuenta —la del jefe— es constante; la que NO lo es es
+ * la de la máquina, y por eso no aparece. Medido: la Studio corre en America/New_York (`ssh studio
+ * date` → EDT, offset 240) y `grep -c '^TZ=' config/gateway.env` da 0, así que
+ * `Date.parse("2026-08-10T17:00")` ahí devuelve 21:00Z cuando las 5pm de Bogotá son 22:00Z. UNA HORA
+ * ANTES, y solo de marzo a noviembre: en horario de invierno el bug pasa cualquier prueba.
+ *
+ * EL ROUND-TRIP NO ES DECORACIÓN: `Date.parse("2026-02-30T17:00:00-05:00")` NO da NaN, da el 2 de
+ * marzo (verificado en este Node). Volver a formatear el instante en America/Bogota y exigir que
+ * vuelva IDÉNTICO es lo único que ve esa corrida silenciosa.
+ */
+export function aInstante(pared: string | null, ahoraISO: string): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})$/.exec((pared ?? "").trim());
+  if (!m) return null;
+  const [, fecha, hh, mm] = m as unknown as [string, string, string, string];
+  const t = Date.parse(`${fecha}T${hh}:${mm}:00-05:00`);
+  const ahora = Date.parse(ahoraISO);
+  if (!Number.isFinite(t) || !Number.isFinite(ahora)) return null;
+  // `sv-SE` porque formatea "AAAA-MM-DD HH:MM" sin trucos de locale, y `hourCycle: "h23"` porque sin
+  // él la medianoche vuelve como "24:00" y una cita legítima se descartaría.
+  const vuelta = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).format(new Date(t));
+  if (vuelta !== `${fecha} ${hh}:${mm}`) return null;
+  // Una cita en el pasado dispararía en la vuelta siguiente, o sea "acá estoy" diez minutos después
+  // de prometerlo. Y una a tres meses es el modelo inventando, no el jefe pidiendo.
+  if (t <= ahora || t - ahora > DIAS_MAXIMOS_DE_CITA * 86_400_000) return null;
+  return new Date(t).toISOString();
+}
+
 function normalizar(v: string | number | null | undefined): string | number | null {
   return v === undefined ? null : v;
 }
@@ -142,7 +246,23 @@ function comoTexto(v: string | number | null): string {
  */
 export function anotarPromesa(
   lista: readonly Promesa[],
-  p: { que: string; hilo: string | null; esperando: string | null },
+  p: {
+    que: string;
+    hilo: string | null;
+    esperando: string | null;
+    /**
+     * La hora de PARED que dijo el jefe ("2026-08-10T17:00"), tal cual la emitió el modelo. Se
+     * convierte acá con `aInstante`: una fecha que no se puede afirmar NO tumba la promesa, la deja
+     * genérica (se anota, vence a las 6 h y dice algo).
+     */
+    cuando?: string | null;
+    /**
+     * El llamador ya le dijo al jefe por qué esto no se va a poder cumplir (ver
+     * `porQueNoSePodraCumplir`). La promesa se anota IGUAL —la imposibilidad es CONDICIONAL: cap 0 es
+     * exactamente lo que `soltar_dominio` cambia— pero al vencer se cierra sin repetir la disculpa.
+     */
+    callada?: boolean;
+  },
   ahoraISO: string
 ): Promesa[] {
   const base = Array.isArray(lista) ? [...lista] : [];
@@ -162,6 +282,29 @@ export function anotarPromesa(
   // Quién mide qué se sabe recién al VENCER, y ahí se dice: `revisarPromesas` mira el retrato de ese
   // momento y separa "no se movió en 6 h" de "nadie está midiendo eso".
   const esperando = p.esperando ?? null;
+
+  // ── SI VIENEN LAS DOS, GANA EL CAMPO Y LA CITA SE DESCARTA. LO DECIDE EL CÓDIGO, NO EL PROMPT ──
+  //
+  // `revisarPromesas` abre con `if (p.cuandoEn !== undefined) { … continue; }` INCONDICIONAL, así que
+  // una promesa con las dos claves pierde la rama del campo observable ENTERA: el disparador queda
+  // guardado y muerto. Reproducido con el código real: una promesa sobre `placement:corpfiling-infra.com`
+  // con cita el lunes a las 5pm; el placement cambia de verdad de SPAM a INBOX dos horas después y
+  // `revisarPromesas` devuelve `aviso: null`. El jefe no se entera del dato que pidió, y encima el
+  // `venceEn` saltó de 6 h a cuatro días, o sea que la promesa tampoco vence a tiempo.
+  //
+  // Lo único que lo prevenía era una regla EN PROSA dentro del prompt ("no se combina con espero="),
+  // que es textualmente el modo de falla que este repo declara haber pagado: un criterio en prosa el
+  // modelo lo devuelve como hallazgo propio, y si es falso lo devuelve con seguridad. Y no es un
+  // borde inventado: hay un test que EXIGE que `extraerPromesa` devuelva las dos claves cuando el
+  // modelo las emite juntas, o sea que llegar acá con las dos es un caso soportado del parser.
+  //
+  // GANA `esperando` Y NO LA CITA, y el criterio es cuál falla mejor: con el campo, el jefe recibe el
+  // DATO que pidió —quizás antes de la hora, que no es un fallo— y la promesa conserva su
+  // vencimiento de 6 h, que dice algo. Con la cita, el dato se pierde en silencio hasta el lunes.
+  //
+  // No se loguea el valor descartado: esta función es PURA y no tiene canal (meterle un logger sería
+  // plomería en el único llamador). Queda dicho acá y fijado por un test.
+  const cuandoEn = esperando !== null ? null : aInstante(p.cuando ?? null, ahoraISO);
 
   // DEDUPE POR TÉRMINOS **Y** POR DISPARADOR. Dos promesas que esperan campos distintos son
   // distintas por definición, no hay heurístico que discutir. Sin la segunda mitad, los textos
@@ -186,11 +329,19 @@ export function anotarPromesa(
   //
   // Sin disparador (`esperando === null`) manda el texto, como antes: si no, todas las promesas
   // genéricas del canal suelto colapsarían en una sola.
+  //
+  // LA CITA VA PRIMERO Y TIENE SU PROPIA IDENTIDAD: mismo texto + mismo hilo + la previa TAMBIÉN es
+  // una cita. Y al coincidir SE REFRESCAN la hora y el vencimiento — que es lo contrario de la regla
+  // de las de campo, a propósito. Re-prometer un CAMPO prueba que todavía no cumplió (estirar el
+  // plazo sería no vencer nunca); re-prometer una FECHA *es* la cita nueva. Sin esto, "mejor el
+  // martes" deja dos recordatorios vivos y suenan los dos.
   const i = base.findIndex((x) =>
     !x.cerradaEn &&
-    (esperando !== null
-      ? (x.esperando ?? null) === esperando && (x.hilo ?? null) === (p.hilo ?? null)
-      : mismoPendiente(x.que, que) && (x.esperando ?? null) === null)
+    (cuandoEn !== null
+      ? x.cuandoEn !== undefined && mismoPendiente(x.que, que) && (x.hilo ?? null) === (p.hilo ?? null)
+      : esperando !== null
+        ? (x.esperando ?? null) === esperando && (x.hilo ?? null) === (p.hilo ?? null)
+        : mismoPendiente(x.que, que) && (x.esperando ?? null) === null)
   );
   if (i >= 0) {
     const previa = base[i] as Promesa;
@@ -200,7 +351,11 @@ export function anotarPromesa(
       // El hilo SÍ se refresca: el jefe está leyendo el hilo donde lo prometió recién, no el de hace
       // tres horas. El reloj (`abiertoEn`/`venceEn`) y el disparador no se tocan — el disparador ya
       // es parte de la identidad, si cambiara sería otra promesa.
-      hilo: p.hilo ?? previa.hilo
+      hilo: p.hilo ?? previa.hilo,
+      // `callada` es de un solo sentido: nunca se apaga. Si el llamador ya dijo por qué esto no se
+      // va a poder cumplir, repetirlo al vencer es decírselo dos veces.
+      ...(p.callada ? { callada: true } : {}),
+      ...(cuandoEn !== null ? { cuandoEn, venceEn: venceDe(cuandoEn) } : {})
     };
     return base;
   }
@@ -229,17 +384,39 @@ export function anotarPromesa(
     hilo: p.hilo ?? null,
     esperando,
     abiertoEn: ahoraISO,
-    venceEn: new Date((Number.isFinite(abierto) ? abierto : Date.now()) + HORAS_PARA_VENCER * 3_600_000).toISOString(),
+    // EL VENCIMIENTO CUELGA DE LA CITA, no de cuándo se prometió. Sin esta línea, la promesa del
+    // lunes hecha el viernes se cierra el VIERNES a la noche con una disculpa por algo que todavía
+    // no tocaba. Las 6 h se reusan como ventana de GRACIA: si la Studio durmió, el recordatorio sale
+    // igual al despertar dentro de esas 6 h.
+    venceEn: cuandoEn !== null ? venceDe(cuandoEn) : new Date((Number.isFinite(abierto) ? abierto : Date.now()) + HORAS_PARA_VENCER * 3_600_000).toISOString(),
     visto: 1,
-    ...(yaMeDisculpe ? { callada: true } : {})
+    ...(cuandoEn !== null ? { cuandoEn } : {}),
+    ...(yaMeDisculpe || p.callada ? { callada: true } : {})
   });
   return recortar(base);
 }
 
+/** El plazo de gracia de una cita: la hora prometida + las mismas `HORAS_PARA_VENCER`. */
+function venceDe(cuandoEn: string): string {
+  return new Date(Date.parse(cuandoEn) + HORAS_PARA_VENCER * 3_600_000).toISOString();
+}
+
 /**
  * Se conservan las más recientes, PERO nunca se tira una ABIERTA: esa es exactamente la que todavía
- * le debe un mensaje al jefe, y perderla nos devuelve al estado de hoy. Las abiertas se drenan
- * solas en `HORAS_PARA_VENCER`, así que el archivo no crece sin techo por este lado.
+ * le debe un mensaje al jefe, y perderla nos devuelve al estado de hoy.
+ *
+ * ESTA FUNCIÓN DECÍA "las abiertas se drenan solas en `HORAS_PARA_VENCER`, así que el archivo no
+ * crece sin techo por este lado" Y LAS CITAS LO VOLVIERON FALSO: una cita vence recién en
+ * `cuandoEn + HORAS_PARA_VENCER`, o sea hasta `DIAS_MAXIMOS_DE_CITA` (30) días después de anotarla.
+ * Reproducido por la API normal: 40 citas anotadas ⇒ la lista queda en 40 con `MAX_PROMESAS = 30` y
+ * las 40 abiertas, y `recortar` no puede tirar NINGUNA. Es el mismo terreno del incidente que este
+ * archivo documenta ("con 36 promesas abiertas y una sola cerrada… 9 disculpas en 6 h").
+ *
+ * NO se agrega una regla para tirar abiertas: tirar la que todavía le debe un mensaje al jefe es el
+ * bug original, y con un jefe humano prometiendo citas a mano 30 no se alcanza. El techo real hoy es
+ * el drenaje + este recorte sobre las cerradas.
+ * ponytail: si el archivo llega a MAX_PROMESAS con todas abiertas, lo que hay que tirar es la cita
+ * MÁS LEJANA en el tiempo (no la más vieja), y eso pide avisarle al jefe que la soltó.
  */
 function recortar(lista: Promesa[]): Promesa[] {
   if (lista.length <= MAX_PROMESAS) return lista;
@@ -290,6 +467,14 @@ export interface AvisoPromesa {
   hilo: string | null;
   /** Va al log, no a Slack. */
   motivo: string;
+  /**
+   * ¿Suena el móvil? En `true` cuando alguna de las que cierran era una CITA: la hora la eligió él,
+   * así que por construcción no puede ser una hora en la que no quiera que le escriban.
+   *
+   * Existe porque hace falta de verdad: `mandarASlack` no usa `pideRespuesta` para nada, así que la
+   * mención `<@…>` la pone el llamador o no notifica a nadie.
+   */
+  pide?: boolean;
 }
 
 /**
@@ -352,6 +537,45 @@ export function revisarPromesas(
   for (let i = 0; i < base.length; i++) {
     const p = base[i] as Promesa;
     if (p.cerradaEn) continue;
+
+    // ── LA CITA. Va PRIMERO y termina en `continue` INCONDICIONAL: una promesa con hora no se cumple
+    // con un campo, se cumple con el reloj, y por eso no puede pasar por nada de lo de abajo. Eso le
+    // gana tres cosas gratis:
+    //  · sale del fail-closed del snapshot vacío y del guard `datoPosterior` — los dos existen para
+    //    que un dato AUSENTE no fabrique un cumplimiento, que es correcto para un campo y no tiene
+    //    ningún sentido para un reloj;
+    //  · entra como CUMPLIDA, y una cumplida SIEMPRE sale (el freno `muyPronto` solo actúa cuando no
+    //    hay ninguna): una cita no es una disculpa y no la puede retener el enfriamiento de las
+    //    disculpas;
+    //  · el dedupe por `dato`, `MAX_LINEAS` y `recortar` siguen funcionando sin tocarse.
+    //
+    // EL TEXTO NO LLEVA HORA: `p.que` ya trae las palabras del jefe, así que no se formatea una sola
+    // fecha en la salida y una clase entera de bug de zona horaria no existe en el camino de
+    // publicación.
+    //
+    // UNA CITA CON FECHA ILEGIBLE SE CIERRA, NO SE QUEDA ABIERTA PARA SIEMPRE. La rama del campo
+    // observable tiene ese guard desde su primer día ("Una promesa cuya fecha no se puede leer se
+    // cierra en vez de quedar abierta para siempre") y ésta nació sin él: con `cuandoEn` sin parsear
+    // no entraba a ninguna de las tres salidas y caía al `continue`. Reproducido: 400 días de vueltas
+    // y la promesa seguía abierta, ocupando lugar en el archivo y sin decirle nada al jefe. Se trata
+    // como lo que es —una promesa sin disparador— y muere por el vencimiento de abajo.
+    if (p.cuandoEn !== undefined && Number.isFinite(Date.parse(p.cuandoEn))) {
+      const cita = Date.parse(p.cuandoEn);
+      const graciaHasta = Date.parse(p.venceEn);
+      if (Number.isFinite(ahora) && Number.isFinite(cita) && ahora >= cita) {
+        if (ahora < graciaHasta) {
+          cumplidas.push({ p, linea: `Te dije que te recordaba esto: ${p.que}. Aquí estoy.`, dato: `cita:${p.id}` });
+          base[i] = { ...p, cerradaEn: ahoraISO, comoCerro: "cumplida", anuncioEn: ahoraISO };
+        } else if (p.callada) {
+          base[i] = { ...p, cerradaEn: ahoraISO, comoCerro: "vencida" };
+        } else {
+          // Se pasó la ventana de gracia: la máquina estuvo caída más de 6 h. Eso sí es una disculpa
+          // y viaja con las otras.
+          vencidas.push({ i, p, linea: `Te dije que te recordaba esto: ${p.que}, y se me pasó la hora.`, dato: `cita:${p.id}` });
+        }
+      }
+      continue;
+    }
 
     const k = p.esperando;
     const valorAhora = k ? normalizar(actuales[k]) : null;
@@ -452,5 +676,8 @@ export function revisarPromesas(
       ? `cumplo lo prometido${vencidas.length > 0 ? ` (+${vencidas.length} vencida${vencidas.length > 1 ? "s" : ""})` : ""}`
       : `promesa vencida${vencidas.length > 1 ? ` (${vencidas.length})` : ""}`;
 
-  return { aviso: { texto: visibles.join("\n"), hilo: primera.hilo, motivo }, lista: recortar(base) };
+  // Suena el móvil solo si entre las que cierran hay una CITA: el jefe pidió esa hora.
+  const pide = [...cumplidas, ...vencidas].some((x) => x.p.cuandoEn !== undefined);
+
+  return { aviso: { texto: visibles.join("\n"), hilo: primera.hilo, motivo, ...(pide ? { pide: true } : {}) }, lista: recortar(base) };
 }

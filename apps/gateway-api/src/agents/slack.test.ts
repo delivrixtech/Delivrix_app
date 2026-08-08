@@ -562,13 +562,23 @@ test("una IP listada en una lista negra es DAÑO, con la lista nombrada", () => 
   assert.doesNotMatch(a?.texto ?? "", /Hay \d+ dominio/, "con uno solo no inventa un contador");
 });
 
-test("con VARIAS IPs listadas el aviso dice CUÁNTAS más: nombrar una de cinco es media verdad", () => {
+test("con VARIAS IPs listadas el aviso las NOMBRA, cada una con SU lista", () => {
   // EL DEFECTO QUE ESTE TEST HABRÍA CAZADO, con los datos del 2026-08-07: warmup-reputacion.json
   // tenía CINCO dominios listados —corp-delivery.com, infranationalreport.com, annualfiling-ops.com,
   // annualfilingops.com, annualfilings-infra.com— y el mensaje nombraba uno y callaba los otros
   // cuatro. `reputacionDonde` es un `.find`, y d5 (la regla de al lado) ya llevaba contador. Es
   // precisión comida por la brevedad en el mensaje que le hace vibrar el móvil, y en la dirección
   // peligrosa: baja ese nodo y se queda tranquilo con cuatro puestos.
+  //
+  // Y LA SEGUNDA VUELTA, el mismo día y con el jefe delante. El contador solo tampoco alcanzó: el
+  // aviso salió como "Hay 4 dominios más en la misma", Juanes preguntó "¿cuáles son los otros 4?"
+  // y el agente contestó "no los tengo en mi lectura actual. No te voy a inventar dominios" — era
+  // verdad, porque `hechos.reputacion` no entraba al contexto del modelo (ver el test hermano en
+  // warmup-monitor.test.ts). Este texto era la única vía y traía un número sin sustantivos.
+  //
+  // El fixture deja la trampa puesta a propósito: annualfiling-ops.com está en DRONE BL y los otros
+  // cuatro en RATS Dyna, así que "todos en la misma" es una afirmación falsa que el renderizador
+  // hacía por su cuenta. Cada uno tiene que salir con SU lista.
   const a = decidirSiHablar(
     base({
       hechos: {
@@ -586,8 +596,13 @@ test("con VARIAS IPs listadas el aviso dice CUÁNTAS más: nombrar una de cinco 
     T(10)
   );
   assert.equal(a?.regla, "d4-reputacion");
-  assert.match(a?.texto ?? "", /corp-delivery\.com/, "nombra uno, con su IP y su lista");
-  assert.match(a?.texto ?? "", /Hay 4 dominios más en la misma\./, "y DICE que hay cuatro más");
+  assert.match(a?.texto ?? "", /corp-delivery\.com/, "nombra el primero, con su IP y su lista");
+  assert.match(a?.texto ?? "", /Hay 4 más listados:/, "y dice cuántos más");
+  for (const d of ["infranationalreport.com", "annualfiling-ops.com", "annualfilingops.com", "annualfilings-infra.com"]) {
+    assert.match(a?.texto ?? "", new RegExp(d.replace(/\./g, "\\.")), `y NOMBRA a ${d}: el jefe preguntó exactamente esto`);
+  }
+  assert.match(a?.texto ?? "", /annualfiling-ops\.com \(DRONE BL\)/, "cada uno con SU lista, no con la del primero");
+  assert.doesNotMatch(a?.texto ?? "", /en la misma/, "nunca más una lista compartida que nadie verificó");
 });
 
 test("el cap por encima del techo es DAÑO, nombra la llave y TRAE LOS DOS NÚMEROS", () => {
@@ -1760,4 +1775,57 @@ test("la fábrica que TERMINÓ su cupo no es una fábrica muerta", () => {
     T(10)
   );
   assert.equal(unoConSaldo?.regla, "dec4-fabrica-sin-enviar");
+});
+
+test("al filo del día UTC el silencio de AYER no puede sonar como una fábrica muerta hoy", () => {
+  // LA SEGUNDA FALSA ALARMA DEL MISMO DÍA, y por el borde que la primera guarda no cubría.
+  // 2026-08-08T00:44:37Z, o sea 19:45 en Colombia y con el jefe leyendo: "Hace 9 horas que la
+  // fábrica no da una vuelta —ni un envío, ni una medición— y el emisor dice que está mandando.
+  // Échale un ojo a ver si sigue vivo." El daemon estaba vivo (PID 76220) y dio la vuelta #19 en
+  // INBOX poco después. La propia lectura del agente en ese ciclo lo delataba: "El emisor está
+  // activo con CERO VUELTAS HOY".
+  //
+  // Cero vueltas hoy a los 44 minutos de empezado el día: `enviadosHoy` cuenta contra
+  // `date_trunc('day', now(), 'UTC')`, así que a las 00:00 UTC los seis contadores volvieron a 0 y
+  // la guarda de "todos cumplieron su cupo" se apagó — mientras el hueco de 9 h seguía siendo el de
+  // AYER, cuando estaban topados y callarse era lo correcto. Sin este test es una falsa alarma
+  // garantizada, todos los días, a la misma hora.
+  // T(0) es medianoche UTC en el marco del fixture, así que T(h) es "h horas dentro del día nuevo".
+  // Las mediciones se estampan FRESCAS contra cada `ahora`: sin eso c2-medicion-vencida gana la
+  // corrida y el test mediría la prioridad entre reglas en vez de lo que vino a medir.
+  const nueveHorasAntesDeMedianoche = new Date(Date.parse(T(0)) - 9 * 3_600_000).toISOString();
+  const recienEmpezadoElDia = (ahora: string) =>
+    decidirSiHablar(
+      base({
+        emisor: "send",
+        hechos: HECHOS({
+          vueltas: [
+            { dominio: "a.com", semilla: "s@x.com", cuando: nueveHorasAntesDeMedianoche, placement: "INBOX", completa: true, error: null }
+          ],
+          cap: { nodosMedidos: 14, nodosSinMedir: 44, enElTope: [], frenados: [], sinLimite: 0, medidoEn: ahora },
+          flota: { sanas: 13, bloqueadas: 22, atascadas: 22, cruzados: [], cerca: [], medidoEn: ahora },
+          // Los contadores RECIÉN reseteados: 0 de 2. La tercera guarda no aplica acá, y no debería:
+          // técnicamente a nadie le falta cupo — lo que falta es que el día haya avanzado.
+          plan: [{ dominio: "a.com", cupo: 2, enviadosHoy: 0, diaN: 3, placementTasa: 0.8, placementMuestra: 5, accion: "sostener", motivo: "" }]
+        }) as never
+      }),
+      memBase(),
+      ahora
+    );
+
+  assert.notEqual(
+    recienEmpezadoElDia(T(0.74))?.regla,
+    "dec4-fabrica-sin-enviar",
+    "a 44 minutos del corte, 9 h de silencio son de ayer: no se asusta al jefe con eso"
+  );
+
+  // Y NO SE ROMPE LA DETECCIÓN, que es la otra mitad y la que hace que este arreglo valga. Un daemon
+  // de verdad muerto sigue sin dar vueltas cuando el día avanza, y ahí el aviso sale igual — sólo
+  // que unas horas más tarde. Ese retraso es el precio, y se paga: un aviso que grita en falso
+  // enseña a ignorar todos los demás, incluido el que un día sí importe.
+  assert.equal(
+    recienEmpezadoElDia(T(4))?.regla,
+    "dec4-fabrica-sin-enviar",
+    "cuatro horas adentro del día nuevo sin una sola vuelta: ahí sí hay algo que mirar"
+  );
 });

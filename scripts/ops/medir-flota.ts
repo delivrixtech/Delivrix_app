@@ -12,7 +12,11 @@
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
 import { createSmtpSshRunnerFromEnv } from "../../apps/gateway-api/src/routes/smtp-provisioning.ts";
 import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
-import { medirFlota, MEASUREMENT_CONCURRENCY } from "../../apps/gateway-api/src/sender-measurement.ts";
+import {
+  leerUltimaMedicion,
+  medirFlota,
+  MEASUREMENT_CONCURRENCY
+} from "../../apps/gateway-api/src/sender-measurement.ts";
 
 const args = process.argv.slice(2);
 const concurrency =
@@ -71,6 +75,11 @@ async function main(): Promise<void> {
   // nodo entero, con el correo de NFC adentro. Es el estado SEGURO mientras se cablea el libro
   // (`leerLibroPropio` sobre POSTGRES_URL): no cambia ni un veredicto de producción, y lo declara —
   // `atribucion.modo: "todo"` viaja al archivo, así que quien lo lea sabe que no está atribuido.
+
+  // Se lee ANTES de medir porque medirFlota SOBREESCRIBE el archivo: es la única forma de saber
+  // quién se pegó en ESTA corrida. Ver el bloque `TRINQUETE` de abajo.
+  const antes = await leerUltimaMedicion(workspace);
+
   const flota = await medirFlota({ workspace, sshRunner: runner, bandejas: medibles, concurrency, libro: "todo" });
 
   const porEstado = new Map<string, number>();
@@ -91,6 +100,43 @@ async function main(): Promise<void> {
   if (cerca.length > 0) {
     console.log(`\ncerca del umbral (${cerca.length}):`);
     for (const b of cerca) console.log(`  ${b.domain} en ${b.cerca.join(", ")}`);
+  }
+
+  // ── TRINQUETE: `cerradoEn` NO CADUCA, ASÍ QUE HAY QUE VER CUÁNDO MUERDE ──────────────────────
+  //
+  // `medirFlota` fusiona el `cerradoEn` de la corrida anterior a propósito (un nodo que deja de
+  // mandar vuelve solo a `no_traffic` y se auto-absuelve por el calendario), y `elegirPool` excluye
+  // a cualquiera que lo tenga no vacío. Las dos decisiones son correctas por separado y juntas
+  // hacen un trinquete: el pool sólo puede achicarse, y el único camino de vuelta es borrar el
+  // campo a mano de un archivo que este mismo barrido reescribe cada 6 h.
+  //
+  // El riesgo no es que se pegue — es que se pegue EN SILENCIO. Sin esta línea, "se pegó otro" es
+  // un descubrimiento a los diez días, cuando el pool ya se vació. Con ella es un hecho que se lee
+  // en el log del barrido, en la misma corrida en la que pasó. Los NUEVOS se marcan aparte porque
+  // el total sube lento y nadie mira un número que sube de a uno.
+  const pegados = flota.bandejas.filter((b) => (b.cerradoEn ?? []).length > 0);
+  if (pegados.length > 0) {
+    const yaEstaban = new Set(
+      (antes?.bandejas ?? []).filter((b) => (b.cerradoEn ?? []).length > 0).map((b) => b.domain)
+    );
+    // SIN CORRIDA ANTERIOR NO HAY "NUEVO". La primera medición marcaría la lista entera como recién
+    // pegada, que es un aviso falso — y un aviso que grita en falso enseña a ignorar todos los
+    // demás. "No sé cuáles son nuevos" se dice callándose, no inventando que lo son todos.
+    const nuevos = antes ? pegados.filter((b) => !yaEstaban.has(b.domain)) : [];
+    console.log(`\nCERRADOS POR EL RECEPTOR — fuera del pool y NO caduca solo (${pegados.length}):`);
+    for (const b of pegados) {
+      const marca = antes && !yaEstaban.has(b.domain) ? "*" : " ";
+      console.log(`  ${marca} ${b.domain} en ${b.cerradoEn.join(", ")}`);
+    }
+    if (nuevos.length > 0) {
+      console.log(`  (* = se pegó EN ESTA CORRIDA: ${nuevos.map((b) => b.domain).join(", ")})`);
+      console.log("  para despegar uno, cuando se compruebe que se recuperó:");
+      console.log(
+        `    jq '(.bandejas[]|select(.domain=="DOMINIO").cerradoEn)=[]' ` +
+          "runtime/openclaw-workspace/inventory/sender-measurement.json > /tmp/m.json && " +
+          "mv /tmp/m.json runtime/openclaw-workspace/inventory/sender-measurement.json"
+      );
+    }
   }
 }
 

@@ -17,6 +17,7 @@ import {
   medirPlacement,
   medirPorProveedor,
   rampaDesdeEnv,
+  RAMPA_LIMITE_DIARIO_DEFAULT,
   type CruceEntregaPlacement,
   type DecisionDiaria,
   type EntregaPorReceptor,
@@ -132,6 +133,20 @@ export interface SaludDominio {
    */
   entregados?: number | null;
   /**
+   * De esas entregas, las que SALIERON DEL NODO. Es la que decide; `entregados` trae adentro el
+   * correo que el nodo se manda a sí mismo por el pipe de rebotes y por eso no sirve de prueba.
+   *
+   * Ausente = archivo de una medición vieja ⇒ se cae a `entregados` (ver el uso). `null` = no se
+   * pudo leer, que no es cero.
+   */
+  entregadosATerceros?: number | null;
+  /**
+   * Pico diario de mensajes por familia de receptor, sobre TODO el log retenido y no sobre la
+   * ventana (`readNodeProviderVolume` abre `mail.log*` entero). O sea: es MEMORIA, y por eso sirve
+   * para lo que la ventana olvida. Ver la puerta de `no_traffic`.
+   */
+  picos?: readonly { readonly mensajes?: number }[];
+  /**
    * Entregados/rechazados/diferidos POR RECEPTOR, tal como los dejó el barrido del mail.log. Es la
    * mitad "lo que dijo NUESTRO MTA" del cruce de `cruzarEntregaConPlacement`.
    *
@@ -140,6 +155,15 @@ export interface SaludDominio {
    * 6 dominios que calientan, sólo corpfiling-infra.com tiene una fila (gmail.com, 20 entregados).
    */
   porReceptor?: readonly EntregaPorReceptor[];
+  /**
+   * Receptores donde este nodo está efectivamente CERRADO. Es PEGAJOSO desde el 2026-08-07
+   * (sender-measurement.ts lo une con la corrida anterior), igual que `cruzados`.
+   *
+   * Se lee acá porque `estado` no alcanza: el estado se recalcula sobre una ventana de 5 días por
+   * fecha de línea, así que un nodo que deja de mandar vuelve solo a `no_traffic` con la memoria
+   * del receptor intacta — y `no_traffic` es la puerta por la que entran los dominios nuevos.
+   */
+  cerradoEn?: readonly string[];
 }
 
 /**
@@ -153,6 +177,59 @@ export interface SaludDominio {
 export const MIN_ENTREGAS_EN_VENTANA = 1;
 
 /**
+ * Cuántos dominios SIN señal positiva pueden entrar al pool en la misma vuelta.
+ *
+ * Es una baranda de VOLUMEN, no una preferencia: el sobre del daemon es global y fijo, así que cada
+ * dominio nuevo le saca envíos a los que ya calientan. Ver la nota larga en `elegirPool`.
+ */
+export const MAX_ARRANCANDO_A_LA_VEZ = 1;
+
+/**
+ * Pico diario de mensajes, en TODO el log retenido, a partir del cual un dominio YA NO ES NUEVO.
+ *
+ * QUÉ SEPARA. La puerta de `no_traffic` existe para que un dominio recién comprado pueda recibir su
+ * primer correo de warmup. El problema es que `no_traffic` no significa "nuevo", significa "la
+ * VENTANA de 5 días está vacía" — y un nodo quemado que dejó de mandar cae ahí solo. Medido por SSH
+ * contra el nodo real el 2026-08-08: controlcontrolledger.com (147.93.186.66) con la ventana corrida
+ * a 3 días da `no_traffic` — "el log no registra ni entregas ni rechazos ni diferidos" — y ENTRA al
+ * pool como candidato a arrancar. Su log retenido: 15.116 mensajes rebotados en gmail.com contra 294
+ * entregados (98%), 14.988 líneas `550-5.7.1 [147.93.186.66 12] Gmail has detected that this message
+ * is likely unsolicited mail`, 1.963 rechazos de Microsoft, 396 de Cloudmark y rechazos de Apple.
+ * Está quemado en cuatro receptores a la vez y el sensor lo iba a presentar como dominio virgen.
+ * `cerradoEn` no lo tapa: está vacío para él (sólo 8 de 58 nodos lo tienen).
+ *
+ * POR QUÉ `picos` Y NO OTRA COSA: es el único campo del archivo que se lee sobre el log ENTERO y no
+ * sobre la ventana, o sea el único que no se olvida cuando el nodo se calla.
+ *
+ * POR QUÉ NO ES "TIENE ALGÚN PICO": porque los 58 nodos tienen algún pico, así que la presencia
+ * pelada cerraría la puerta para todos y volvería a trabar el onboarding — el bug que esa puerta vino
+ * a arreglar. La distribución medida (pico máximo diario, flota entera, 2026-08-08) es bimodal y el
+ * hueco es enorme: los candidatos genuinos y los 6 que hoy calientan van de 1 a 8 mensajes/día
+ * (nuestro propio warmup y nada más), después hay UN caso en 110 (filing-ops.com, el del cert TLS
+ * roto) y el siguiente ya está en 1.863.
+ *
+ * POR QUÉ SALE DEL TECHO DE LA RAMPA Y NO DE UN NÚMERO SUELTO. Estaba clavado en 20 y el comentario
+ * decía "cualquier número entre 9 y 1.800 da el mismo resultado": cierto de la FOTO del 2026-08-08 y
+ * falso por construcción, porque el que camina ese hueco es nuestro propio producto. La rampa sube
+ * `día × RAMPA_PASO_POR_DIA_DEFAULT` (2) hasta `RAMPA_LIMITE_DIARIO_DEFAULT` (40), así que un dominio
+ * que calienta BIEN cruza 20 el día 10 y llega al doble arriba de la rampa. Y `picos` se lee sobre el
+ * log RETENIDO entero y no caduca: al dominio que se calla 5 días —cosa que este repo documenta como
+ * rutina: 46 caps a 0 de golpe el 2026-08-04, nodos que pierden la red, el freno global— lo agarra
+ * `no_traffic` con su propio pico adentro y queda excluido hasta que un humano lo nombre. O sea que
+ * la puerta se cerraba justo sobre los que mejor calentaron. Atado al techo + 1, nuestro tráfico no
+ * puede cruzarlo NUNCA, y el umbral se mantiene solo el día que alguien suba la rampa.
+ *
+ * NO CUESTA UNA EXCLUSIÓN HOY, verificado contra el sender-measurement.json de producción
+ * (2026-08-08 02:08 UTC, lectura): no hay un solo nodo con pico entre 9 y 60. Los `no_traffic` son
+ * 1, 1, 1, 2, 2, 3 y 110, y el cluster siguiente arranca en 426. filing-ops.com (110) sigue afuera.
+ *
+ * NO ES UN CANDADO PERMANENTE — y tiene que no serlo, porque condenar para siempre es el error caro
+ * en la otra dirección. Un humano lo suelta nombrándolo en `WARMUP_LIVE_ARRANCA_PRIMERO`, que es la
+ * lista que ya existe para decir "arrancá con éste": nombrarlo ahí ES la decisión de mirarlo.
+ */
+export const PICO_QUE_YA_NO_ES_NUEVO = RAMPA_LIMITE_DIARIO_DEFAULT + 1;
+
+/**
  * El veredicto de AUTENTICACIÓN de un dominio, tal como lo dejó el barrido de reputación.
  * Sólo interesan las tres señales que, rotas, hacen que el correo no se pueda entregar bien.
  */
@@ -161,6 +238,15 @@ export interface AuthDominio {
   dkim?: { estado: string };
   ptr?: { estado: string };
   tls?: { estado: string };
+  /**
+   * Las listas negras que detectaron la IP del nodo. `[]` = consultado y limpio. `"no-se"` = no se
+   * consultó o falló (el barrido tiene presupuesto de consultas y se le acaba).
+   *
+   * El tipo es el del ESCRITOR, tal cual (`FilaReputacion.listas`, agents/reputacion.ts): `"no-se"`
+   * es un estado de primera clase y no un array vacío, justamente para que nadie lea "no pregunté"
+   * como "está limpio".
+   */
+  listas?: string[] | "no-se";
 }
 
 /**
@@ -178,6 +264,25 @@ export interface AuthDominio {
  */
 export function authRota(a: AuthDominio | undefined): string | null {
   if (!a) return null;
+  // LA LISTA NEGRA ENTRA ACÁ Y NO EN UNA EXCLUSIÓN NUEVA, porque es la misma pregunta: ¿este
+  // dominio puede construir reputación hoy? El dato ya estaba en el archivo desde el primer
+  // barrido y `leerReputacion` lo tiraba al armar el Map, así que la única válvula que existía
+  // sobre él era leer el JSON a mano.
+  //
+  // Medido el 2026-08-07 con dig, control positivo (127.0.0.2 → 127.0.0.36 en dyna.spamrats.com) y
+  // control negativo (127.0.0.1 → NXDOMAIN): corpfiling-relay.com (217.216.55.59) y
+  // corpfilingrelay.com (217.216.55.64) están listados AHORA MISMO, y son dos de los siete
+  // vírgenes que el operador está por soltar. Y en el propio archivo de producción hay 5 filas con
+  // `listas` no vacía —annualfilings-infra.com entre ellas— sobre las que `authRota` devolvía
+  // `null`: la medición existía y no frenaba nada. Calentar desde una IP listada no construye
+  // reputación, la construye al revés, que es el único trabajo que no se puede deshacer.
+  //
+  // FAIL AL SILENCIO en `"no-se"`, igual que las otras cuatro señales: el barrido consulta con
+  // presupuesto y se le acaba (54 de 66 dominios están en `"no-se"` hoy). Excluir por no haber
+  // preguntado dejaría la flota entera fuera del pool por una cuota de API.
+  if (Array.isArray(a.listas) && a.listas.length > 0) {
+    return `la IP está en lista negra (${a.listas.join(", ")}): calentar así construye reputación al revés`;
+  }
   const roto = [
     a.spf?.estado === "mal" ? "SPF" : null,
     a.dkim?.estado === "mal" ? "DKIM" : null,
@@ -211,7 +316,24 @@ export function elegirPool(
    * Autenticación por dominio (de warmup-reputacion.json). Una exclusión más, en el mismo lugar y
    * con la misma forma que las tres que ya andan. Omitirla no cambia nada.
    */
-  auth?: ReadonlyMap<string, AuthDominio>
+  auth?: ReadonlyMap<string, AuthDominio>,
+  /**
+   * QUIÉN ARRANCA PRIMERO, en orden (`WARMUP_LIVE_ARRANCA_PRIMERO`). Vacío ⇒ decide el alfabeto.
+   *
+   * Existe porque el alfabeto estaba decidiendo un dominio COMPRADO. `MAX_ARRANCANDO_A_LA_VEZ` toma
+   * `arrancando.slice(0, 1)` sobre una lista que viene ordenada por nombre, así que si el operador
+   * suelta los 7 vírgenes de golpe el único que entra es bizregistry-ops.com — el peor de los siete,
+   * en el /24 80.190.75.x donde 11 de 13 nodos no están sanos. Verificado corriendo `elegirPool` con
+   * los archivos reales: con los 7 en cap 20 entra bizregistry-ops.com; con sólo los 5 de subred
+   * sana, entra controlnationalcorp.com.
+   *
+   * NO se ordena por "mérito calculado acá" y el porqué es que el dato no está: `elegirPool` recibe
+   * salud y auth, ninguna de las dos trae la IP ni el /24, y los 7 candidatos tienen `listas:
+   * "no-se"` (la cuota del barrido se agota antes de llegarles), así que cualquier criterio derivado
+   * empata y el desempate vuelve a ser el alfabeto. Un criterio que empata en el caso real no es un
+   * criterio: es el alfabeto con otro nombre.
+   */
+  arrancaPrimero: readonly string[] = []
 ): { boxes: string[]; motivo: string } {
   // SIN MEDICIÓN DEL CUPO SE SIGUE SABIENDO QUIÉN NO SIRVE. El return temprano estaba ARRIBA del
   // filtro de salud, así que un `sender-cap.json` ilegible (`leerCuposFisicos` tiene un catch que
@@ -249,6 +371,7 @@ export function elegirPool(
   // menos (recuperable), y el de incluir de más es quemar presupuesto en algo que no entrega.
   const excluidos: string[] = [];
   const arrancando: string[] = [];
+  let esperanTurno: string[] = [];
   // ── La cuarta exclusión: la AUTENTICACIÓN, verificada hoy ─────────────────────────────────────
   //
   // Hasta acá el warmup mandaba sin comprobar que DKIM, PTR o el certificado siguieran vivos. No es
@@ -268,6 +391,12 @@ export function elegirPool(
     conCupo = sobreviven;
   }
   if (salud && salud.size > 0) {
+    // LA MISMA LISTA QUE ORDENA ES LA QUE SUELTA. `arrancaPrimero` ya existe para que el operador
+    // diga "arrancá con éste", y nombrar un dominio ahí ES la decisión humana de haberlo mirado. Se
+    // reusa como override de la puerta de `no_traffic` con historia (ver `PICO_QUE_YA_NO_ES_NUEVO`)
+    // en vez de inventar una segunda env var: dos listas para decir lo mismo se desincronizan, y una
+    // exclusión sin salida es el error caro en la dirección contraria.
+    const sueltosPorElOperador = new Set(arrancaPrimero.map((x) => x.trim().toLowerCase()));
     const motivoDeExclusion = (d: string): string | null => {
       const s = salud.get(d);
       // Esta línea decía lo contrario: "sin medición NO se excluye, porque excluir por falta de dato
@@ -280,6 +409,32 @@ export function elegirPool(
       if ((s.cruzados ?? []).length > 0) return "cruzó el umbral permanente";
       if (s.estado === "blocked_by_provider") return "cerrado por el receptor";
       if (s.estado === "stalled") return "cola atascada";
+      // UN CIERRE NO SE BORRA POR EL CALENDARIO, y sin esta línea se borraba solo.
+      //
+      // `estado`, `cerradoEn` y `porReceptor` se RECALCULAN en cada barrido sobre una ventana de 5
+      // días por fecha de línea; lo único pegajoso era `cruzados`. Consecuencia con fecha: NFC dejó
+      // de inyectar por el /24 80.190.73.x el 2026-08-05, así que alrededor del 9-11 de agosto sus
+      // TRES nodos pasan solos a `no_traffic` 0/0/0 — y `no_traffic` es justo la puerta que se abrió
+      // para que los dominios nuevos puedan arrancar. Un nodo con 56 rechazos 550-5.7.1 de Gmail de
+      // hace cuatro días (controlstatecorp.com) volvería a leerse como "nodo NUEVO, candidato
+      // natural a arrancar". Ya pasó una vez con nationalfiling-infra.com: estuvo en el pool el
+      // 2026-08-05 y mandó un correo real; hoy tiene `cruzados: ["google"]`.
+      //
+      // Va DESPUÉS de `blocked_by_provider` a propósito: si el estado ya lo dice, el motivo del
+      // estado es más fresco y más fácil de leer. Éste es el arrastre, el caso del que se recuperó
+      // de mentira.
+      //
+      // Y EL MOTIVO DICE EL CAMINO DE VUELTA, porque no hay ninguno automático. `cerradoEn` no
+      // caduca a propósito (ver el `ponytail:` de sender-measurement.ts), así que un dominio que se
+      // recupere de verdad queda inelegible PARA SIEMPRE — y hoy son 43 de los 58, los 43 medidos
+      // con `modo: "todo"`, o sea sobre el mail.log entero del nodo, con el correo de NFC adentro.
+      // Entre ellos los 6 que el encargo lista como limpios (controlstatecorp.com,
+      // docfiling-ops.com, infranationalcorp.com, nationalcorp-infra.com, corpregistry-control.com,
+      // bizfiling-infra.com). El des-pegado es un acto humano deliberado y está bien que lo sea; lo
+      // que NO puede ser es un acto humano que nadie sabe que existe.
+      if ((s.cerradoEn ?? []).length > 0) {
+        return `cerrado por el receptor (arrastrado: ${s.cerradoEn.join(", ")}) — no caduca solo, se olvida borrando \`cerradoEn\` de este dominio en sender-measurement.json`;
+      }
       // `no_traffic` NO excluye, y esta línea es la que impide que la fábrica deje de fabricar.
       //
       // Un dominio recién comprado tiene el mail.log vacío ⇒ totales 0/0/0 ⇒ `no_traffic`. Cuando
@@ -292,21 +447,156 @@ export function elegirPool(
       // pool más días que la ventana (cap 0, una medición fallida, un fin de semana flojo) pierde
       // sus entregas y se vuelve inelegible para siempre. controlnationalcorp.com estaba ahí.
       //
-      // Y no es un agujero, porque las cuatro razones para NO calentar ya se evaluaron ARRIBA y
-      // ninguna depende de la ventana: `cruzados` es PEGAJOSO (sender-measurement lo arrastra de la
-      // medición anterior a propósito, cruzar el umbral es irreversible), y cerrado/atascado son
-      // estados, no ausencias. Lo que llega hasta acá con `no_traffic` es un nodo del que el log se
-      // leyó bien y no dijo nada malo: eso no es un nodo enfermo, es un nodo NUEVO — y es el
-      // candidato natural a arrancar. Si en realidad está roto, el primer correo lo demuestra y la
-      // medición siguiente lo saca; el costo de averiguarlo es UNA vuelta.
+      // ── Y ACÁ ESTABA LA MENTIRA DE ESTE COMENTARIO, corregida el 2026-08-08 ──────────────────
+      //
+      // Decía: "las cuatro razones para NO calentar ya se evaluaron ARRIBA y ninguna depende de la
+      // ventana ... cerrado/atascado son estados, no ausencias". Es FALSO para `stalled`: `stalled`
+      // se recalcula entero sobre los 5 días y no escribe NADA pegajoso — ni `cerradoEn` ni
+      // `cruzados`. La puerta 4xx nueva devuelve `stalled` con `blockedProviders: []` a propósito, y
+      // `insufficient_sample` tampoco escribe. O sea que un nodo cerrado por el receptor que después
+      // se calla vuelve a leerse `no_traffic`, que es EXACTAMENTE esta puerta. Sólo `cruzados` es
+      // pegajoso de verdad.
+      //
+      // Lo que sigue en pie: un dominio recién comprado tiene el mail.log vacío ⇒ `no_traffic`, y si
+      // eso excluyera la trampa se cerraría sola (no entra ⇒ no manda ⇒ sigue `no_traffic`). Por eso
+      // la puerta no se cierra: se le pone el discriminante que faltaba.
+      //
+      // "NUEVO" NO ES "CALLADO". `picos` se lee sobre el log RETENIDO entero, no sobre la ventana, y
+      // por eso es memoria: un dominio con historia no es virgen aunque hoy no diga nada. Ver
+      // `PICO_QUE_YA_NO_ES_NUEVO` para el nodo medido (controlcontrolledger.com, 98% de rebote en
+      // Gmail y quemado además en Microsoft, Apple y Cloudmark) que entraba por acá como si fuera
+      // recién comprado.
       //
       // Ojo con la lectura ciega: si el nodo escribe la fecha en un formato que el corte por día no
       // reconoce, también da 0/0/0. Eso NO llega acá como `no_traffic` — readNodeDeliveryHealth lo
       // devuelve `unreadable` justamente para que no se confunda con un nodo nuevo.
-      if (s.estado === "no_traffic") return null;
+      // ponytail: `picos: []` significa las DOS cosas —"nunca movió nada" y "el canal de volumen no
+      // pudo leer"— porque sender-measurement escribe `[]` en los dos casos. Acá se lee como "nuevo",
+      // que es fail-open; para cerrarlo hay que separar los dos casos en el escritor (`null` vs `[]`),
+      // que toca el JSON que sirve el panel. Se hace el día que un nodo se cuele por ahí.
+      if (s.estado === "no_traffic") {
+        const pico = Math.max(0, ...(s.picos ?? []).map((p) => p.mensajes ?? 0));
+        if (pico >= PICO_QUE_YA_NO_ES_NUEVO && !sueltosPorElOperador.has(d.trim().toLowerCase())) {
+          return `sin tráfico HOY pero con historia en el log (pico de ${pico} mensajes/día): no es un dominio nuevo y no arranca solo — si de verdad hay que soltarlo, va nombrado en WARMUP_LIVE_ARRANCA_PRIMERO`;
+        }
+        // ── Y ACÁ, Y SÓLO ACÁ, EL "NO SÉ" DE LISTAS NEGRAS SÍ FRENA ────────────────────────────
+        //
+        // `authRota` falla al silencio ante `listas: "no-se"` y está bien que lo haga para los que ya
+        // calientan: el barrido consulta con presupuesto y se le acaba (49 de 66 dominios en "no-se"
+        // el 2026-08-08), así que excluir por no haber preguntado apagaría la fábrica por una cuota
+        // de API. Pero por ESTA puerta pasa el PRIMER correo de un dominio virgen, y el primer correo
+        // desde una IP listada construye reputación al revés — el único trabajo que no se deshace.
+        // Los dos errores no son simétricos: al que ya calienta, un "no sé" le cuesta un día; al que
+        // estrena, le cuesta el dominio.
+        //
+        // NO ES HIPOTÉTICO, medido el 2026-08-08 con dig y controles (127.0.0.2 prende las tres
+        // listas, 127.0.0.1 no prende ninguna): corpfiling-relay.com (217.216.55.59) y
+        // corpfilingrelay.com (217.216.55.64) están listados AHORA MISMO en dyna.spamrats.com
+        // (127.0.0.36) y el archivo de reputación dice `listas: "no-se"` para los dos. Los siete
+        // candidatos `no_traffic` están en ese estado. Lo único que hoy los frena es que están en cap
+        // 0 y que el alfabeto pone antes a bizregistry-ops.com — ninguna de las dos cosas es una
+        // medición.
+        //
+        // Y frena TAMBIÉN cuando no hay archivo de reputación (auth `undefined`): si nadie consultó
+        // ninguna IP, ningún dominio virgen puede estrenar. Los que ya calientan no se tocan.
+        if (!Array.isArray(auth?.get(d)?.listas)) {
+          return "nunca mandó y su IP no figura consultada en listas negras (warmup-reputacion.json): un dominio nuevo no estrena a ciegas";
+        }
+        return null;
+      }
       // `unreadable` no necesita rama propia: cae acá, con un motivo más honesto que el estado.
       if (s.entregados === null || s.entregados === undefined) return "sin lectura de entregas: no sé";
-      if (s.entregados < MIN_ENTREGAS_EN_VENTANA) return "ninguna entrega en la ventana";
+      // ENTREGARSE CORREO A SÍ MISMO NO ES ENTREGAR, y hasta el 2026-08-08 esto se medía con el TOTAL.
+      //
+      // `entregados` es `stats.totals.delivered`, que trae adentro el correo que el nodo se manda a
+      // sí mismo por el pipe de rebotes (`delivered to command: /usr/local/bin/nfc-verp-bounce.sh`).
+      // Un nodo puede tener decenas de "entregas" sin que UNA sola haya salido de la máquina.
+      //
+      // MEDIDO POR SSH CONTRA LOS NODOS REALES, con la ventana corrida a 3 días (que es literalmente
+      // lo que va a hacer el calendario cuando el nodo deje de mandar):
+      //   · corpfilingcontrol.com (193.181.212.223) ⇒ `healthy`, "0 entregados a terceros ... (y 6 a
+      //     sí mismo)", y ENTRABA al pool. Log retenido: 16.525 mensajes rebotados en gmail.com
+      //     contra 495 entregados, 97% de rechazo.
+      //   · annualcorp-control.com (80.190.76.57) ⇒ lo mismo con 2 auto-entregas. Log retenido: 4.087
+      //     rebotados en gmail contra 483 entregados, más 505 de Yahoo `553 5.7.2 [TSS09] ...
+      //     permanently deferred`.
+      // Sobre la flota entera con esa ventana el pool saltaba de 6 a 25 boxes, y 19 de esos 25 tenían
+      // CERO entregas a terceros. El `detalle` lo decía en la cara ("0 entregados a terceros") y el
+      // pool los dejaba entrar igual.
+      //
+      // ACÁ MURIÓ EL GUARD DE AUTO-ENTREGA POR `porReceptor`, y no por gusto: leía PRESENCIA de una
+      // fila del dominio propio, y `porReceptor` sale filtrado a 20 intentos en sender-measurement.ts
+      // — en estos nodos llega VACÍO, así que `aSiMismo` daba 0 y la condición no podía disparar
+      // nunca. Era decorativo. El sensor ya sabía la respuesta correcta y la tiraba: calculaba
+      // `aTerceros` sólo para escribir la frase del detalle. Ahora la publica en el veredicto.
+      //
+      // EL FALLBACK A `entregados` NO ES PEREZA: es el día del despliegue. Los archivos escritos por
+      // la medición vieja no traen el campo, y leer ausencia como cero dejaría la flota entera fuera
+      // del pool de una — que es el mismo modo de falla ("campo que todavía no viene leído como
+      // evidencia") que este lote viene arreglando. `null` sí es "no sé" y ya lo agarró la línea de
+      // arriba.
+      //
+      // CONTRAFACTUAL, con los datos de 3 días: con esta regla el pool pasa de 25 a 7 — caen los 19
+      // de auto-entrega y quedan los reales, que tienen 4/5/5/7/6/11 entregas a terceros. Ninguno de
+      // los 6 que hoy calientan se pierde.
+      //
+      // ── Y CON LA VENTANA REAL DE 5 DÍAS NO SACA A NADIE, medido el 2026-08-08 ──────────────────
+      //
+      // El contrafactual de arriba es el de la ventana corrida a 3 días, y con la ventana de verdad
+      // el filtro es un NO-OP. Cuenta hecha sobre la foto de producción (sender-measurement.json,
+      // medidoEn 14:16:49Z), restándole a `entregados` la fila del propio dominio en `porReceptor`:
+      // 32 de las 58 bandejas tienen esa fila, y de las que están `healthy` TODAS dan 1 o 3 entregas
+      // a terceros — annualfiling-relay.com 51 entregas de las cuales 50 a sí mismo, corpannual-
+      // control.com 59 de 58, infracorpfiling.com 52 de 51, corpfilinginfra.com 41 de 38. O sea que
+      // el 96-98% de sus "entregas" son al pipe de rebotes de NFC y con `MIN_ENTREGAS_EN_VENTANA = 1`
+      // pasan igual, con UN mensaje en cinco días. De las otras 26 no se puede decir nada: su fila
+      // propia no llega al piso de 20 de `porReceptor` y no está en el archivo.
+      //
+      // NO SE SUBE LA CONSTANTE ACÁ. Subirla es un cambio de VOLUMEN POR DOMINIO y necesita la firma
+      // del operador: el sobre del daemon es GLOBAL (14 vueltas/día para toda la flota), así que
+      // achicar el pool no baja el correo total, lo CONCENTRA. Peor caso medido de subirlo a 5: el
+      // pool cae de 32 a los pocos con evidencia real y cada uno pasa de ~0,44 a ~2 envíos/día — que
+      // es lo que la rampa necesita, y exactamente por eso no se decide desde un comentario.
+      const entregasQueSalieron = s.entregadosATerceros ?? s.entregados;
+      if (entregasQueSalieron === null || entregasQueSalieron < MIN_ENTREGAS_EN_VENTANA) {
+        return s.entregados > 0
+          ? `sus ${s.entregados} entregas de la ventana son a sí mismo: ninguna salió a un tercero`
+          : "ninguna entrega en la ventana";
+      }
+      // ── LA PUERTA SE CIERRA POR LISTA BLANCA, NO POR LISTA NEGRA ─────────────────────────────
+      //
+      // Todo lo de arriba es lista NEGRA: nombra estados de a uno (`blocked_by_provider`, `stalled`,
+      // `no_traffic`) y lo que no coincide con NINGUNO llega hasta el `return null` y ENTRA AL POOL.
+      // `SaludDominio.estado` es `string`, ni siquiera la unión: agregarle un estado al sensor no
+      // rompe la compilación de este archivo, y el estado nuevo nace ADENTRO del pool.
+      //
+      // Es la forma exacta del bug que este mismo pool ya tuvo: `no_own_traffic` se agregó al sensor
+      // el 2026-08-06 y llegó hasta acá SIN rama propia. Hoy no se cuela de casualidad —el escritor
+      // le pone `entregados: 0` y lo agarra el filtro de arriba—, o sea que lo único que lo tapa es
+      // un campo de OTRO módulo. El día que esa medición traiga un `entregados` distinto de 0, entra.
+      // Y el guard de auto-entrega de diez líneas más arriba tampoco lo agarraría: `porReceptor` sale
+      // filtrado por los mismos 20 intentos en sender-measurement.ts y en los nodos chicos llega
+      // vacío, así que `aSiMismo` da 0 y la condición no puede disparar.
+      //
+      // Y el que viene con nombre, número y fecha: la fila REAL de producción del 2026-08-08 02:08
+      // UTC de annualcorp-control.com dice `estado: "healthy"`, `entregados: 16`, `rechazados: 1`,
+      // `porReceptor: []`, `cerradoEn: []` — sobre un nodo al que Gmail le rechazó 136 mensajes con
+      // 550-5.7.1 cuatro días antes. Hoy ese nodo ENTRA al pool, y el arrastre pegajoso no lo tapa
+      // porque `cerradoEn` está vacío. Cuando el sensor deje de llamarle "healthy" a lo que no midió,
+      // el estado nuevo tiene que quedar afuera SIN que nadie se acuerde de agregar una rama acá.
+      //
+      // COMPORTAMIENTO IDÉNTICO HOY, verificado leyendo la cadena entera: de los siete estados que
+      // emite el sensor, cinco ya retornaron arriba (`blocked_by_provider` y `stalled` por rama
+      // propia, `no_traffic` con `return null`, y `unreadable`/`no_own_traffic` por `entregados`
+      // null o 0), así que lo único que llegaba hasta acá era `healthy` y `degraded`.
+      //
+      // Y NO ES UN CANDADO: esto excluye por HOY, no para siempre. No escribe `cerradoEn` ni ningún
+      // arrastre — el barrido siguiente recalcula el estado y el dominio vuelve solo. La asimetría es
+      // deliberada: `cerradoEn` se pega porque 20 intentos al 90% de rechazo es evidencia fuerte;
+      // "no entiendo este veredicto" justifica un "hoy no", nunca un "nunca más".
+      if (s.estado !== "healthy" && s.estado !== "degraded") {
+        return `estado \`${s.estado ?? "sin estado"}\`: el pool no se llena con un veredicto que no sé leer`;
+      }
       return null;
     };
     const sobreviven: string[] = [];
@@ -322,7 +612,48 @@ export function elegirPool(
         if (salud.get(d)?.estado === "no_traffic") arrancando.push(d);
       }
     }
-    conCupo = sobreviven;
+    // ── ENTRA UN DOMINIO NUEVO POR VEZ ──────────────────────────────────────────────────────────
+    //
+    // El daemon reparte UNA vuelta por dominio contra un sobre global (hoy 14 vueltas/día para toda
+    // la flota), así que sumar dominios al pool no suma volumen: lo REPARTE. Corrido con el código
+    // real sobre la foto de producción del 2026-08-07, soltar los 7 vírgenes de golpe devuelve 13
+    // boxes y `avisoDeSobre` imprime que cada uno recibiría ~1,08 envíos/día — los 6 que hoy
+    // calientan caen de 2,00 a 1,08, o sea −46%, y con menos de 2/día NADIE junta las 4 mediciones
+    // propias que la rampa pide para moverse.
+    //
+    // Y hay un daño peor que la dilución: la simulación sobre `decideDaemonAction` con los motivos
+    // ya medidos (4 de los 7 con razón para entregar mal) da 46% de bandeja al día 5 ⇒
+    // `placement-pause` para TODA la flota, incluido el único que va al 83%. Esa pausa no sale sola,
+    // porque parado no se mide y las muestras malas quedan siendo las más nuevas de la ventana.
+    // Con uno por vez, el freno FINO de ese dominio lo baja a cupo 0 a las 4 mediciones (~día 3),
+    // muy antes de las ~12 que harían falta para mover la tasa de la flota entera.
+    //
+    // Los que esperan se DECLARAN con nombre: una cola silenciosa se lee como "no los soltaron".
+    // La cola avanza cuando el barrido de salud ve el primer envío del que entró (≤6 h) y deja de
+    // ser `no_traffic`.
+    // ponytail: si hiciera falta más rápido, la señal es la primera fila `sent` del dominio en la
+    // base, no otro archivo.
+    // EL QUE ENTRA SALE DE UNA LISTA EXPLÍCITA CUANDO LA HAY, y del alfabeto cuando no. Ver
+    // `arrancaPrimero`. Los nombres que no son candidatos hoy se ignoran solos (el filtro es sobre
+    // `arrancando`), así que la env var se puede dejar escrita entre corridas sin efectos raros.
+    if (arrancaPrimero.length > 0) {
+      const rango = new Map(arrancaPrimero.map((d, i) => [d.trim().toLowerCase(), i]));
+      arrancando.sort(
+        (a, b) =>
+          (rango.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) - (rango.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) ||
+          a.localeCompare(b)
+      );
+    }
+    const enEspera = arrancando.slice(MAX_ARRANCANDO_A_LA_VEZ);
+    if (enEspera.length > 0) {
+      const espera = new Set(enEspera);
+      for (const d of enEspera) excluidos.push(`${d} (espera turno: entra un dominio nuevo por vez)`);
+      arrancando.length = MAX_ARRANCANDO_A_LA_VEZ;
+      conCupo = sobreviven.filter((d) => !espera.has(d));
+    } else {
+      conCupo = sobreviven;
+    }
+    esperanTurno = enEspera;
   }
   const antiguedad = sinMedicion
     ? " — SIN ninguna medición del cupo: nadie verificó cuánto puede mandar cada uno"
@@ -332,16 +663,33 @@ export function elegirPool(
   // Los excluidos se DECLARAN, siempre. Un pool que se achica en silencio hace creer al operador
   // que hay menos nodos con cupo de los que hay, y esconde justo el problema que hay que resolver.
   const sacados = excluidos.length > 0 ? ` · ${excluidos.length} fuera: ${excluidos.slice(0, 4).join(", ")}${excluidos.length > 4 ? ` y ${excluidos.length - 4} más` : ""}` : "";
-  const nuevos = arrancando.length > 0 ? ` · ${arrancando.length} sin tráfico todavía, entran a arrancar: ${arrancando.slice(0, 4).join(", ")}${arrancando.length > 4 ? ` y ${arrancando.length - 4} más` : ""}` : "";
+  // QUIÉN ELIGIÓ AL QUE ENTRA, dicho en la misma línea. Sin esto, "entran a arrancar: X" se lee como
+  // una decisión y es el orden alfabético: el operador no tiene forma de saber que puede cambiarlo,
+  // ni que el que entró no fue elegido por ninguna razón.
+  const cola = esperanTurno.length > 0
+    ? ` (${esperanTurno.length} ${esperanTurno.length === 1 ? "espera" : "esperan"} turno: ${esperanTurno.join(", ")}` +
+      `${arrancaPrimero.length > 0 ? "" : " — el orden lo decidió el ALFABETO; para elegir vos, WARMUP_LIVE_ARRANCA_PRIMERO"})`
+    : "";
+  const nuevos = arrancando.length > 0 ? ` · ${arrancando.length} sin tráfico todavía, entran a arrancar: ${arrancando.slice(0, 4).join(", ")}${arrancando.length > 4 ? ` y ${arrancando.length - 4} más` : ""}${cola}` : cola;
   const universo = sinMedicion ? configurado.length : cupos.porDominio.size;
   const deQue = sinMedicion ? "nodos del pool configurado" : "nodos medidos";
+  // LA LÍNEA TIENE QUE SUMAR, y no sumaba: los nodos en cap 0 se descartan en el filtro de arriba,
+  // ANTES de que exista el array `excluidos`, así que no aparecían en ningún lado del log. La línea
+  // de producción del 2026-08-07 decía "6 de 57 nodos medidos aptos · 43 fuera" — 6 + 43 = 49, y
+  // los 8 que faltan son los frenados en cap 0, o sea los 7 vírgenes que el operador compró y no
+  // calienta. Un número que no cierra esconde justo la pregunta de negocio ("compramos 58 dominios
+  // y calentamos 6"), y encima se lee como si la flota fueran 49 nodos.
+  const enCeroFisico = sinMedicion ? [] : [...cupos.porDominio.entries()].filter(([, cap]) => cap <= 0).map(([d]) => d).sort();
+  const frenados = enCeroFisico.length > 0
+    ? ` · ${enCeroFisico.length} frenado${enCeroFisico.length === 1 ? "" : "s"} en cap 0: ${enCeroFisico.slice(0, 4).join(", ")}${enCeroFisico.length > 4 ? ` y ${enCeroFisico.length - 4} más` : ""}`
+    : "";
   if (conCupo.length === 0) {
     return {
       boxes: [],
-      motivo: `ninguno de los ${universo} ${deQue} sirve para calentar${sacados || ": están todos en cap 0"}${antiguedad}`
+      motivo: `ninguno de los ${universo} ${deQue} sirve para calentar${sacados || ": están todos en cap 0"}${frenados}${antiguedad}`
     };
   }
-  return { boxes: conCupo, motivo: `${conCupo.length} de ${universo} ${deQue} aptos${sacados}${nuevos}${antiguedad}` };
+  return { boxes: conCupo, motivo: `${conCupo.length} de ${universo} ${deQue} aptos${sacados}${nuevos}${frenados}${antiguedad}` };
 }
 
 // ── Lecturas de la base ──────────────────────────────────────────────────────────────────────────
@@ -601,7 +949,10 @@ export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio>
         domain?: string;
         estado?: string;
         cruzados?: string[];
+        cerradoEn?: string[];
         entregados?: number | null;
+        entregadosATerceros?: number | null;
+        picos?: Array<{ mensajes?: number }>;
         porReceptor?: EntregaPorReceptor[];
         atribucion?: { modo?: "nuestro" | "todo" };
       }>;
@@ -612,7 +963,12 @@ export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio>
         m.set(b.domain, {
           estado: b.estado,
           cruzados: b.cruzados,
+          cerradoEn: b.cerradoEn,
           entregados: b.entregados,
+          entregadosATerceros: b.entregadosATerceros,
+          // El archivo SIEMPRE trajo `picos` y este mapeo no los leía. Sin ellos la puerta de
+          // `no_traffic` no tiene con qué distinguir un dominio nuevo de uno quemado que se calló.
+          picos: b.picos,
           porReceptor: b.porReceptor,
           modo: b.atribucion?.modo
         });
@@ -632,11 +988,20 @@ export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio>
 export async function leerReputacion(ruta: string): Promise<Map<string, AuthDominio> | undefined> {
   try {
     const j = JSON.parse(await readFile(ruta, "utf8")) as {
-      dominios?: Array<{ dominio?: string; spf?: { estado: string }; dkim?: { estado: string }; ptr?: { estado: string }; tls?: { estado: string } }>;
+      dominios?: Array<{
+        dominio?: string;
+        spf?: { estado: string };
+        dkim?: { estado: string };
+        ptr?: { estado: string };
+        tls?: { estado: string };
+        listas?: string[] | "no-se";
+      }>;
     };
     const m = new Map<string, AuthDominio>();
     for (const d of j.dominios ?? []) {
-      if (d.dominio) m.set(d.dominio, { spf: d.spf, dkim: d.dkim, ptr: d.ptr, tls: d.tls });
+      // `listas` viajaba en el archivo y se caía acá: el Map se armaba con cuatro campos y el
+      // quinto se perdía en silencio, así que `authRota` no podía mirarlo ni queriendo.
+      if (d.dominio) m.set(d.dominio, { spf: d.spf, dkim: d.dkim, ptr: d.ptr, tls: d.tls, listas: d.listas });
     }
     return m.size > 0 ? m : undefined;
   } catch {
@@ -731,7 +1096,26 @@ export interface PlanInput {
   /** Medición de salud de la flota (sender-measurement.json). Sirve para sacar del pool lo que no
    *  se puede calentar. Opcional: sin ella el pool sale solo del cupo. */
   saludFile?: string;
-  /** Foto de autenticación de la flota (warmup-reputacion.json). Opcional: sin ella no excluye nada. */
+  /**
+   * Foto de autenticación de la flota (warmup-reputacion.json).
+   *
+   * TIENE DEFAULT POR LA MISMA RAZÓN QUE `seedsFile`, y esto se midió: sin default, el llamador que
+   * le habla al jefe —`scripts/ops/warmup-monitor.ts`, o sea el canal del agente por Slack— no lo
+   * pasaba, así que `leerReputacion` no corría y `authRota` no excluía a nadie POR ESE CAMINO. Sobre
+   * la foto del 2026-08-08, con `elegirPool` real: el agente reportaba 36 dominios y el daemon
+   * calentaba 32. Los 4 de más eran annualfiling-ops.com (DRONE BL), annualfilingops.com y
+   * annualfilings-infra.com (RATS Dyna) y controldelivrix.app (PTR roto) — justo lo que `authRota`
+   * existe para sacar. El lote anterior cableó el archivo en la ruta del PANEL (main.ts) y dejó el
+   * canal del AGENTE sin tocar: son dos llamadores de la MISMA función, y arreglar uno no arregla
+   * al otro. Por eso el default vive acá y no en cada llamador — el próximo llamador nace bien.
+   *
+   * Peor: sin el archivo, la puerta de los dominios VÍRGENES (`no_traffic`) los excluye con el texto
+   * «su IP no figura consultada en listas negras (warmup-reputacion.json)» hablando de un archivo
+   * que ese llamador nunca abrió. El motivo era cierto y la causa era falsa.
+   *
+   * Sólo puede ACHICAR el pool: es una lista de exclusiones y nunca agrega a nadie. Y `leerReputacion`
+   * ya devuelve `undefined` ante archivo ausente o roto, así que el default no puede romper a nadie.
+   */
   reputacionFile?: string;
   /**
    * Registro de semillas (warmup-seeds.json). De ahí sale el PROVEEDOR de cada medición.
@@ -762,10 +1146,35 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
   const ahora = input.ahora ?? new Date();
   const cupos = await leerCuposFisicos(input.capFile, ahora);
   const salud = input.saludFile ? await leerSalud(input.saludFile) : undefined;
-  const auth = input.reputacionFile ? await leerReputacion(input.reputacionFile) : undefined;
+  const auth = await leerReputacion(input.reputacionFile ?? rutaInventario("warmup-reputacion.json"));
   const proveedores = await leerProveedoresDeSemillas(input.seedsFile ?? rutaInventario("warmup-seeds.json"));
   const proveedorDe = (semilla: string): string | null => proveedores?.get(semilla.trim().toLowerCase()) ?? null;
-  const pool = elegirPool(cupos, input.poolConfigurado, salud, auth);
+  // LA MISMA COLA QUE EJECUTA EL DAEMON. `WARMUP_LIVE_ARRANCA_PRIMERO` se lee del MISMO entorno: si
+  // el panel decidiera el orden de arranque por su cuenta, volvería a mostrar un pool que no es el
+  // que corre — que es exactamente la divergencia que las palancas de la rampa vinieron a cerrar.
+  const pool = elegirPool(
+    cupos,
+    input.poolConfigurado,
+    salud,
+    auth,
+    ((input.env ?? process.env).WARMUP_LIVE_ARRANCA_PRIMERO ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+  );
+  // SIN MEDICIÓN DE SALUD, EL PLAN Y EL DAEMON DEJAN DE COINCIDIR, Y ACÁ SE DICE.
+  //
+  // `poolSinSalud` (live-warmup-daemon.ts) degrada al pool CONFIGURADO cuando el archivo de salud no
+  // se puede leer, y `medirFlota` reescribe ese archivo ENTERO: una escritura cortada lo deja
+  // inválido. En ese estado el daemon calienta 1 dominio y esta función devuelve 44 —los 44 con
+  // cap > 0, incluidos los 8 que cruzaron el umbral permanente—, que es lo que el panel muestra y lo
+  // que el agente le reporta al jefe.
+  //
+  // La degradación NO se mueve para acá a propósito (ver el comentario de `poolSinSalud`): el que
+  // MANDA es el daemon, y dejar al panel sin plan no protege nada y encima esconde. Pero la
+  // asimetría sólo es honesta si se DICE, y no se decía: el motivo salía idéntico al de un día
+  // normal. Es la misma regla que `arrancaPrimero` aplica veinte líneas más arriba — el panel no
+  // puede mostrar un pool que no es el que corre sin avisar que no es el que corre.
+  if (salud === undefined) {
+    pool.motivo += ` · OJO: sin medición de salud legible, ESTE NO ES EL POOL QUE CORRE — el daemon se degrada a los ${input.poolConfigurado.length} del pool configurado`;
+  }
 
   const lecturasFallidas: string[] = [];
   const anotar = (que: string) => (e: unknown) => {
@@ -834,7 +1243,8 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       isoWeekday,
       limiteDiario: rampa.limiteDiario,
       pasoPorDia: rampa.pasoPorDia,
-      soloDiasHabiles: rampa.soloDiasHabiles
+      soloDiasHabiles: rampa.soloDiasHabiles,
+      pisoSostener: rampa.pisoSostener
     });
     // El placement CON su receptor, y el veredicto de §3 evaluado por código. Los dos son LECTURA:
     // `decidirCupoDeHoy` ya decidió arriba y ninguno de los dos lo toca.

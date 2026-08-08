@@ -72,6 +72,7 @@
 // EL CIERRE DE UNA PROMESA NO PASA POR ACÁ. Lo manda quien cablea, en su propio hilo, y su freno
 // vive en promesas.ts. Una respuesta dentro de un hilo no suena el canal: no compite con esto.
 
+import { anteponerHechoVinculante } from "./acciones-agente.ts";
 import { TECHO_DURO_POR_DOMINIO } from "../../../warmup-engine/src/domain/decision-diaria.ts";
 import { MIN_VECES } from "./memoria-conversacion.ts";
 import type { HechosWarmup } from "./warmup-monitor.ts";
@@ -796,6 +797,27 @@ const horasDesde = (iso: string | null | undefined, ahoraISO: string | undefined
   return (ahora - t) / 3_600_000;
 };
 
+/**
+ * Cuántas horas van del día UTC. Es el reloj de los CUPOS DIARIOS de la fábrica, no un reloj más.
+ *
+ * `enviadosHoy` se cuenta contra `date_trunc('day', now(), 'UTC')` en plan-diario.ts, así que a las
+ * 00:00 UTC todos los contadores vuelven a cero de golpe. Cualquier regla que mida "hace tanto que
+ * no pasa nada" y la cruce con esos contadores tiene que saber dónde está ese corte, o va a leer el
+ * silencio de ayer como un síntoma de hoy — que es exactamente lo que hizo dec4 el 2026-08-08 a las
+ * 00:44 UTC, a 44 minutos del corte.
+ *
+ * UTC explícito y no la zona local: la Studio corre en UTC-4 y el jefe está en UTC-5, así que
+ * "hoy" tiene tres respuestas distintas en esta casa. La única que decide algo es la de Postgres.
+ *
+ * Devuelve 0 si no hay hora: sin reloj no se afirma que pasó tiempo.
+ */
+const horasDelDiaUTC = (ahoraISO: string | undefined): number => {
+  const ahora = Date.parse(ahoraISO ?? "");
+  if (!Number.isFinite(ahora)) return 0;
+  const d = new Date(ahora);
+  return (ahora - Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())) / 3_600_000;
+};
+
 /** Los dominios que CRUZARON entre los dos retratos. Diferencia de conjuntos sobre la lista. */
 function cruzadosNuevos(e: EstadoParaSlack): string[] {
   const n = (e.novedades ?? []).find((x) => x.clave === "flota.cruzados");
@@ -1144,8 +1166,26 @@ export const REGLAS: readonly Regla[] = [
         // annualfiling-ops.com, annualfilingops.com, annualfilings-infra.com) y no decía que había
         // más. En la clase de mensaje que le hace vibrar el móvil, y en la dirección peligrosa: el
         // jefe baja ese nodo y se queda tranquilo con cuatro puestos.
-        const otros = (e.hechos?.reputacion ?? []).filter(listado).length - 1;
-        const mas = otros > 0 ? ` Hay ${otros} ${otros === 1 ? "dominio más" : "dominios más"} en la misma.` : "";
+        // LOS NOMBRES, no el conteo — y cada uno con SU lista.
+        //
+        // Este texto se estrenó el 2026-08-07 y falló contra el jefe el mismo día. Dijo "Hay 4
+        // dominios más en la misma", Juanes preguntó "¿cuáles son los otros 4?" y el agente tuvo
+        // que contestar "no los tengo en mi lectura actual" — era cierto, porque hasta ese día
+        // `hechos.reputacion` no entraba al contexto del modelo, así que este texto era la ÚNICA
+        // vía por la que ese dato podía llegarle. Un conteo sin sustantivos le hace vibrar el
+        // móvil y no le deja hacer nada: es la peor combinación de las dos quejas que ya levantó.
+        //
+        // Y "en la misma" era además FALSO. En el archivo real de ese día los cinco listados eran
+        // corp-delivery.com, infranationalreport.com, annualfilingops.com y annualfilings-infra.com
+        // en RATS Dyna, pero annualfiling-ops.com en DRONE BL. La frase afirmaba una lista
+        // compartida que nadie había verificado, y la afirmación la construía este renderizador —
+        // no el modelo, que es donde solemos buscar estas cosas.
+        const otros = (e.hechos?.reputacion ?? []).filter(listado).filter((x) => x.dominio !== r.dominio);
+        const mas =
+          otros.length > 0
+            ? ` Hay ${otros.length} más listado${otros.length === 1 ? "" : "s"}: ` +
+              `${otros.map((x) => `${x.dominio} (${(x.listas as readonly string[]).join(", ")})`).join(", ")}.`
+            : "";
         return `La IP de ${r.dominio} (${r.ip ?? "sin IP en el inventario"}) figura en ${l.length} lista${l.length === 1 ? "" : "s"} negra${l.length === 1 ? "" : "s"}: ${l.join(", ")}. Ese nodo hay que bajarlo o retirarlo.${mas}`;
       }
       return `${r.dominio} tiene las 2 señales cruzadas: 0 listas negras y el receptor cerrado. Las listas no ven la reputación interna del receptor, así que limpio no quiere decir sano. Mira si ese nodo se retira.`;
@@ -1369,8 +1409,27 @@ export const REGLAS: readonly Regla[] = [
       const plan = e.hechos?.plan ?? [];
       const todosCumplieronSuCupo = plan.length > 0 && plan.every((p) => p.enviadosHoy >= p.cupo);
       if (todosCumplieronSuCupo) return false;
+      // CUARTA GUARDA: EL SILENCIO DE AYER NO ES EVIDENCIA DE HOY.
+      //
+      // La tercera guarda tapó el caso "todos topados" y a las pocas horas la regla volvió a gritar
+      // en falso, el 2026-08-08T00:44:37Z — a CUARENTA Y CUATRO MINUTOS de empezado el día UTC.
+      // Textual del canal: "Hace 9 horas que la fábrica no da una vuelta… Échale un ojo a ver si
+      // sigue vivo", con el daemon vivo (PID 76220) y dando la vuelta #19 en INBOX poco después.
+      //
+      // El agujero es el borde del día. `enviadosHoy` se cuenta contra
+      // `date_trunc('day', now(), 'UTC')` (plan-diario.ts), así que a las 00:00 UTC los contadores
+      // de los seis dominios vuelven a 0 de golpe: la tercera guarda se apaga en ese instante
+      // mientras el hueco medido —9 h— sigue siendo el de AYER, cuando estaban topados y el
+      // silencio era lo correcto. O sea: falsa alarma garantizada, todos los días, a la misma hora.
+      //
+      // Se acota el hueco a lo que va del día UTC. Lo que pasó antes del corte ya lo juzga la
+      // tercera guarda con los contadores de ayer; arrastrarlo a hoy es contar dos veces. El costo
+      // es detección más lenta si el daemon muere de noche —hasta HORAS_SIN_ENVIAR entrado el día
+      // nuevo— y se paga con gusto: un aviso que grita en falso no molesta, enseña a ignorar todos
+      // los demás, incluido el que un día sí importe.
       const h = horasDesde(e.hechos?.vueltas?.[0]?.cuando ?? null, e.ahoraISO);
-      return h !== null && h >= HORAS_SIN_ENVIAR;
+      if (h === null) return false;
+      return Math.min(h, horasDelDiaUTC(e.ahoraISO)) >= HORAS_SIN_ENVIAR;
     },
     texto: (e) => {
       const h = horasDesde(e.hechos?.vueltas?.[0]?.cuando ?? null, e.ahoraISO) ?? HORAS_SIN_ENVIAR;
@@ -1927,6 +1986,27 @@ export async function mandarASlack(
 ): Promise<{ ok: boolean; motivo: string | null; ts: string | null }> {
   if (!cfg.token || !cfg.canal) return { ok: false, motivo: "sin SLACK_BOT_TOKEN o SLACK_CANAL", ts: null };
   const doFetch = cfg.fetchImpl ?? fetch;
+  // EL HECHO VINCULANTE VA PRIMERO, y va acá porque este es el ÚNICO embudo por el que sale todo:
+  // la respuesta del chat, el aviso de la guardia y el cierre de una promesa. Ponerlo en el
+  // orquestador cubriría un carril y dejaría los otros dos, que es el modo de falla que este repo
+  // ya pagó tres veces con los marcadores.
+  //
+  // El 2026-08-07 el mensaje salió como `[cuerpo, ...hechas].join("\n")`: la conclusión del modelo
+  // arriba ("esos nodos sirven para montarles dominio nuevo") y el dato que la desmiente 870
+  // caracteres abajo, con forma de cola de log. Nadie lee eso después de una conclusión. Invertir
+  // el orden no arregla la mentira: le saca el marco. Ver `anotarHechoVinculante`.
+  //
+  // SOLO DENTRO DE UN HILO, y el corte no es arbitrario: un hecho vinculante existe para que no se
+  // pueda decir lo contrario EN LA CONVERSACIÓN donde se midió, y en este orquestador los cuatro
+  // llamadores se parten justo por ahí — la respuesta del chat, su aviso de fallo y el cierre de una
+  // promesa van con `threadTs`; el aviso PROACTIVO de la guardia sale al canal pelado. Encabezar ese
+  // último con el estado de un nodo que nadie mencionó es ruido, y el ruido es la queja 2 del jefe.
+  //
+  // PERO SE LLAMA IGUAL SIN HILO, y ese fue el arreglo: antes el camino sin hilo salteaba la función
+  // entera, así que los hechos que la guardia medía por su cuenta quedaban sin dueño y se los
+  // adoptaba el PRÓXIMO hilo del chat. Un barrido de las 03:00 encabezaba la primera conversación de
+  // la mañana con un nodo que nadie mencionó. Pasando por acá, la publicación al canal los quema.
+  const texto = anteponerHechoVinculante(aviso.texto, cfg.threadTs);
   try {
     const r = await doFetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
@@ -1936,7 +2016,7 @@ export async function mandarASlack(
       headers: { "content-type": "application/json; charset=utf-8", authorization: `Bearer ${cfg.token}` },
       // threadTs: contestar DENTRO del hilo. Sin esto cada respuesta abre un mensaje suelto y la
       // conversación queda partida — que es literalmente "el agente se pierde".
-      body: JSON.stringify({ channel: cfg.canal, text: aviso.texto, ...(cfg.threadTs ? { thread_ts: cfg.threadTs } : {}) })
+      body: JSON.stringify({ channel: cfg.canal, text: texto, ...(cfg.threadTs ? { thread_ts: cfg.threadTs } : {}) })
     });
     const data = (await r.json()) as { ok?: boolean; error?: string; ts?: string };
     return data.ok

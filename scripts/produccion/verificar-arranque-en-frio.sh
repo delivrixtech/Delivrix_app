@@ -87,19 +87,10 @@ primera_linea_post_boot() {
 }
 
 # Estado de launchd de un servicio. Imprime "state|pid|last exit code|runs".
-# `launchctl print` es local e inmediato, pero igual se captura su rc: si el plist no está cargado
-# devuelve error y eso es NO SÉ, no "not running".
-launchd_estado() {
-  local salida
-  if ! salida="$(launchctl print "system/com.delivrix.$1" 2>/dev/null)"; then
-    printf 'NOSE|||'; return
-  fi
-  printf '%s|%s|%s|%s' \
-    "$(printf '%s\n' "${salida}" | sed -n 's/^[[:space:]]*state = \(.*\)$/\1/p' | head -1)" \
-    "$(printf '%s\n' "${salida}" | sed -n 's/^[[:space:]]*pid = \([0-9]*\)$/\1/p' | head -1)" \
-    "$(printf '%s\n' "${salida}" | sed -n 's/^[[:space:]]*last exit code = \(.*\)$/\1/p' | head -1)" \
-    "$(printf '%s\n' "${salida}" | sed -n 's/^[[:space:]]*runs = \([0-9]*\)$/\1/p' | head -1)"
-}
+# El parseo vive en lib.sh (`delivrix_launchd_campos`) porque verificar-despliegue.sh lee lo mismo:
+# dos copias del mismo sed sobre la misma salida se separan en cuanto una se toca, y ahí los dos
+# verificadores empiezan a dar veredictos distintos del mismo servicio.
+launchd_estado() { delivrix_launchd_estado "$1"; }
 
 # Una línea de resultado. El NÚMERO es el producto principal: sin él "ok" no distingue 11 s de 9 min.
 anotar() {

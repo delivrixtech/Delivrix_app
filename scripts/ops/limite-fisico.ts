@@ -23,6 +23,7 @@ import {
   buildFrenoPlan,
   buildDailyCapStatusCommand,
   CAP_MEASUREMENT_FILE,
+  lineaDeUso,
   parseDailyCapStatus,
   type CapFlota,
   type CapNodo,
@@ -236,12 +237,24 @@ async function mostrarStatus(
       });
       const s = parseDailyCapStatus(r.stdout);
       leidos.push({ ...s, domain: nodo.domain, serverSlug: nodo.serverSlug });
-      // El CUPO se muestra siempre. Antes, sin contador del día se imprimía solo "sin contador" y
-      // el cupo instalado quedaba invisible — justo el caso en que más falta hace: un nodo con
-      // cap 0 rechaza todo con `450 daily send cap reached` y el status no daba ninguna pista.
-      const cupo = s.cap === null ? "cupo ?" : s.cap === 0 ? "FRENADO (cap 0)" : `cap ${s.cap}/día`;
-      const uso = s.consumidoHoy === null ? `${cupo}, sin contador hoy` : `${s.consumidoHoy}/${s.cap ?? "?"}`;
+      // EL RENGLÓN LO ARMA `lineaDeUso`, en node-daily-cap.ts, al lado del parser. Acá vivía inline
+      // y la rama con contador del día tiraba el prefijo del cupo (`12800/15000`), que es lo que
+      // `leerCupoDelNodo` no sabe leer: el agente quedó ciego al cupo de los 9 nodos por encima del
+      // techo. Formato y parseo tienen que poder testearse JUNTOS o el contrato no lo cuida nadie.
+      const uso = lineaDeUso(s);
       console.log(`  ${s.cableado ? "CAP " : "ABIERTO"} ${nodo.domain.padEnd(32)} ${uso}${s.motivo ? ` — ${s.motivo}` : ""}`);
+      // EL FRENO QUE SE DESHIZO, en renglón aparte y SOLO cuando pasó.
+      //
+      // Va en su propia línea a propósito: `leerCupoDelNodo` (scripts/ops/warmup-monitor.ts) parsea
+      // la línea de arriba con regex (`FRENADO \(cap 0\)`, `cap N/día`, `N/M`) y toma la PRIMERA que
+      // contenga el dominio. Meterle texto adentro rompería la lectura viva del agente, que es la
+      // que arreglaron el 2026-08-07 para que dejara de creerle a una foto de 6 horas.
+      //
+      // Y solo aparece en `reescrito`: `sin_sello` es el estado de los 58 nodos hasta que alguno se
+      // frene por primera vez, y llenar 58 renglones con "no se sabe" sería ruido, no información.
+      if (s.freno?.estado === "reescrito") {
+        console.log(`         ↳ ${nodo.domain}: el cap se REESCRIBIÓ después del freno (última escritura ${s.freno.capEscritoEn ?? "?"})`);
+      }
     } catch (error) {
       ilegibles += 1;
       // Fail-honest: un nodo que no responde NO se cuenta como "sin límite" ni como "con límite",

@@ -41,6 +41,12 @@ export interface NodeCapStep {
 }
 
 export const CAP_FILE = "/etc/postfix/daily_cap";
+/**
+ * El sello del freno: el mtime que tenía `CAP_FILE` justo después de que NOSOTROS escribimos el 0.
+ * Es lo único que permite decir, a la vuelta siguiente, si el 0 que hay ahí sigue siendo el nuestro
+ * o si alguien reescribió el cap por encima. Ver `buildFrenoPlan`.
+ */
+export const FRENO_SELLO_FILE = "/etc/postfix/daily_cap.freno";
 export const COUNT_DIR = "/var/lib/postfix-quota";
 export const SCRIPT_PATH = "/usr/local/lib/postfix-quota/daily-quota-policy.py";
 export const POLICY_USER = "postfix-quota";
@@ -233,8 +239,16 @@ export function buildDailyCapInstallPlan(input: { cap: number }): NodeCapStep[] 
     },
     {
       label: "write-cap-file",
-      command: `printf '%s\\n' ${input.cap} > ${CAP_FILE} && chmod 0644 ${CAP_FILE}`,
-      auditCommand: `write ${CAP_FILE} = ${input.cap}`
+      // EL SELLO DEL FRENO SE BORRA ACÁ, y no es limpieza: instalar un cupo ES levantar el freno a
+      // propósito. Sin este `rm -f`, la secuencia normal frenar → soltar dejaba el nodo en
+      // `reescrito` PARA SIEMPRE (el sello guarda el mtime del freno y el cupo nuevo lo deja atrás),
+      // y por este mismo plan pasan `soltar_dominio` y `bajar_cap_nodo` — o sea que el agente iba a
+      // reportarle a Juanes "alguien reescribió el cap el <fecha>" sobre una soltada que había
+      // decidido él. Fabricar el hecho ambiguo es la falla que este proyecto ya pagó (atribuirle a
+      // Gmail nuestro propio cap de Postfix); un freno pisado por nosotros mismos vuelve a
+      // `sin_sello`, que es la verdad: no hay freno vigente que juzgar.
+      command: `printf '%s\\n' ${input.cap} > ${CAP_FILE} && chmod 0644 ${CAP_FILE} && rm -f ${FRENO_SELLO_FILE}`,
+      auditCommand: `write ${CAP_FILE} = ${input.cap} + rm ${FRENO_SELLO_FILE} (instalar cupo levanta el freno)`
     },
     {
       label: "selfcheck-policy-script",
@@ -338,6 +352,31 @@ export function buildFrenoPlan(): NodeCapStep[] {
       label: "validate-freno",
       command: `test "$(cat ${CAP_FILE})" = "0"`,
       auditCommand: "validar que el cap quedó en 0"
+    },
+    {
+      label: "sellar-freno",
+      // EL SELLO, y va DESPUÉS de la validación a propósito: si la escritura del 0 falló, el paso
+      // anterior corta el plan y acá no se sella nada. Sellar un freno que no se puso sería la
+      // mentira exacta que este paso existe para impedir.
+      //
+      // Por qué existe: los dos pasos de arriba validan EN EL MISMO SEGUNDO en que escriben, o sea
+      // que prueban "quedó escrito", nunca "quedó puesto". Y esa diferencia costó una noche entera
+      // el 2026-08-06: el agente frenó bizreport-control.com seis veces reportando "cap 255 → 0"
+      // cada vez, y terminó pidiéndole a Juanes por Slack que mirara por qué el freno no se pegaba.
+      // El nodo estaba perfecto —medido después: `/etc/postfix/daily_cap` = 0, mtime del
+      // 2026-08-06T18:54Z, intacto 30 h más tarde—; lo viejo era la lectura del "antes".
+      //
+      // El sello guarda el mtime del cap JUSTO DESPUÉS de escribir el 0. A la vuelta siguiente el
+      // status lo compara contra el mtime de ahora, y eso sí distingue las dos cosas que hasta hoy
+      // se confundían: "sigue el 0 que puse yo" (mtime == sello) de "alguien reescribió el cap
+      // después de que lo frené" (mtime > sello, y con la fecha del que lo pisó).
+      //
+      // Ventana conocida: entre el `printf` y este `stat` un tercero podría escribir, y el sello se
+      // quedaría con SU mtime. Son milisegundos y hoy no existe ningún escritor (verificado el
+      // 2026-08-07 en la flota: sin cron de root, sin unit ni timer que nombre daily_cap, y los
+      // caps por dominio del 2026-08-04 siguen con su mtime original cuatro días después).
+      command: `stat -c %Y ${CAP_FILE} > ${FRENO_SELLO_FILE} && chmod 0644 ${FRENO_SELLO_FILE}`,
+      auditCommand: `write ${FRENO_SELLO_FILE} = mtime de ${CAP_FILE} (sello de durabilidad del freno)`
     }
   ];
 }
@@ -355,6 +394,11 @@ export function buildDailyCapStatusCommand(): string {
     // El 465 también: si quedara abierto, el nodo tendría una puerta sin cap y el status diría CAP.
     'echo "## WIRED_SMTPS"; postconf -x -P smtps/inet/smtpd_recipient_restrictions 2>/dev/null || true; echo',
     'echo "## SPAWN"; postconf -M quota/unix 2>/dev/null || true; echo',
+    // CUÁNDO SE ESCRIBIÓ EL CAP, y contra qué compararlo. Sin estos dos, el status es una foto sin
+    // fecha: dice "cap 255" y no hay forma de saber si eso es de hace un minuto o de hace tres días.
+    // El veredicto del freno se apoya exactamente acá (ver `buildFrenoPlan` y `DurabilidadFreno`).
+    `echo "## CAP_MTIME"; stat -c %Y ${CAP_FILE} 2>/dev/null || true; echo`,
+    `echo "## FRENO_SELLO"; cat ${FRENO_SELLO_FILE} 2>/dev/null || true; echo`,
     'echo "## END"'
   ].join("\n");
 }
@@ -450,6 +494,30 @@ export function porEncimaDelTecho(input: {
     .sort((a, b) => a.dominio.localeCompare(b.dominio));
 }
 
+/**
+ * ¿EL FRENO SIGUE SIENDO EL NUESTRO? Cuatro estados, y los cuatro son distintos a propósito.
+ *
+ * El incidente que lo pide: el 2026-08-06 el agente frenó bizreport-control.com seis veces seguidas
+ * y las seis reportaron "cap 255 → 0". Con eso a la vista, "el freno no quedó puesto" y "la lectura
+ * del antes estaba vieja" son indistinguibles — y el agente terminó delegándole el diagnóstico a
+ * Juanes por Slack, que es justo lo que no tiene que hacer. Los cuatro estados de acá los separan.
+ *
+ * `sin_sello` NO es `intacto`, y esa es la parte cara: hoy los 58 nodos están en `sin_sello` porque
+ * ninguno tiene la marca todavía. Leer eso como "está todo bien" es la lección más repetida de este
+ * proyecto (un cero que nadie midió leído como limpio).
+ */
+export interface DurabilidadFreno {
+  /**
+   * · `intacto`   — el cap no se tocó desde que lo frenamos: el 0 que hay ahí es el nuestro.
+   * · `reescrito` — alguien escribió el cap DESPUÉS del freno. Dice cuándo en `capEscritoEn`.
+   * · `sin_sello` — nunca se frenó por este camino (o el freno es anterior al sello). No se sabe.
+   * · `no_se`     — hay sello pero el mtime no se pudo leer. Nunca se degrada a `intacto`.
+   */
+  estado: "intacto" | "reescrito" | "sin_sello" | "no_se";
+  /** Última escritura del cap EN EL NODO, en UTC. `null` = no se pudo leer el mtime. */
+  capEscritoEn: string | null;
+}
+
 export interface DailyCapStatus {
   /** El tope vigente en el nodo. `null` = no hay archivo de cap (o no se pudo leer). */
   cap: number | null;
@@ -459,6 +527,57 @@ export interface DailyCapStatus {
   cableado: boolean;
   /** Por qué no está cableado, o qué faltó leer. `null` cuando está todo bien. */
   motivo: string | null;
+  /**
+   * Opcional porque `sender-cap.json` guarda mediciones anteriores a este campo y porque hay
+   * fixtures que arman un `CapNodo` a mano. `parseDailyCapStatus` SIEMPRE lo devuelve.
+   */
+  freno?: DurabilidadFreno;
+}
+
+/**
+ * EL RENGLÓN DE ESTADO DE UN NODO, y vive acá —al lado de `parseDailyCapStatus`— porque no es
+ * cosmética: es un CONTRATO. `limite-fisico.ts --status` lo imprime y `leerCupoDelNodo`
+ * (scripts/ops/warmup-monitor.ts) lo vuelve a parsear con regex para saber el cupo VIVO de un nodo.
+ * Formato y parseo estaban en dos archivos distintos, cada uno con su test, y el contrato entre
+ * ellos no lo cuidaba nadie.
+ *
+ * LO QUE SE ROMPIÓ SIN ESTO, medido en producción el 2026-08-07: la rama con contador del día tiraba
+ * el prefijo del cupo y el renglón quedaba en `12800/15000`. Ninguna de las dos regex del agente
+ * (`FRENADO \(cap 0\)` y `cap N/día`) matchea eso, así que `leerCupoDelNodo` devolvía `cap: null` y:
+ *
+ *   · `bajar_cap_nodo` fallaba cerrado ("no bajo a ciegas") sobre los NUEVE nodos que están por
+ *     encima del techo —los nueve tenían contador del día—, o sea el 100% de su razón de existir,
+ *     incluido infranationalreport.com con 15.000/día cableado contra un umbral de 5.000;
+ *   · `leer_cupo_nodo` le contestaba al jefe "no se pudo leer el cupo" sobre 15 de 57 nodos que
+ *     habían respondido perfecto;
+ *   · `capAntesDeTocar` volvía a caer a la foto de 6 h de sender-cap.json, el mismo agujero que se
+ *     había tapado el día anterior, por otra puerta.
+ *
+ * Nadie lo vio antes porque los nodos SIN contador del día parsean bien, y bizreport-control.com —el
+ * dominio del incidente que motivó toda la lectura viva— es justamente uno de esos.
+ *
+ * El cupo va SIEMPRE adelante; el consumo, cuando existe, va detrás y con la palabra "hoy" para que
+ * `sin contador hoy` y `12800/15000 hoy` se distingan por presencia de número y no por ausencia.
+ */
+export function lineaDeUso(s: Pick<DailyCapStatus, "cap" | "consumidoHoy">): string {
+  const cupo = s.cap === null ? "cupo ?" : s.cap === 0 ? "FRENADO (cap 0)" : `cap ${s.cap}/día`;
+  return s.consumidoHoy === null ? `${cupo}, sin contador hoy` : `${cupo}, ${s.consumidoHoy}/${s.cap ?? "?"} hoy`;
+}
+
+/**
+ * LA DECISIÓN, y es toda la aritmética que hay: comparar dos números.
+ *
+ * No necesita el cap: un `0` no prueba que el freno haya durado (puede ser el 0 de otro) y un valor
+ * distinto de 0 no prueba que alguien lo pisó (podríamos haber fallado al escribir). Lo único que
+ * separa las dos cosas es cuándo se escribió el archivo contra cuándo lo sellamos.
+ */
+function durabilidadDelFreno(capMtime: number | null, sello: number | null): DurabilidadFreno {
+  const capEscritoEn = capMtime === null ? null : new Date(capMtime * 1000).toISOString();
+  if (sello === null) return { estado: "sin_sello", capEscritoEn };
+  if (capMtime === null) return { estado: "no_se", capEscritoEn: null };
+  // `<=` y no `<`: el sello se toma en el mismo segundo en que se escribe el 0, y `stat -c %Y` da
+  // segundos enteros. Con `<` el freno se declararía reescrito por sí mismo apenas se pone.
+  return { estado: capMtime <= sello ? "intacto" : "reescrito", capEscritoEn };
 }
 
 /**
@@ -467,14 +586,17 @@ export interface DailyCapStatus {
  */
 export function parseDailyCapStatus(stdout: string): DailyCapStatus {
   const lineas = stdout.split("\n").map((l) => l.trimEnd());
+  // Una salida ilegible deja el freno en `no_se`, jamás en `intacto`: si no se pudo leer el nodo,
+  // no hay nada que afirmar sobre lo que quedó puesto en él.
+  const ilegible = { cap: null, consumidoHoy: null, cableado: false, freno: { estado: "no_se", capEscritoEn: null } } as const;
   if (!lineas.some((l) => l === "## END")) {
-    return { cap: null, consumidoHoy: null, cableado: false, motivo: "salida truncada: falta ## END" };
+    return { ...ilegible, motivo: "salida truncada: falta ## END" };
   }
   // Un centinela pegado a la salida anterior ("2## WIRED") haría desaparecer su sección y el nodo
   // se reportaría ABIERTO teniendo el límite. Se declara ilegible en vez de mentir por omisión.
   const pegado = lineas.find((l) => l.includes("## ") && !l.startsWith("## "));
   if (pegado) {
-    return { cap: null, consumidoHoy: null, cableado: false, motivo: `salida ilegible: centinela pegado en "${pegado}"` };
+    return { ...ilegible, motivo: `salida ilegible: centinela pegado en "${pegado}"` };
   }
   const seccion = (nombre: string): string[] => {
     const desde = lineas.indexOf(`## ${nombre}`);
@@ -522,6 +644,7 @@ export function parseDailyCapStatus(stdout: string): DailyCapStatus {
     cap: entero(seccion("CAP")[0]),
     consumidoHoy: entero(seccion("COUNT")[0]),
     cableado,
-    motivo
+    motivo,
+    freno: durabilidadDelFreno(entero(seccion("CAP_MTIME")[0]), entero(seccion("FRENO_SELLO")[0]))
   };
 }

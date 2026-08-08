@@ -26,12 +26,55 @@ export type ProviderFamily =
   | "apple"
   | "otros";
 
+/**
+ * QUÉ RECEPTOR PERTENECE A QUÉ FAMILIA. Se calibra AGREGANDO FILAS MEDIDAS, no adivinando.
+ *
+ * No es sólo el umbral de volumen: `smtp-delivery-health.ts` pregunta `providerFamilyFor(x) !==
+ * "otros"` para decidir si un receptor que nos rechazó TODO bajo el piso de intentos vale un veto
+ * (`insufficient_sample`). Ese filtro existe para que un typo (`gamil.com`, `yahoo.comm`) no congele
+ * un dominio — y está bien —, pero con la tabla corta se llevaba puestos receptores REALES: un nodo
+ * cuyo único receptor con rechazo del 100% sea `bellsouth.net` salía `healthy` con el texto
+ * "0 entregados a terceros, 3 rechazados", que es la firma exacta de "no medido leído como sano".
+ *
+ * LAS FILAS DE ABAJO SON MEDICIÓN, con su volumen del barrido pasivo de la flota (5 días, 58 nodos,
+ * 2026-08-08): bellsouth.net 671 entregas / 982 diferidos en 7 nodos · verizon.net 461/555 en 7 ·
+ * att.net 388/490 en 7 · sbcglobal.net 112/93 en 6 · myyahoo.com 159/206 en 7 · yahoo.fr 44/64 en 4.
+ * Son los buzones de NFC y ya aparecieron cerrados en producción (una fila vieja de
+ * sender-measurement.json trae `cerradoEn: ['yahoo.com','aol.com','bellsouth.net']`). Hoy los salva
+ * del hueco que TODAVÍA entregan; el día que caigan bajo el piso —que es el escenario que este lote
+ * prepara, "el día que NFC deje de inyectar"— el veto se apagaba para ellos en silencio.
+ *
+ * bellsouth/att/sbcglobal/verizon van en `yahoo_aol` y no en una familia propia porque el correo de
+ * esos dominios lo OPERA Yahoo: comparten infraestructura, política y el umbral de 5.000/día, que es
+ * justo lo que la familia significa. Verificado que no mueve un solo `cruzados`: la cota superior
+ * (todo el tráfico de la ventana sumado al pico de un solo día) da 4.475 en el peor nodo de la flota
+ * —corpdocfiling-ledger.com— contra el umbral de 5.000, y ese nodo ya está cruzado en google igual.
+ *
+ * LO QUE QUEDA AFUERA A PROPÓSITO, con su volumen medido, para que el próximo lo agregue con dato y
+ * no de memoria: protonmail.com 338/165, proton.me 262/144, mail.com 145/102, cox.net 106/116,
+ * gmx.com 27/52, earthlink.net 62/13. Son receptores reales pero no pertenecen a ninguna de las seis
+ * familias que esta tabla modela, y meterlos exigiría inventarles familia y umbral. Consecuencia
+ * conocida: el veto de `insufficient_sample` sigue apagado para ellos.
+ * ponytail: el techo es una lista a mano; si la cola de receptores importa, el reemplazo es sacarla
+ * del log de la flota ordenada por volumen, no un match difuso por nombre.
+ */
 const FAMILY_DOMAINS: ReadonlyArray<readonly [ProviderFamily, readonly string[]]> = [
   ["google", ["gmail.com", "googlemail.com"]],
-  ["microsoft", ["hotmail.com", "outlook.com", "live.com", "msn.com", "hotmail.co.uk", "outlook.es"]],
-  ["yahoo_aol", ["yahoo.com", "ymail.com", "rocketmail.com", "aol.com", "yahoo.es", "yahoo.co.uk"]],
+  ["microsoft", [
+    "hotmail.com", "outlook.com", "live.com", "msn.com", "hotmail.co.uk", "outlook.es",
+    "hotmail.fr", "hotmail.es", "hotmail.de", "hotmail.it", "outlook.fr", "outlook.de", "outlook.com.br",
+    "live.co.uk", "live.fr", "passport.com"
+  ]],
+  ["yahoo_aol", [
+    "yahoo.com", "ymail.com", "rocketmail.com", "aol.com", "yahoo.es", "yahoo.co.uk",
+    // Los de AT&T/Verizon: buzones distintos, MX y política de Yahoo.
+    "bellsouth.net", "sbcglobal.net", "att.net", "verizon.net", "ameritech.net", "pacbell.net",
+    "swbell.net", "flash.net", "prodigy.net", "nvbell.net", "snet.net",
+    "myyahoo.com", "yahoo.fr", "yahoo.de", "yahoo.it", "yahoo.ca", "yahoo.com.mx", "yahoo.com.br",
+    "yahoo.com.ar", "yahoo.in", "yahoo.co.jp", "aol.co.uk", "aim.com", "netscape.net", "love.com"
+  ]],
   ["comcast", ["comcast.net", "xfinity.com"]],
-  ["charter_rr", ["rr.com", "charter.net", "spectrum.net", "twc.com"]],
+  ["charter_rr", ["rr.com", "charter.net", "spectrum.net", "twc.com", "roadrunner.com"]],
   ["apple", ["icloud.com", "me.com", "mac.com"]]
 ];
 
@@ -64,7 +107,12 @@ export const THRESHOLD_WARN_RATIO = 0.4;
 export function providerFamilyFor(recipientDomain: string): ProviderFamily {
   const domain = recipientDomain.trim().toLowerCase().replace(/\.$/, "");
   for (const [family, domains] of FAMILY_DOMAINS) {
-    if (domains.includes(domain)) return family;
+    // Exacto O SUBDOMINIO, y el punto no es cosmético: `rr.com` tiene decenas de variantes
+    // regionales (wi.rr.com, tampabay.rr.com, cfl.rr.com — las tres con volumen medido en la flota) y
+    // listarlas a mano es una lista que nunca termina. El sufijo se compara sobre el LABEL (`.rr.com`)
+    // y no sobre el string pelado: `"askherr.com".endsWith("rr.com")` da `true`, y así un dominio de
+    // cliente cualquiera se clasificaría charter_rr y arrastraría su umbral.
+    if (domains.some((d) => domain === d || domain.endsWith(`.${d}`))) return family;
   }
   return "otros";
 }

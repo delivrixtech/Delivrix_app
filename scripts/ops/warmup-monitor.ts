@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { Pool } from "pg";
 
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
-import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
+import { dominiosDeLosHechos, MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
 import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
 import { ejecutarAcciones, extraerAcciones, type Pendiente } from "../../apps/gateway-api/src/agents/acciones-agente.ts";
 import {
@@ -35,7 +35,7 @@ import {
   recordarAviso,
   type MemoriaSlack
 } from "../../apps/gateway-api/src/agents/slack.ts";
-import { anotarPromesa, revisarPromesas, type Promesa } from "../../apps/gateway-api/src/agents/promesas.ts";
+import { anotarPromesa, porQueNoSePodraCumplir, revisarPromesas, type Promesa } from "../../apps/gateway-api/src/agents/promesas.ts";
 import { acusarRecibo, agruparParaContestar, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
 import { extraerRecordar, limpiarMaquinaria, limpiarParaSlack, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
@@ -58,6 +58,7 @@ import {
   ordenDelBarrido,
   REPUTACION_FILE,
   revisarReputacionDe,
+  sondaTlsDelNodo,
   type ArchivoReputacion
 } from "../../apps/gateway-api/src/agents/reputacion.ts";
 import { createMxtoolboxAdapterFromEnv } from "../../packages/adapters/src/mxtoolbox-adapter.ts";
@@ -286,16 +287,51 @@ async function correrBarridoDeReputacion(
   const todos = (inventario?.bandejas ?? []).map((b) => b.domain ?? "").filter(Boolean);
   if (todos.length === 0) return;
 
+  // La medición del receptor, para cruzarla con las listas negras (ver `receptorDe` abajo). Si no
+  // se puede leer queda en null y el cruce se calla: media señal no se completa con una suposición.
+  const medicion = await workspace.readInventoryJson<MedicionFlota>(MEASUREMENT_FILE).catch(() => null);
+
   const archivo = await barridoDeReputacion({
     orden: ordenDelBarrido({
       todos,
       calientanHoy: (hechos.plan ?? []).map((p) => p.dominio),
+      // LOS QUE VAN A ESTRENAR, del mismo archivo que ya se lee dos líneas arriba. `no_traffic` es
+      // el estado del dominio que nunca mandó, y desde el 2026-08-08 el pool no lo deja arrancar
+      // hasta que su IP figure consultada en listas negras: si el barrido no llega a ellos —caían en
+      // el grupo del final, el que se queda sin cuota— el freno no se levanta nunca.
+      vanAEstrenar: (medicion?.bandejas ?? [])
+        .filter((b) => b.estado === "no_traffic")
+        .map((b) => b.domain ?? "")
+        .filter(Boolean),
       cerca: hechos.flota?.cerca ?? []
     }),
     // `conListas:false` NO consulta MXToolbox: el dominio igual se mide en DNS, SPF, DKIM y PTR, y
     // su casilla de listas sale "no-se". Gastar la cuota en los últimos de la lista dejaría sin
     // medir justo a los que están calentando.
     revisar: async (dominio, conListas) => revisarUno(dominio, conListas),
+    // LA MITAD QUE FALTABA DE LA REGLA DEL 25 DE JULIO, y es un parámetro que existía y una llamada
+    // que lo ignoraba. La regla del canal cruza "listas negras limpias" con "el receptor lo tiene
+    // cerrado" —el modo de falla exacto de aquel día: 38 de 64 nodos rechazados por Gmail con
+    // TODAS las IPs limpias en listas negras— y no se podía disparar NUNCA porque este campo
+    // llegaba vacío. Verificado sobre el archivo de producción: 66 filas, 0 con `receptor`.
+    //
+    // Es la quinta vez que aparece esta clase de falla en este repo: capacidad construida, testeada,
+    // y con el llamador que no la enchufa. Media regla en código muerto no avisa de nada y encima
+    // parece cobertura.
+    //
+    // El estado sale de sender-measurement, que es donde vive y quien lo mide; este módulo no lee
+    // un solo archivo a propósito y por eso entra inyectado.
+    // OJO CON LA FUENTE, que casi se cablea mal: `inventario` es `leerInventarioFabrica`, y su
+    // `BandejaInventario` NO tiene `estado` (sender-inventory.ts:21-40). Leerlo de ahí habría
+    // devuelto `undefined` en las 66 filas — el mismo campo vacío de antes, ahora con un cable
+    // puesto que nadie volvería a revisar. El estado del receptor lo mide `sender-measurement.json`
+    // y sale de ahí.
+    receptorDe: (dominio) => {
+      const b = medicion?.bandejas?.find((x) => (x.domain ?? "").toLowerCase() === dominio.toLowerCase());
+      // Ausente ⇒ null ⇒ "no se sabe". Nunca "sano": ausencia de dato no es evidencia.
+      const estado = b?.estado;
+      return typeof estado === "string" && estado.trim() !== "" ? estado : null;
+    },
     log: (linea) => console.log(`[reputacion] ${linea}`)
   });
   await workspace.updateInventoryJson<ArchivoReputacion>(REPUTACION_FILE, () => archivo);
@@ -339,6 +375,19 @@ function revisarReputacionDelDominio(inventario: { bandejas?: Array<{ domain?: s
       resolveTxt: (fqdn) => dns.resolveTxt(fqdn),
       reverse: (ip) => dns.reverse(ip),
       resolve4: (host) => dns.resolve4(host),
+      // EL CERTIFICADO DEL PROPIO NODO, POR EL 587. Sin esta línea la sonda existía, estaba testeada
+      // y no la llamaba NADIE: los 66 dominios salían con `tls: "no-se"` todos los días, que es el
+      // estado que este repo aprendió a no confundir con "está bien".
+      //
+      // Ya costó una vez: a filing-ops.com se le cayó el certificado y los receptores que exigen
+      // STARTTLS le cerraron la puerta sin que ninguna de las otras cuatro señales se moviera un
+      // milímetro — se descubrió a mano, semanas después. Y hay una fecha esperando: el cert de
+      // annualfilings-control.com —que HOY está calentando— vence el 2026-10-05.
+      //
+      // No compite por el presupuesto de MXToolbox: es node:tls contra nuestro propio 587, sin
+      // terceros. Cablea los dos caminos de una vez, el barrido diario y la mano del agente,
+      // porque los dos salen de esta misma fábrica.
+      tls: sondaTlsDelNodo(),
       blacklist: async (ip) => {
         if (!conListas) return { estado: "error" as const, listas: [] };
         if (!mx) return { estado: "error" as const, listas: [] };
@@ -398,6 +447,7 @@ async function diagnosticarUnDominio(dominio: string): Promise<{
   degradadoEn: string[];
   entregados: number;
   rechazados: number;
+  culpaPorProveedor: Record<string, "ip" | "dominio" | "buzon" | "no-se">;
   detalle: string;
 }> {
   const { execFile } = await import("node:child_process");
@@ -414,7 +464,25 @@ async function diagnosticarUnDominio(dominio: string): Promise<{
       blockedProviders?: string[];
       degradedProviders?: string[];
       detail?: string;
-      stats?: { total?: { delivered?: number; blocked?: number } };
+      // `totals`, NO `total`, y la diferencia de una letra costó todos los diagnósticos del agente.
+      // El sensor declara `interface NodeDeliveryStats { totals: {...} }` (smtp-delivery-health.ts:25)
+      // y acá se leía `stats.total`, que no existe: el `?? 0` de abajo lo convertía en un cero
+      // perfectamente silencioso. Resultado medido: TODA frase de diagnóstico encabezaba con
+      // "0 entregados / 0 rechazados" sobre nodos que sí habían entregado — bizreport-control.com
+      // salió así el 2026-08-07 con 752 entregas y 511 rebotes en el log.
+      //
+      // Es la confusión de siempre —"no medido" leído como "cero"— pero entrando por una llave mal
+      // escrita, que ningún test de la mano podía ver porque el fixture lo escribió quien también
+      // escribió el mapeo. TypeScript tampoco: el objeto viene de un JSON.parse y el tipo lo
+      // declara este mismo bloque, así que la mentira era autoconsistente.
+      stats?: { totals?: { delivered?: number; blocked?: number } };
+      // DE QUIÉN ES LA CULPA: de la IP o del dominio. El sensor ya lo produce (línea 748) y esta
+      // función lo tiraba al mapear. Es exactamente el dato que contestaba la pregunta del jefe del
+      // 2026-08-07 —"¿sería comprar 2 dominios nuevos?"— y que nadie tenía: Gmail castiga la
+      // reputación del DOMINIO (ahí un nombre nuevo sirve) y Microsoft nombra la IP en el rebote
+      // ("part of their network is on our block list", 171 veces sobre 86.48.29.176), donde un
+      // dominio nuevo nace bloqueado el día uno. Sin este campo las dos cosas se leen igual.
+      culpaPorProveedor?: Record<string, "ip" | "dominio" | "buzon" | "no-se">;
     };
   }>;
   const f = filas.find((x) => x.node?.domain?.toLowerCase() === dominio.toLowerCase()) ?? filas[0];
@@ -424,8 +492,9 @@ async function diagnosticarUnDominio(dominio: string): Promise<{
     estado: v.status ?? "desconocido",
     bloqueanPor: v.blockedProviders ?? [],
     degradadoEn: v.degradedProviders ?? [],
-    entregados: v.stats?.total?.delivered ?? 0,
-    rechazados: v.stats?.total?.blocked ?? 0,
+    entregados: v.stats?.totals?.delivered ?? 0,
+    rechazados: v.stats?.totals?.blocked ?? 0,
+    culpaPorProveedor: v.culpaPorProveedor ?? {},
     detalle: (v.detail ?? "").slice(0, 200)
   };
 }
@@ -756,18 +825,9 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         // rechazamos por "no está en el inventario" — un rechazo FALSO, porque el dominio venía de
         // los propios hechos que le dimos. Una barrera que bloquea decisiones correctas entrena a
         // desconfiar de la barrera.
-        dominiosConocidos: [
-          ...new Set([
-            ...(hechos.plan ?? []).map((p) => p.dominio),
-            ...hechos.vueltas.map((v) => v.dominio),
-            ...(hechos.flota?.cruzados ?? []),
-            ...(hechos.flota?.cerca ?? []),
-            ...(hechos.cap?.enElTope ?? []),
-            // LOS FRENADOS son el sujeto entero de soltar_dominio. Sin esta línea la acción existía
-            // y no alcanzaba a nadie: ninguno de ellos aparece en el plan ni en las vueltas.
-            ...(hechos.cap?.frenados ?? [])
-          ])
-        ],
+        // UNA SOLA FUENTE para los dos carriles. Estaba escrita a mano acá y otra vez en el chat, y
+        // las dos se quedaron cortas del mismo modo: ver `dominiosDeLosHechos`.
+        dominiosConocidos: dominiosDeLosHechos(hechos),
         // EL ALCANCE DEL FRENO: solo donde el daño YA está hecho. Un dominio que cruzó el umbral
         // permanente no tiene nada más que perder, y uno al que el receptor ya le cerró la puerta
         // tampoco está calentando. Frenar ahí solo puede ayudar. Frenar un dominio SANO cuesta
@@ -977,7 +1037,10 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   // perdía el hilo donde se prometió —el cumplimiento aparecía suelto en el canal como pie de
   // página de otra cosa— y no consultaba el presupuesto. Cumplir es contestar, no avisar: va sin
   // mención y sin pedir respuesta, para que no le suene el móvil a las 4am.
-  let avisoPromesa: { texto: string; motivo: string; hilo?: string | null } | null = null;
+  // El tipo se declara acá a mano y por eso `pide` se perdía en el camino: `revisarPromesas` lo
+  // devuelve desde hace rato y esta anotación lo borraba en silencio. Un campo que el productor
+  // emite y el consumidor no declara es una capacidad muerta que ningún test ve.
+  let avisoPromesa: { texto: string; motivo: string; hilo?: string | null; pide?: boolean } | null = null;
   try {
     await workspace.updateInventoryJson<Promesa[]>(PROMESAS_FILE, (actual) => {
       const r = revisarPromesas(actual ?? [], camposAntes, camposAhora, lectura.generadoEn, previa?.generadoEn ?? null);
@@ -985,8 +1048,17 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
       return r.lista;
     });
     if (avisoPromesa) {
+      // LA CITA QUE ÉL MISMO PIDIÓ TIENE QUE SONARLE EL TELÉFONO. `mandarASlack` ignora
+      // `pideRespuesta`: la mención la pone el llamador o no le llega la notificación a nadie. Sin
+      // esto, un "avisame el lunes a las 5" se cumple puntual y muere en un canal que él no está
+      // mirando un lunes a las 5 — que es exactamente el mismo final que no cumplirlo.
+      //
+      // Y no hay riesgo de molestar de más: la hora la eligió él, así que por construcción no puede
+      // ser una hora que no quiera. Solo cuando la promesa lo PIDE (`pide`), no en cada vencimiento.
+      const jefe = process.env.SLACK_JUANES_USER_ID;
+      const texto = avisoPromesa.pide && jefe ? `<@${jefe}> ${avisoPromesa.texto}` : avisoPromesa.texto;
       const env = await mandarASlack(
-        { texto: avisoPromesa.texto, motivo: avisoPromesa.motivo, pideRespuesta: false },
+        { texto, motivo: avisoPromesa.motivo, pideRespuesta: false },
         {
           token: process.env.SLACK_BOT_TOKEN,
           canal: process.env.SLACK_CANAL,
@@ -1314,16 +1386,9 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
     try {
     if (pedidas.length > 0) {
       const res = await ejecutarAcciones(pedidas, {
-        dominiosConocidos: [
-          ...new Set([
-            ...(snapshot?.hechos?.plan ?? []).map((p) => p.dominio),
-            ...(snapshot?.hechos?.vueltas ?? []).map((v) => v.dominio),
-            ...(snapshot?.hechos?.flota?.cruzados ?? []),
-            ...(snapshot?.hechos?.flota?.cerca ?? []),
-            ...(snapshot?.hechos?.cap?.enElTope ?? []),
-            ...(snapshot?.hechos?.cap?.frenados ?? [])
-          ])
-        ],
+        // Misma fuente que la guardia. Acá importaba todavía más: es el carril donde el jefe
+        // pregunta "¿cuáles son los otros 4?" y el agente tiene que poder ir a mirarlos.
+        dominiosConocidos: dominiosDeLosHechos(snapshot?.hechos),
         // La orden vino de un humano: se relaja el alcance del freno, que existe para acotar al
         // MODELO. Todo lo demás —dominio real, motivo, idempotencia— sigue igual de duro.
         //
@@ -1414,9 +1479,23 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
           bit = registrar(bit, {
             accion: a.accion,
             objetivo: a.objetivo ?? null,
+            // EL RESULTADO SE GUARDA AUNQUE HAYA SALIDO BIEN. Decía `detalle: a.ejecutada ? null :
+            // a.detalle`, o sea: los FRACASOS conservaban su texto y los ÉXITOS lo perdían. La
+            // asimetría iba justo en la dirección cara — se tiraba el dato medido y se guardaba la
+            // excusa.
+            //
+            // Medido en el archivo real: la entrada `revisar_reputacion:bizreport-control.com`
+            // quedó con `"detalle": null` mientras la rechazada de annualfiling-infra.com conservó
+            // su frase entera. Consecuencia del 2026-08-07: el único ejemplar vivo de "receptor
+            // CERRADO en gmail.com, hotmail.com, outlook.com" fue el mensaje de Slack, y llegó al
+            // turno siguiente sólo porque el bot se relee a sí mismo el hilo. Un accidente
+            // sosteniendo el hecho que decidía USD 30.
+            //
+            // El `pedido por el jefe` se va a `motivo`, que es lo que es: por qué se hizo. El
+            // `detalle` es qué pasó. Mismo criterio que el carril de la guardia.
             motivo: `pedido por el jefe: ${m.texto.slice(0, 80)}`,
             estado: a.ejecutada ? "ejecutada" : "rechazada",
-            detalle: a.ejecutada ? null : a.detalle,
+            detalle: a.detalle,
             antes: typeof a.antes === "number" ? { cap: a.antes } : null,
             cuando: new Date().toISOString()
           });
@@ -1453,7 +1532,25 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
       cuerpo = cuerpo.replace(/^\s*JUANES[,!\s]*/i, "").replace(/^\s*Juanes[,]\s*/, "");
       cuerpo = urgente ? `<@${jefeId}> ${cuerpo}` : cuerpo;
     }
-    const paraSlack = [cuerpo, ...hechas].filter(Boolean).join("\n");
+    // LA PROMESA IMPOSIBLE SE DICTAMINA AL PROMETER, NO AL VENCER.
+    //
+    // El agente le prometió al jefe una medición de filing-ops.com — un dominio en cap 0, que no
+    // manda nada, así que no iba a haber placement que medir NUNCA. El sistema hizo lo correcto (la
+    // promesa venció en voz alta a las 6 h), pero el jefe se quedó seis horas esperando un dato que
+    // era imposible desde el segundo cero. Eso se sabe al prometer, y el reparo tiene que viajar en
+    // el MISMO mensaje: decirlo después es hacerlo esperar de gusto.
+    //
+    // La medición del cupo VENCIDA no produce veredicto: `frenados` va en null y el dictamen se
+    // calla. El 2026-08-04 sender-cap.json decía 2000 en nodos que en vivo estaban en 0, y un
+    // reparo falso enseña a ignorar todos los demás — que es el modo de falla que más veces se
+    // repitió acá. Doce horas es la misma ventana con la que el resto del sistema declara vencida
+    // esa medición.
+    const capMedidoEn = Date.parse(snapshot?.hechos?.cap?.medidoEn ?? "");
+    const capFresco = Number.isFinite(capMedidoEn) && Date.now() - capMedidoEn < 12 * 3_600_000;
+    const noPuede = r.promesa
+      ? porQueNoSePodraCumplir(r.promesa.esperando, capFresco ? (snapshot?.hechos?.cap?.frenados ?? null) : null)
+      : null;
+    const paraSlack = [cuerpo, ...hechas, noPuede].filter(Boolean).join("\n");
     // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
     const env = await mandarASlack(
       { texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false },
@@ -1472,9 +1569,37 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
     // persiste, con el HILO donde se prometió para poder contestar ahí y no suelto en el canal.
     if (r.promesa) {
       await workspace.updateInventoryJson<Promesa[]>(PROMESAS_FILE, (actual) =>
-        anotarPromesa(actual ?? [], { que: r.promesa!.que, hilo: dondeResponder(m), esperando: r.promesa!.esperando }, new Date().toISOString())
+        anotarPromesa(
+          actual ?? [],
+          {
+            que: r.promesa!.que,
+            hilo: dondeResponder(m),
+            esperando: r.promesa!.esperando,
+            // LA CITA, en hora de pared de Colombia y SIN convertir acá. Quien la convierte es
+            // `aInstante` adentro de `anotarPromesa`, que es quien tiene el reloj y la zona; este
+            // orquestador solo la transporta. Si el modelo escribió algo que no parsea ("el lunes"
+            // a secas), la promesa se anota igual y queda sin cita — nunca se tira.
+            //
+            // Ésta es la mitad que faltaba de las dos: el jefe dijo "el lunes a las 5pm hora
+            // Colombia", el agente contestó "queda anotado", y no había nada que lo trajera de
+            // vuelta el lunes. El código de la cita estaba entero y con tests desde hace días, con
+            // CERO llamadores; el equipo que lo escribió sacó a propósito las líneas del prompt
+            // para no prometer una capacidad muerta —la lección pagada cuatro veces— y las dejó
+            // literales en un comentario de sentinel-chat.ts. Vuelven en este mismo cambio.
+            cuando: r.promesa!.cuando,
+            // YA SE LO DIJO ARRIBA, EN EL MISMO MENSAJE: que no lo repita al vencer. Sin esta marca
+            // el jefe escucha la misma frase dos veces con seis horas de diferencia, que es el
+            // ruido que él ya nombró con todas las letras. Es de un solo sentido: no apaga un
+            // cumplimiento, porque la rama de CUMPLIDA corre antes y sale.
+            callada: noPuede !== null
+          },
+          new Date().toISOString()
+        )
       );
-      console.log(`[chat] anoté una promesa: "${r.promesa.que}" esperando ${r.promesa.esperando ?? "(sin disparador)"}`);
+      console.log(
+        `[chat] anoté una promesa: "${r.promesa.que}" esperando ${r.promesa.esperando ?? "(sin disparador)"}` +
+          ` · noPuede=${noPuede ? "sí" : "-"} · cupo ${capFresco ? "fresco" : "VENCIDO (sin dictamen)"}`
+      );
     }
 
     // QUEDA REGISTRADO. Es la diferencia entre un agente que acumula y uno que redescubre: sin

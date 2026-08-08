@@ -35,6 +35,34 @@ export interface EntradaAccion {
   detalle: string | null;
   primeraVez: string;
   ultimaVez: string;
+  /**
+   * CUÁNDO SE EJECUTÓ POR ÚLTIMA VEZ DE VERDAD. Se setea al ejecutar y NO SE LIMPIA NUNCA.
+   *
+   * Existe por una línea que costó todo el aprendizaje del agente: `registrar` PISA `estado` en cada
+   * re-registro (abajo, :"estado: entrada.estado"), y `juzgar` exigía `estado === "ejecutada"`. O sea
+   * que un `frenar_dominio` que SÍ se ejecutó y a la vuelta siguiente se rechaza por idempotencia
+   * ("ya está en cap 0") queda con `estado: "rechazada"` y se vuelve INELEGIBLE PARA JUICIO PARA
+   * SIEMPRE. Medido en la Mac Studio (runtime/openclaw-workspace/inventory/warmup-acciones.json,
+   * 2026-08-07): 40 entradas, 0 veredictos, 0 con `antes`. Y la maquinaria de juicio está COMPLETA
+   * desde hace semanas — emite textual "<dominio> sigue con cupo N: el freno no quedó puesto"
+   * (scripts/ops/warmup-monitor.ts:924) — nunca llegó a correr una sola vez.
+   *
+   * Consecuencia real: el hecho de que su propio freno se DESHAGA (46 nodos pasaron de cap 0 a cap
+   * por dominio el 2026-08-04 y nadie sabe quién los escribe) no le llegaba nunca al modelo, y el
+   * censo lo devolvió como "43 episodios de no se midió el efecto de mis propias acciones".
+   *
+   * `estado` sigue siendo el ÚLTIMO desenlace (lo que hay que mostrarle al modelo); esto es el
+   * HISTÓRICO de ejecución (lo que decide si hay algo que juzgar). Son dos preguntas distintas y por
+   * eso son dos campos: un solo campo obligaba a elegir cuál mentir.
+   *
+   * Opcional en la práctica: las 40 entradas que ya están en producción no lo tienen. `juzgar` cae
+   * a `estado === "ejecutada"` para esas, que es lo que había antes y no empeora nada.
+   *
+   * ponytail: acá está además la fecha que le falta a `daLoMismo` para poder expirar el corte por
+   * tiempo (ver su comentario: "esa fecha hoy no se guarda"). NO se usa para eso en este lote —
+   * cambiar el corte es otra decisión, con otro riesgo. Se guarda y queda anotado.
+   */
+  ultimaEjecucion: string | null;
   /** Cuántas veces la pidió. Es EL número que corta el bucle de repetición. */
   veces: number;
   /**
@@ -85,8 +113,50 @@ export function idDe(accion: string, objetivo: string | null): string {
   return `${accion}:${objetivo ?? "*"}`;
 }
 
-/** El texto del resultado, esté en el campo que esté. Ver `detalleIgualSeguidas`. */
-const resultado = (detalle: string | null | undefined, motivo: string | undefined): string => (detalle ?? motivo ?? "").trim();
+/**
+ * Un `motivo` que arranca así NO es el resultado de nada: es la PREGUNTA del jefe.
+ *
+ * Lo escribe el carril de chat (`motivo: \`pedido por el jefe: ${m.texto.slice(0, 80)}\``,
+ * scripts/ops/warmup-monitor.ts), que además nulea `detalle` en las ejecutadas. Con eso,
+ * `detalleIgualSeguidas` terminaba comparando la pregunta del jefe contra sí misma, y las dos cosas
+ * que salen de ese contador se volvían falsas a la vez:
+ *
+ *   · el prompt le decía al modelo "lo pediste 3 veces y las últimas 3 devolvieron lo mismo" sobre
+ *     tres lecturas que habían devuelto cosas DISTINTAS (medido: "1 lista negra: RATS Dyna" / "0
+ *     listas negras, ya salió" / "3 listas negras"), y
+ *   · `daLoMismo` devolvía 3 y el ejecutor CORTABA la mano.
+ *
+ * O sea, exactamente el incidente del encargo: el jefe repregunta y el agente se niega a mirar
+ * diciendo que ya dio la misma respuesta. La repregunta del jefe es la señal MENOS parecida a un
+ * bucle que hay.
+ *
+ * DÓNDE QUEDÓ LA COSA: el carril de chat ya pasa `detalle: a.detalle` en las ejecutadas, así que por
+ * ahí el fallback no se alcanza y esto no dispara. Queda igual, y no es paranoia: el carril de
+ * GUARDIA sigue nuleando `detalle` en las ejecutadas y apoyándose en el fallback (es su antibucle
+ * medido, ver `resultado`), o sea que la puerta por la que entró esto sigue abierta para cualquier
+ * llamador que combine motivo-pregunta con detalle nulo. Es un cinturón de tres líneas sobre una
+ * falla que ya se pagó.
+ *
+ * ponytail: `^pedido por el jefe:` es el único prefijo que hoy se declara a sí mismo como pregunta.
+ * Si aparece otro, se suma acá y no en el llamador — la regla de qué NO es un resultado vive en el
+ * mismo lugar que la comparación, o vuelve a quedar sin dueño. El arreglo de raíz definitivo es que
+ * NINGÚN carril nulee `detalle`, y ahí se borra la constante y el fallback juntos.
+ */
+export const MOTIVO_QUE_NO_ES_RESULTADO = /^pedido por el jefe:/i;
+
+/**
+ * El texto del resultado, esté en el campo que esté. Ver `detalleIgualSeguidas`.
+ *
+ * El fallback a `motivo` NO es pereza: el carril de GUARDIA pasa `motivo: a.detalle` y nulea
+ * `detalle` en las ejecutadas, así que sin el fallback el antibucle medido (diagnosticar_dominio
+ * pedido 46 veces con 8 respuestas idénticas seguidas) dejaría de contar. Lo que se descarta es el
+ * motivo que se declara a sí mismo como pregunta, no el motivo en general.
+ */
+const resultado = (detalle: string | null | undefined, motivo: string | undefined): string => {
+  if (detalle !== null && detalle !== undefined) return detalle.trim();
+  const m = (motivo ?? "").trim();
+  return MOTIVO_QUE_NO_ES_RESULTADO.test(m) ? "" : m;
+};
 
 /**
  * Registra una decisión del agente. Si ya pidió lo mismo antes, SUMA en vez de duplicar: la
@@ -117,6 +187,15 @@ export function registrar(
       estado: entrada.estado,
       detalle,
       ultimaVez: entrada.cuando,
+      // NUNCA SE LIMPIA. Ver el campo: `estado` lo pisa el último intento, así que sin esto una
+      // ejecución real seguida de un rechazo por idempotencia dejaba la entrada fuera del juicio
+      // para siempre. La legacy (sin el campo) se rescata acá: si venía en "ejecutada", esa fecha
+      // era `ultimaVez` y se adopta, así las 40 entradas que ya están en producción entran al
+      // juicio en cuanto alguien las vuelva a pedir.
+      ultimaEjecucion:
+        entrada.estado === "ejecutada"
+          ? entrada.cuando
+          : (previa.ultimaEjecucion ?? (previa.estado === "ejecutada" ? previa.ultimaVez : null)),
       veces: previa.veces + 1,
       // EL CONTADOR QUE CORTA EL BUCLE. Sube solo cuando el resultado volvió IDÉNTICO; cualquier
       // cambio lo resetea, porque un resultado distinto es información nueva y pedir otra vez deja
@@ -137,6 +216,7 @@ export function registrar(
       detalle: entrada.detalle ?? null,
       primeraVez: entrada.cuando,
       ultimaVez: entrada.cuando,
+      ultimaEjecucion: entrada.estado === "ejecutada" ? entrada.cuando : null,
       veces: 1,
       detalleIgualSeguidas: 1,
       antes: entrada.antes ?? null,
@@ -198,6 +278,21 @@ export function daLoMismo(bit: Bitacora | null, accion: string, objetivo: string
 }
 
 /**
+ * ¿Esta acción llegó a ejecutarse alguna vez? Es lo que decide si hay efecto que medir.
+ *
+ * Exportada porque el predicado vive HOY en tres lugares: acá y los dos filtros del orquestador
+ * (scripts/ops/warmup-monitor.ts:903 y :917, duplicados a catorce líneas de distancia). Los tres
+ * decían `estado === "ejecutada"` y los tres estaban mal por el mismo motivo — `registrar` pisa
+ * `estado`. Arreglar uno solo deja el juicio apagado igual, así que la regla se escribe una vez y
+ * los tres la importan. Un predicado duplicado es un arreglo que se aplica a medias.
+ */
+export const seEjecutoAlgunaVez = (e: EntradaAccion): boolean =>
+  // El `|| estado === "ejecutada"` es para las 40 entradas que ya están en producción, escritas
+  // antes de que `ultimaEjecucion` existiera: sin eso el arreglo dejaría afuera justo a las que lo
+  // motivaron.
+  Boolean(e.ultimaEjecucion) || e.estado === "ejecutada";
+
+/**
  * Cierra una acción ejecutada comparando el ANTES con el AHORA. No infiere: si no hay con qué
  * comparar, el resultado es `sin_evidencia` — que es una respuesta honesta y no un fracaso.
  */
@@ -211,7 +306,13 @@ export function juzgar(
   const i = base.entradas.findIndex((e) => e.id === id);
   if (i < 0) return base;
   const e = base.entradas[i] as EntradaAccion;
-  if (e.estado !== "ejecutada" || e.veredicto) return base; // solo se juzga lo que se ejecutó, y una vez
+  // SE JUZGA LO QUE SE EJECUTÓ ALGUNA VEZ, no lo que terminó en "ejecutada".
+  //
+  // El filtro decía `e.estado !== "ejecutada"` y ese era EL agujero: `registrar` pisa `estado` en
+  // cada re-registro, así que un freno que se aplicó y a la vuelta siguiente se rechazó por
+  // idempotencia quedaba inelegible para siempre. 40 entradas y 0 veredictos en producción — la
+  // maquinaria de juicio entera, escrita y probada, no corrió NUNCA.
+  if (e.veredicto || !seEjecutoAlgunaVez(e)) return base;
   const v = criterio(e.antes, ahora.datos);
   if (v) base.entradas[i] = { ...e, veredicto: { ...v, cuando: ahora.cuando } };
   return base;
@@ -239,17 +340,82 @@ export function lineasParaPrompt(bit: Bitacora | null, max = 8): string[] {
 
   return orden.slice(0, max).map((e) => {
     const obj = e.objetivo ? ` ${e.objetivo}` : "";
-    const rep = e.veces > 1 ? ` (lo pediste ${e.veces} veces)` : "";
+    // EL CONTADOR VA EN TODAS LAS RAMAS, no solo en la rechazada.
+    //
+    // Se calculaba desde hace semanas y se interpolaba SOLO en `rechazada`, o sea en 6 de las 40
+    // entradas de producción. Las otras 34 son ejecutadas, y ahí está el bucle que duele: 306
+    // ejecuciones para 63 resultados distintos (79% repetido), con `diagnosticar_dominio
+    // bizregistry-ops.com` pedido 46 veces y `medir_dominio controlnationalcorp.com` 30. El modelo
+    // leía "se ejecutó y devolvió: …" como si fuera la primera vez, porque para él LO ERA: cada
+    // vuelta arranca de cero y esta línea es todo lo que sabe de su propio pasado.
+    //
+    // Y CUANDO ADEMÁS VOLVIÓ LO MISMO, se dice cuántas seguidas. OJO con el número: `veces` y
+    // `detalleIgualSeguidas` NO son el mismo (la entrada real de producción tiene veces=46 e
+    // iguales=8), así que "las 46 devolvieron lo mismo" sería una falsedad medible — exactamente la
+    // clase de frase que este proyecto ya pagó. Se dice "las últimas N", que es lo que el contador
+    // sabe de verdad.
+    const igualSeguidas = e.detalleIgualSeguidas ?? 1;
+    const rep =
+      e.veces > 1
+        ? e.veces >= 3 && igualSeguidas >= 3
+          ? ` (lo pediste ${e.veces} veces y las últimas ${igualSeguidas} devolvieron lo mismo)`
+          : ` (lo pediste ${e.veces} veces)`
+        : "";
     if (e.estado === "rechazada") {
       return `- pediste ${e.accion}${obj}${rep} y NO se ejecutó: ${e.detalle ?? "rechazada"}. Pedirlo otra vez no lo va a cambiar.`;
     }
     if (e.estado === "fallada") {
-      return `- ${e.accion}${obj} se intentó y FALLÓ: ${e.detalle ?? "sin detalle"}.`;
+      return `- ${e.accion}${obj}${rep} se intentó y FALLÓ: ${e.detalle ?? "sin detalle"}.`;
     }
     if (e.veredicto) {
       const r = e.veredicto.resultado === "sirvio" ? "SIRVIÓ" : e.veredicto.resultado === "no_sirvio" ? "NO sirvió" : "todavía sin evidencia";
-      return `- ${e.accion}${obj} se ejecutó y ${r}: ${e.veredicto.medido}.`;
+      return `- ${e.accion}${obj}${rep} se ejecutó y ${r}: ${e.veredicto.medido}.`;
     }
-    return `- ${e.accion}${obj} se ejecutó el ${e.ultimaVez.slice(0, 16)}, todavía sin medir el efecto.`;
+    // EL RESULTADO DE LO QUE SÍ SE EJECUTÓ — y SOLO `e.detalle`, jamás `e.motivo`.
+    //
+    // La asimetría iba en la dirección cara: de lo RECHAZADO volvía el detalle entero (dos ramas más
+    // arriba) y de lo EJECUTADO solo la fecha. Y como `juzgar` solo mira `frenar_dominio`, una
+    // `revisar_reputacion` ejecutada queda con veredicto `null` para siempre, así que esta era su
+    // única salida y estaba muda. La cláusula "receptor: CERRADO en gmail.com, hotmail.com,
+    // outlook.com" sobrevivió al turno siguiente SOLO porque el orquestador la concatena al mensaje
+    // de Slack y después la relee del hilo.
+    //
+    // POR QUÉ NO EL FALLBACK A `motivo`. La primera versión de este arreglo imprimía
+    // `resultado(e.detalle, e.motivo)`, el mismo helper que usa `detalleIgualSeguidas`. Suena
+    // inofensivo hasta que se mira qué escribe cada carril: el del CHAT —donde ocurrió el
+    // incidente— guarda `detalle: a.ejecutada ? null : a.detalle` y `motivo: "pedido por el jefe:
+    // <la pregunta del jefe>"`. Corriendo esta función sobre la bitácora REAL de producción
+    // (runtime/openclaw-workspace/inventory/warmup-acciones.json, 2026-08-07) salía, textual:
+    //
+    //   "- revisar_reputacion bizreport-control.com se ejecutó y devolvió: pedido por el jefe:
+    //    Entonces que hacemos, ese IP, ese smtp y ese dominio se pierde?"
+    //
+    // …bajo el título "LO QUE PEDISTE Y QUÉ PASÓ": la PREGUNTA DEL JEFE devuelta como la SALIDA DEL
+    // SENSOR. 3 de 33 entradas ejecutadas ese día, las 3 del carril chat. Peor que el silencio que
+    // había. `resultado()` se queda para `detalleIgualSeguidas`, que compara y no publica.
+    //
+    // LOS DOS CARRILES YA NO HACEN LO MISMO, y el comentario que había acá decía lo contrario:
+    // afirmaba que "los DOS carriles nulean el detalle de lo ejecutado (warmup-monitor.ts:886 y
+    // :1419), así que la rama de arriba no se alcanza en producción". Las dos referencias estaban
+    // corridas y la conclusión es falsa en este árbol. Verificado:
+    //
+    //   scripts/ops/warmup-monitor.ts:947  (guardia) → `detalle: a.ejecutada ? null : a.detalle`
+    //   scripts/ops/warmup-monitor.ts:1506 (chat)    → `detalle: a.detalle`
+    //
+    // O sea que por el carril del CHAT la rama de abajo SÍ se alcanza y es la que va a imprimir
+    // "se ejecutó y devolvió: <texto>". En producción hoy los 34 ejecutados tienen `detalle: null`
+    // porque corre el código viejo: la rama se enciende recién con el próximo deploy. Un comentario
+    // que declara inalcanzable una rama que sí se alcanza es peor que no tenerlo — el que venga a
+    // tocar esto va a creer que no puede salir nada por acá.
+    //
+    // Y POR ESO EL RECORTE. La salida de una herramienta puede ser multilínea y larga (la de la
+    // consulta de historia son hasta 13 renglones), y esto se interpola en UNA viñeta de una lista
+    // del prompt. Sin acotar, un renglón de bitácora rompe la lista en pedazos y se come el
+    // presupuesto de contexto que ya está en ~6300 tokens. Se aplanan los saltos de línea primero:
+    // cortar a 300 sin aplanar deja igual una viñeta partida en dos.
+    const texto = (e.detalle ?? "").trim().replace(/\s+/g, " ").slice(0, 300);
+    return texto
+      ? `- ${e.accion}${obj}${rep} se ejecutó y devolvió: ${texto}`
+      : `- ${e.accion}${obj}${rep} se ejecutó el ${e.ultimaVez.slice(0, 16)}, todavía sin medir el efecto.`;
   });
 }

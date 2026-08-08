@@ -55,6 +55,157 @@ test("juzgar solo cierra lo EJECUTADO, una sola vez, y nunca inventa", () => {
   assert.equal(s.entradas[0]?.veredicto, null);
 });
 
+test("EL CAMPO PISADO: una ejecución seguida de un rechazo SIGUE siendo juzgable", () => {
+  // EL INVARIANTE, no el caso. `registrar` PISA `estado` en cada re-registro, y `juzgar` exigía
+  // `estado === "ejecutada"`. O sea que un `frenar_dominio` que SÍ se aplicó y a la vuelta siguiente
+  // se rechaza por idempotencia ("ya está en cap 0" — que es el camino NORMAL, no un borde) quedaba
+  // inelegible para juicio PARA SIEMPRE.
+  //
+  // El resultado medido en la Mac Studio (runtime/openclaw-workspace/inventory/warmup-acciones.json,
+  // 2026-08-07): 40 entradas, 0 veredictos, 0 con `antes`. La maquinaria de juicio está COMPLETA
+  // desde hace semanas y emite textual "<dominio> sigue con cupo N: el freno no quedó puesto"
+  // (scripts/ops/warmup-monitor.ts:924). Nunca corrió una sola vez. Por eso el censo del agente
+  // devolvió 43 episodios de "no se midió el efecto de mis propias acciones": el canal por el que su
+  // freno deshecho tenía que llegarle al modelo estaba cerrado por UNA línea.
+  const criterio = (_antes: Record<string, unknown> | null, despues: Record<string, unknown>) =>
+    despues.cap === 0
+      ? ({ cuando: "", resultado: "sirvio", medido: "quedó en cap 0" } as const)
+      : ({ cuando: "", resultado: "no_sirvio", medido: `sigue con cupo ${String(despues.cap)}: el freno no quedó puesto` } as const);
+
+  let b = registrar(null, { accion: "frenar_dominio", objetivo: "bizreport-control.com", motivo: "cruzó el umbral", estado: "ejecutada", antes: { cap: 20 }, cuando: T(1) });
+  // La vuelta siguiente pide lo mismo y el ejecutor lo rechaza: ya está frenado.
+  b = registrar(b, { accion: "frenar_dominio", objetivo: "bizreport-control.com", motivo: "cruzó el umbral", estado: "rechazada", detalle: "ya está en cap 0", cuando: T(2) });
+  assert.equal(b.entradas[0]?.estado, "rechazada", "el último desenlace es el rechazo, y así tiene que verlo el modelo");
+
+  b = juzgar(b, idDe("frenar_dominio", "bizreport-control.com"), { cuando: T(3), datos: { cap: 255 } }, criterio);
+  assert.equal(b.entradas[0]?.veredicto?.resultado, "no_sirvio", "se ejecutó alguna vez: hay efecto que medir");
+  assert.match(b.entradas[0]?.veredicto?.medido ?? "", /el freno no quedó puesto/, "el hecho que nunca le llegó al modelo");
+
+  // Y lo que NUNCA se ejecutó sigue sin juzgarse: no hay efecto que medir.
+  let r = registrar(null, { accion: "frenar_dominio", objetivo: "nunca.com", motivo: "m", estado: "rechazada", detalle: "no habilitado", antes: { cap: 20 }, cuando: T(1) });
+  r = juzgar(r, idDe("frenar_dominio", "nunca.com"), { cuando: T(2), datos: { cap: 0 } }, criterio);
+  assert.equal(r.entradas[0]?.veredicto, null);
+});
+
+test("`ultimaEjecucion` no se limpia NUNCA, y `antes` sigue siendo el de la primera vez", () => {
+  // Tres rechazos seguidos después de la ejecución: la fecha de la ejecución original tiene que
+  // sobrevivir a los tres. Si se limpiara, el arreglo de arriba duraría exactamente una vuelta —
+  // que es peor que no arreglarlo, porque parecería arreglado.
+  let b = registrar(null, { accion: "frenar_dominio", objetivo: "x.com", motivo: "m", estado: "ejecutada", antes: { cap: 50 }, cuando: T(1) });
+  for (const t of [T(2), T(3), T(4)]) {
+    b = registrar(b, { accion: "frenar_dominio", objetivo: "x.com", motivo: "m", estado: "rechazada", detalle: "ya está en cap 0", cuando: t });
+  }
+  assert.equal(b.entradas[0]?.ultimaEjecucion, T(1), "el instante de la ejecución original");
+  assert.equal(b.entradas[0]?.ultimaVez, T(4), "y `ultimaVez` sigue siendo el último intento: son dos preguntas distintas");
+  assert.deepEqual(b.entradas[0]?.antes, { cap: 50 }, "contra este estado se juzga (comportamiento existente, no romperlo)");
+
+  // Una ejecución posterior sí lo mueve: es la ÚLTIMA ejecución, no la primera.
+  b = registrar(b, { accion: "frenar_dominio", objetivo: "x.com", motivo: "m", estado: "ejecutada", cuando: T(5) });
+  assert.equal(b.entradas[0]?.ultimaEjecucion, T(5));
+});
+
+test("las 40 entradas VIEJAS, sin el campo, siguen siendo juzgables", () => {
+  // El archivo de producción se escribió antes de que `ultimaEjecucion` existiera. Si el arreglo las
+  // dejara afuera, dejaría afuera justo a las que motivaron el arreglo.
+  const viejo: Bitacora = {
+    version: 1,
+    entradas: [
+      {
+        id: idDe("frenar_dominio", "x.com"),
+        accion: "frenar_dominio",
+        objetivo: "x.com",
+        motivo: "m",
+        estado: "ejecutada",
+        detalle: null,
+        primeraVez: T(1),
+        ultimaVez: T(1),
+        veces: 1,
+        antes: { cap: 20 },
+        veredicto: null
+      } as never
+    ]
+  };
+  const j = juzgar(viejo, idDe("frenar_dominio", "x.com"), { cuando: T(2), datos: { cap: 0 } }, () => ({ cuando: "", resultado: "sirvio", medido: "cap 0" }));
+  assert.equal(j.entradas[0]?.veredicto?.resultado, "sirvio");
+});
+
+test("EL CONTADOR DE REPETICIÓN SALE EN LO EJECUTADO, no solo en lo rechazado", () => {
+  // Se calculaba desde hace semanas y se interpolaba SOLO en la rama `rechazada`, o sea en 6 de las
+  // 40 entradas de producción. Las otras 34 son ejecutadas y ahí está el bucle que duele: 306
+  // ejecuciones para 63 resultados distintos (79% repetido). El caso real medido:
+  // `diagnosticar_dominio bizregistry-ops.com`, pedido 46 veces. El modelo leía la línea como si
+  // fuera la primera vez — porque para él LO ERA: cada vuelta arranca de cero y esta línea es todo
+  // lo que sabe de su propio pasado.
+  const conVeces = (veces: number, iguales: number): Bitacora => ({
+    version: 1,
+    entradas: [
+      {
+        id: idDe("diagnosticar_dominio", "bizregistry-ops.com"),
+        accion: "diagnosticar_dominio",
+        objetivo: "bizregistry-ops.com",
+        motivo: "m",
+        estado: "ejecutada",
+        detalle: null,
+        primeraVez: T(1),
+        ultimaVez: T(2),
+        ultimaEjecucion: T(2),
+        veces,
+        detalleIgualSeguidas: iguales,
+        antes: null,
+        veredicto: null
+      }
+    ]
+  });
+
+  assert.match(lineasParaPrompt(conVeces(41, 1), 6)[0]!, /41/, "el número tiene que estar en la línea, no en la cabeza de nadie");
+
+  // Con el detalle cargado, el contador viaja igual.
+  let conDetalle = registrar(null, { accion: "medir_dominio", objetivo: "x.com", motivo: "m", estado: "ejecutada", detalle: "sin tráfico", cuando: T(1) });
+  conDetalle = registrar(conDetalle, { accion: "medir_dominio", objetivo: "x.com", motivo: "m", estado: "ejecutada", detalle: "sin tráfico", cuando: T(2) });
+  assert.match(lineasParaPrompt(conDetalle, 6)[0]!, /lo pediste 2 veces/);
+
+  // Y una acción pedida UNA sola vez no lleva contador: el caso normal no se ensucia.
+  const unaSola = registrar(null, { accion: "medir_dominio", objetivo: "y.com", motivo: "m", estado: "ejecutada", detalle: "sin tráfico", cuando: T(1) });
+  assert.doesNotMatch(lineasParaPrompt(unaSola, 6)[0]!, /lo pediste/);
+});
+
+test("cuando además VOLVIÓ LO MISMO, se dice cuántas seguidas — y el número no puede mentir", () => {
+  // `veces` y `detalleIgualSeguidas` NO son el mismo número: la entrada real de producción tiene
+  // veces=46 e iguales=8. Decir "las 46 devolvieron lo mismo" sería una falsedad medible, que es la
+  // clase de frase que este proyecto ya pagó dos veces. Se afirma lo que el contador sabe.
+  const entrada = (veces: number, iguales: number): Bitacora => ({
+    version: 1,
+    entradas: [
+      {
+        id: idDe("diagnosticar_dominio", "bizregistry-ops.com"),
+        accion: "diagnosticar_dominio",
+        objetivo: "bizregistry-ops.com",
+        motivo: "m",
+        estado: "ejecutada",
+        detalle: "healthy, 0 entregados / 0 rechazados",
+        primeraVez: T(1),
+        ultimaVez: T(2),
+        ultimaEjecucion: T(2),
+        veces,
+        detalleIgualSeguidas: iguales,
+        antes: null,
+        veredicto: null
+      }
+    ]
+  });
+
+  const cuatro = lineasParaPrompt(entrada(4, 4), 6)[0]!;
+  assert.match(cuatro, /lo pediste 4 veces y las últimas 4 devolvieron lo mismo/);
+
+  const real = lineasParaPrompt(entrada(46, 8), 6)[0]!;
+  assert.match(real, /lo pediste 46 veces y las últimas 8 devolvieron lo mismo/);
+  assert.doesNotMatch(real, /las 46 devolvieron/, "no se afirma sobre 46 lo que solo se sabe de 8");
+
+  // Con menos de 3 iguales no se afirma repetición de resultado: dos seguidas puede ser casualidad y
+  // el corte de `daLoMismo` ya se ocupa de ese caso por su lado.
+  assert.doesNotMatch(lineasParaPrompt(entrada(5, 2), 6)[0]!, /devolvieron lo mismo/);
+});
+
 test("las líneas del prompt priorizan el bucle repetido y son acotadas", () => {
   let b = bitacoraVacia();
   for (let i = 0; i < 6; i++) {
@@ -179,4 +330,112 @@ test("el corte NO puede volverse permanente: después de la negativa, la mano pu
   // Y así es como el orquestador registra la negativa del propio corte: rechazada, con su texto.
   b = registrar(b, { accion: "medir_dominio", objetivo: "x.com", motivo: "rechazada: ya lo pediste 2 veces…", estado: "rechazada", detalle: "rechazada: ya lo pediste 2 veces…", cuando: T(3) });
   assert.equal(daLoMismo(b, "medir_dominio", "x.com"), null, "la vuelta siguiente puede volver a mirar");
+});
+
+test("EL PROMPT NO PUEDE AFIRMAR UN RESULTADO QUE NADIE DEVOLVIÓ: el motivo NO es el detalle", () => {
+  // LA FALSEDAD MEDIDA CONTRA LA BITÁCORA REAL DE PRODUCCIÓN
+  // (runtime/openclaw-workspace/inventory/warmup-acciones.json, 2026-08-07). El carril del chat
+  // escribe `detalle: a.ejecutada ? null : a.detalle` y `motivo: "pedido por el jefe: <la pregunta
+  // del jefe>"`. Con el fallback a `motivo`, esta función devolvía —textual, corriéndola sobre ese
+  // archivo—:
+  //
+  //   "- revisar_reputacion bizreport-control.com se ejecutó y devolvió: pedido por el jefe:
+  //    Entonces que hacemos, ese IP, ese smtp y ese dominio se pierde?"
+  //
+  // …bajo el título "LO QUE PEDISTE Y QUÉ PASÓ". O sea que el sistema le devolvía al modelo LA
+  // PREGUNTA DEL JEFE presentada como la SALIDA DEL SENSOR. 3 de 33 entradas ejecutadas ese día eran
+  // de esta clase, y las 3 del carril chat: el 100% del carril que falló.
+  const soloMotivo = registrar(null, {
+    accion: "revisar_reputacion",
+    objetivo: "bizreport-control.com",
+    motivo: "pedido por el jefe: Entonces que hacemos, ese IP, ese smtp y ese dominio se pierde?",
+    estado: "ejecutada",
+    detalle: null,
+    cuando: "2026-08-07T22:05:00.000Z"
+  });
+  const linea = lineasParaPrompt(soloMotivo, 6)[0]!;
+  assert.doesNotMatch(linea, /devolvió/, `sin detalle no se afirma nada: ${linea}`);
+  assert.doesNotMatch(linea, /Entonces que hacemos/, "la pregunta del jefe NO es una medición");
+  assert.match(linea, /todavía sin medir el efecto/, "la forma vieja, que es honesta");
+
+  // Y con el detalle CARGADO —el carril de la guardia— sí se imprime, que es para lo que se hizo:
+  // sin esto, de lo RECHAZADO volvía el detalle entero y de lo EJECUTADO solo la fecha.
+  const conDetalle = registrar(null, {
+    accion: "revisar_reputacion",
+    objetivo: "bizreport-control.com",
+    motivo: "barrido de la guardia",
+    estado: "ejecutada",
+    detalle: "bizreport-control.com: gmail.com le rechaza el correo hoy",
+    cuando: "2026-08-07T22:05:00.000Z"
+  });
+  assert.match(lineasParaPrompt(conDetalle, 6)[0]!, /se ejecutó y devolvió: bizreport-control\.com: gmail\.com le rechaza/);
+});
+
+test("UN RENGLÓN DE BITÁCORA NO PUEDE SER MULTILÍNEA NI TRAER 10 KB AL PROMPT", () => {
+  // El carril del chat guarda `detalle: a.detalle` CRUDO (scripts/ops/warmup-monitor.ts:1506), y la
+  // salida de una herramienta puede ser larga y multilínea — la consulta de historia devuelve hasta
+  // 13 renglones. Esto se interpola en UNA viñeta de una lista del prompt: sin recorte, un solo
+  // renglón de bitácora parte la lista en pedazos y se come un presupuesto que ya está en ~6300
+  // tokens. Los dos defectos van juntos porque el `slice` solo no alcanza: cortar sin aplanar deja
+  // igual una viñeta partida.
+  const largo = Array.from({ length: 13 }, (_, i) => `- 2026-08-0${(i % 9) + 1} (medición) corp-delivery.com: cayó en SPAM en la semilla de gmail`).join("\n");
+  const b = registrar(null, {
+    accion: "que_paso",
+    objetivo: "corp-delivery.com",
+    motivo: "pedido por el jefe",
+    estado: "ejecutada",
+    detalle: largo,
+    cuando: "2026-08-07T22:05:00.000Z"
+  });
+  const linea = lineasParaPrompt(b, 6)[0]!;
+  assert.equal(linea.split("\n").length, 1, "una viñeta es una línea: si trae saltos, rompe la lista del prompt");
+  assert.ok(linea.length < 400, `el renglón mide ${linea.length}: sin tope se come el contexto`);
+  assert.match(linea, /se ejecutó y devolvió: - 2026-08-01 \(medición\)/, "y sigue diciendo lo que devolvió, recortado pero no mudo");
+});
+
+// ── LA PREGUNTA DEL JEFE NO ES EL RESULTADO DE LA HERRAMIENTA ─────────────────────────────────────
+
+/** Cómo registra el carril de CHAT: el motivo es la pregunta y el detalle se nulea en las ejecutadas. */
+const comoElChat = (pregunta: string, cuando: string) => ({
+  accion: "revisar_reputacion",
+  objetivo: "corp-delivery.com",
+  motivo: `pedido por el jefe: ${pregunta.slice(0, 80)}`,
+  estado: "ejecutada" as const,
+  detalle: null,
+  cuando
+});
+
+test("REPREGUNTAR NO ES UN BUCLE: el jefe insiste y la mano no se corta ni se le miente al modelo", () => {
+  // EL INCIDENTE DEL ENCARGO, por la puerta de atrás. `detalleIgualSeguidas` comparaba `detalle ??
+  // motivo`, y el chat pasa la pregunta del jefe en `motivo` con `detalle` en null: se comparaba la
+  // pregunta contra sí misma. Tres lecturas que devolvieron cosas DISTINTAS quedaban como "las
+  // últimas 3 devolvieron lo mismo" en el prompt, y `daLoMismo` daba 3 y el ejecutor cortaba la
+  // mano. O sea: el jefe repregunta y el agente se niega a mirar diciendo que ya contestó eso.
+  //
+  // Los tests de este archivo no lo cazaban porque arman las entradas con `detalle` cargado, forma
+  // que el carril de chat nunca produce.
+  let b: Bitacora | null = null;
+  for (let i = 0; i < 3; i++) b = registrar(b, comoElChat("¿cuáles son los otros 4?", T(i + 1)));
+
+  const e = b!.entradas[0]!;
+  assert.equal(e.veces, 3, "sí lo pidió tres veces, y eso se sigue contando");
+  assert.equal(e.detalleIgualSeguidas, 1, "pero no hay UN solo resultado registrado que comparar");
+  assert.equal(daLoMismo(b, "revisar_reputacion", "corp-delivery.com"), null, "no se corta la mano que el jefe acaba de pedir");
+  assert.doesNotMatch(lineasParaPrompt(b).join("\n"), /devolvieron lo mismo/, "afirmarlo sería una falsedad medible");
+});
+
+test("y el ANTIBUCLE de la guardia sigue contando: ahí el motivo SÍ es el resultado", () => {
+  // La otra mitad, y por eso el fallback a `motivo` no se puede borrar de un saque: el carril de
+  // guardia pasa `motivo: a.detalle`. Es el bucle medido en producción — diagnosticar_dominio
+  // bizregistry-ops.com pedido 46 veces con 8 respuestas idénticas seguidas.
+  let igual: Bitacora | null = null;
+  for (let i = 0; i < 3; i++) igual = registrar(igual, { accion: "diagnosticar_dominio", objetivo: "z.com", motivo: "healthy, 0 entregados / 0 rechazados.", estado: "ejecutada", detalle: null, cuando: T(i + 1) });
+  assert.equal(igual!.entradas[0]!.detalleIgualSeguidas, 3);
+  assert.equal(daLoMismo(igual, "diagnosticar_dominio", "z.com"), 3, "esto sí es un bucle y se corta");
+
+  let distinto: Bitacora | null = null;
+  ["healthy", "blocked_by_provider, CERRADO en Gmail", "healthy otra vez"].forEach((s, i) => {
+    distinto = registrar(distinto, { accion: "diagnosticar_dominio", objetivo: "y.com", motivo: s, estado: "ejecutada", detalle: null, cuando: T(i + 1) });
+  });
+  assert.equal(distinto!.entradas[0]!.detalleIgualSeguidas, 1, "un resultado distinto es información nueva");
 });

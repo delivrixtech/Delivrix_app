@@ -76,7 +76,28 @@ test("gateway log stream auth fails closed without configured token", () => {
   assert.equal(isGatewayLogStreamRequestAuthorized(request({ "x-delivrix-openclaw-token": "bad" }), { authToken: "log-token" }), false);
 });
 
-test("gateway log stream heartbeats with ping and responds to client ping", async () => {
+test("gateway log stream heartbeats with ping and responds to client ping", (t) => {
+  // EL RELOJ VA FALSO, Y ESA ES LA CORRECCIÓN. Éste era el rojo intermitente que el equipo del
+  // sensor reportó (1 de 9 corridas del gate) y del que nadie se había quedado con el nombre.
+  //
+  // Antes esperaba 20 ms de RELOJ DE PARED y daba por hecho que el intervalo de 5 ms ya había
+  // disparado. El detalle que lo volvía una carrera está en `sendPing()`: primero REAPEA y después
+  // pinguea — si pasaron más de `heartbeatIntervalMs * 4` sin pong, cierra el cliente y no manda
+  // nada. Con heartbeat de 5 ms ese plazo son 20 ms: EXACTAMENTE la espera del test. Margen cero
+  // por construcción, la espera y el plazo del reaper eran el mismo número.
+  //
+  // Con el gate corriendo 300+ archivos de test en paralelo sobre 14 núcleos, el proceso se queda
+  // sin CPU y el primer tick del intervalo cae DESPUÉS de esos 20 ms. Entonces el primer `sendPing`
+  // se va por la rama del reaper, cierra, y `frames(0x09)` queda vacío. Medido el 2026-08-08:
+  // 2/120 en Node 22, 3/120 en Node 24, 2 de 30 corridas del gate entero y 2/150 en repetición
+  // dirigida. No es el producto: con el intervalo real (30 s) el plazo son 120 s y el cliente
+  // alcanza a pongear tres veces antes; es este test, que eligió una espera igual al plazo.
+  //
+  // `mock.timers` viene en node:test —cero dependencias nuevas— y el tick lo damos nosotros: no hay
+  // reloj de pared del que depender, así que la carrera DESAPARECE en lugar de volverse menos
+  // probable. Se habilita ANTES de construir el service porque el intervalo nace en el constructor.
+  t.mock.timers.enable({ apis: ["setInterval"] });
+
   const service = new GatewayLogStreamService({
     logPath: join(tmpdir(), "missing-gateway-log-stream-test.log"),
     authToken: "log-token",
@@ -85,11 +106,13 @@ test("gateway log stream heartbeats with ping and responds to client ping", asyn
   });
   const socket = connectFakeLogSocket(service, "/v1/gateway/logs/stream?level=info&token=log-token");
 
-  await wait(20);
-  assert.ok(socket.frames(0x09).length >= 1);
+  // Un solo tick del heartbeat. El reaper mira `Date.now()`, que sigue siendo el real y no se movió,
+  // así que ya no puede ganarle al ping: lo que se afirma es que el intervalo PINGUEA, nada más.
+  t.mock.timers.tick(5);
+  assert.ok(socket.frames(0x09).length >= 1, "el heartbeat tiene que mandar ping en su intervalo");
 
   socket.emit("data", Buffer.from([0x89, 0x00]));
-  assert.ok(socket.frames(0x0a).length >= 1);
+  assert.ok(socket.frames(0x0a).length >= 1, "un ping del cliente se contesta con pong");
   service.close();
 });
 
@@ -142,10 +165,6 @@ class FakeSocket extends EventEmitter {
     return this.writes
       .filter((chunk): chunk is Buffer => Buffer.isBuffer(chunk) && (chunk[0] & 0x0f) === opcode);
   }
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function generatedPrivateKeyPem(): string {
